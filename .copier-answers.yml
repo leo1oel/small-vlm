@@ -1,0 +1,9 @@
+# Changes here will be overwritten by Copier. Do not edit manually.
+_commit: v0.2.0
+_src_path: gh:jlevy/simple-modern-uv
+package_author_email: liuym23@mails.tsinghua.edu.cn
+package_author_name: Yiming Liu
+package_description: small vlm for training and experiments
+package_github_org: leo1oel
+package_module: vlm
+package_name: small-vlm
