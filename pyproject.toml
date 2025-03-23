@@ -41,6 +41,9 @@ small-vlm = "vlm:main"
 requires = ["hatchling", "uv-dynamic-versioning"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/vlm"]
+
 [tool.hatch.version]
 source = "uv-dynamic-versioning"
 # Note JSON schemas don't seem to be right for tool.hatch.version.source so
