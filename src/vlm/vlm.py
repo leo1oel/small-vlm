@@ -7,7 +7,7 @@ from .config.config_schema import AppConfig, ModelConfig, register_configs
 from .models.model import VLM
 
 log: logging.Logger = logging.getLogger(name=__name__)
-config_path: Path = Path(__file__).resolve().parent.parent.parent / "conf"
+config_path: Path = Path(__file__).resolve().parent / "config"
 
 
 def print_model(cfg: ModelConfig) -> None:
