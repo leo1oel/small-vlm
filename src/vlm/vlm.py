@@ -49,7 +49,7 @@ def vlm(cfg: AppConfig) -> None:
     load_model(cfg.model)
 
 
-@hydra.main(version_base=None, config_path=str(config_path), config_name="config")
+@hydra.main(version_base=None, config_path=str(config_path), config_name="config")  # pyright: ignore[reportAny]
 def main(cfg: AppConfig) -> None:
     vlm(cfg)
 
