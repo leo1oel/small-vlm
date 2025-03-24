@@ -1,5 +1,0 @@
-default:
-  - model: defaut
-  - training: default
-  - dataset: default
-  - _self_

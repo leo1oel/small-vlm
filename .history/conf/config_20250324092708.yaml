@@ -1,3 +1,0 @@
-default:
-  - model: defaut
-  - training: default

@@ -1,4 +1,0 @@
-defaults:
-  - visual_encoder: default
-  - llm: default
-  - connector: linear
