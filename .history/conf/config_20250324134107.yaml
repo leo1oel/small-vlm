@@ -1,0 +1,6 @@
+defaults:
+  - model: default
+  - training: default
+  - dataset: default
+  - override hydra/job_logging: rich
+  - _self_

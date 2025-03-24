@@ -1,12 +1,8 @@
 # small-vlm
 
-👉\[\[\[**This is the initial readme for your
-[simple-modern-uv](https://github.com/jlevy/simple-modern-uv) template.** Fill it in and
-delete this message!
-Below are general setup instructions that you may remove or keep and adapt for your
-project.\]\]\]
+this is small-vlm used for experiments.
 
-* * *
+---
 
 ## Installing uv and Python
 
@@ -27,7 +23,7 @@ brew update
 brew install uv
 ```
 
-See [uv's docs](https://docs.astral.sh/uv/getting-started/installation/) for more
+See [uv&#39;s docs](https://docs.astral.sh/uv/getting-started/installation/) for more
 installation methods and platforms.
 
 Now you can use uv to install a current Python environment:
@@ -42,7 +38,7 @@ For development workflows, see [development.md](development.md).
 
 For instructions on publishing to PyPI, see [publishing.md](publishing.md).
 
-* * *
+---
 
 *This project was built from
 [simple-modern-uv](https://github.com/jlevy/simple-modern-uv).*

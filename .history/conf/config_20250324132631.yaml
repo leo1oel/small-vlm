@@ -1,0 +1,14 @@
+defaults:
+  - model: default
+  - training: default
+  - dataset: default
+  - override hydra/job_logging: logging/rich
+  - override hydra/hydra_logging: logging/hydra_rich
+  - _self_
+
+hydra:
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: DEBUG

@@ -1,0 +1,28 @@
+from pathlib import Path
+
+import hydra
+from omegaconf import DictConfig
+import logging
+from rich.console import Console
+from rich.table import Table
+
+log: logging.Logger = logging.getLogger(name=__name__)
+config_path: Path = Path(__file__).resolve().parent.parent.parent / "conf"
+
+def load_model(cfg: DictConfig) -> None:
+    log.info(f"Loading model: [link=conf/model/default.yaml]Example[/link]")
+    log.info(f"Visual encoder: [bold cyan on red]{cfg.model.visual_encoder.name}[/bold cyan on red]")
+    log.info(f"LLM: [bold green on yellow]{cfg.model.llm.name}[/bold green on yellow]")
+    log.info(f"Connector: [magenta on blue]{cfg.model.connector.name}[/magenta on blue]")
+
+def vlm(cfg: DictConfig) -> None:
+    load_model(cfg)
+
+
+@hydra.main(version_base=None, config_path=str(config_path), config_name="config")
+def main(cfg: DictConfig) -> None:
+    vlm(cfg)
+
+
+if __name__ == "__main__":
+    main()

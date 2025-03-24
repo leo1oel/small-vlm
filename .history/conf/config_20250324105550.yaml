@@ -1,0 +1,16 @@
+defaults:
+  - model: default
+  - training: default
+  - dataset: default
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+  - _self_
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: DEBUG

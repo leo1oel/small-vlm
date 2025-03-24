@@ -1,0 +1,10 @@
+defaults:
+  - model: default
+  - training: default
+  - dataset: default
+  - override hydra/job_logging: rich
+  - _self_
+
+hydra:
+  job:
+    chdir: true

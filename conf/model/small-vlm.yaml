@@ -1,0 +1,6 @@
+defaults:
+  - visual_encoder: clip-vit-base-patch16
+  - llm: phi-4-mini-instruct
+  - connector: linear
+
+name: small-vlm

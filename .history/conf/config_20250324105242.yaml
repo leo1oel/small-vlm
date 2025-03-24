@@ -1,0 +1,12 @@
+defaults:
+  - model: default
+  - training: default
+  - dataset: default
+  # - override hydra/job_logging: colorlog
+  # - override hydra/hydra_logging: colorlog
+  - _self_
+
+hydra:
+  job_logging:
+    root:
+      level: DEBUG

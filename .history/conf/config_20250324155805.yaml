@@ -1,0 +1,20 @@
+defaults:
+  - model: small-vlm
+  - trainer: default
+  - dataset: default
+  - override hydra/job_logging: rich
+  - _self_
+
+inference:
+  model: small-vlm
+  dataset: default
+
+training:
+  model: small-vlm
+  dataset: default
+  trainer: default
+
+
+hydra:
+  job:
+    chdir: true
