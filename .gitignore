@@ -180,3 +180,12 @@ cython_debug/
 
 # Hydra outputs
 outputs/
+
+# history
+.history/
+
+# vscode
+.vscode/
+
+# basedpyright
+.basedpyright/
