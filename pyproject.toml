@@ -3,6 +3,7 @@
 [project.urls]
 Repository = "https://github.com/leo1oel/small-vlm"
 # Homepage = "https://..."
+# Documentation = "https://..."
 
 [project]
 name = "small-vlm"
@@ -15,13 +16,39 @@ license = "MIT"
 requires-python = ">=3.11,<4.0"
 dynamic = ["version"]
 
+# https://pypi.org/classifiers/
+# Adjust as needed:
+classifiers = [
+    # Adjust as needed:
+    "Development Status :: 4 - Beta",
+    # "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+    # Include this to avoid accidentally publishing to PyPI:
+    # "Private :: Do Not Upload",
+]
+
+
+# ---- Main dependencies ----
+
 dependencies = [
-    "hydra-colorlog>=1.2.0",
     "hydra-core>=1.3.2",
     "lightning>=2.5.1",
-    "rich>=13.9.4",
+    "pillow>=11.1.0",
+    "pretty-errors>=1.2.25",
+    "torchvision>=0.21.0",
     "transformers>=4.50.0",
 ]
+
+
+# ---- Dev dependencies ----
 
 [dependency-groups]
 dev = [
@@ -47,9 +74,6 @@ small-vlm = "vlm:main"
 requires = ["hatchling", "uv-dynamic-versioning"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/vlm"]
-
 [tool.hatch.version]
 source = "uv-dynamic-versioning"
 # Note JSON schemas don't seem to be right for tool.hatch.version.source so
@@ -60,6 +84,10 @@ source = "uv-dynamic-versioning"
 vcs = "git"
 style = "pep440"
 bump = "true"
+
+[tool.hatch.build.targets.wheel]
+# The source location for the package.
+packages = ["src/vlm"]
 
 
 # ---- Settings ----
@@ -111,7 +139,10 @@ ignore = [
 # https://docs.basedpyright.com/latest/configuration/config-files/#sample-pyprojecttoml-file
 [tool.basedpyright]
 include = ["src", "tests", "devtools"]
-# Typically noisy warnings, comment/uncomment as desired:
+# Make ignoring type warnings easier:
+reportIgnoreCommentWithoutRule = false
+reportUnnecessaryTypeIgnoreComment = false
+# A few typically noisy warnings, comment/uncomment as desired:
 reportMissingTypeStubs = false
 reportUnusedCallResult = false
 # reportMissingImports = false
@@ -121,6 +152,7 @@ reportUnusedCallResult = false
 # reportExplicitAny = false
 # reportUnknownVariableType = false
 # reportUnknownArgumentType = false
+reportUnknownMemberType = false
 
 [tool.codespell]
 # ignore-words-list = "foo,bar"

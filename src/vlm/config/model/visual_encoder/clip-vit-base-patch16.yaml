@@ -1,3 +1,7 @@
 name: clip-vit-base-patch16
 hf_name: openai/clip-vit-base-patch16
 type: vit
+feature_dim: 768
+img_size: 224
+patch_size: 16
+output_layer: -2

@@ -9,3 +9,6 @@ defaults:
 hydra:
   job:
     chdir: true
+  job_logging:
+    root:
+      level: INFO

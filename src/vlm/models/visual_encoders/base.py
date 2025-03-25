@@ -13,7 +13,7 @@ log: logging.Logger = logging.getLogger(name=__name__)
 
 class VisualEncoder(nn.Module, ABC):
     def __init__(self, config: VisualEncoderConfig) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]
+        super().__init__()
         self.config: VisualEncoderConfig = config
         self.name: str = self.config.name
         self.hf_name: str = self.config.hf_name
@@ -22,22 +22,43 @@ class VisualEncoder(nn.Module, ABC):
         self.img_size: int | None = getattr(self.config, "img_size", None)
         self.patch_size: int | None = getattr(self.config, "patch_size", None)
         self.output_layer: int = getattr(self.config, "output_layer", -1)
-        self.preprocessor: AutoImageProcessor = self._build_preprocessor()
-        self.visual_encoder: AutoModel = self._build_visual_encoder()
-        self.hf_config: AutoConfig = self._build_hf_config()
+        log.info(
+            f"[bold green]Using[/bold green] [bold blue] {self.output_layer} [/bold blue] [bold green]layer as output layer[/bold green]"
+        )
+        self.preprocessor: AutoImageProcessor = self.build_preprocessor()
+        self.visual_encoder: AutoModel = self.build_visual_encoder()
+        self.hf_config: AutoConfig = self.build_hf_config()
         self.verify_config()
 
     @abstractmethod
     def _build_preprocessor(self) -> AutoImageProcessor:
         pass
 
+    def build_preprocessor(self) -> AutoImageProcessor:
+        log.info(
+            f"[bold green]Building image preprocessor for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
+        )
+        return self._build_preprocessor()
+
     @abstractmethod
     def _build_visual_encoder(self) -> AutoModel:
         pass
 
+    def build_visual_encoder(self) -> AutoModel:
+        log.info(
+            f"[bold green]Building visual encoder for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
+        )
+        return self._build_visual_encoder()
+
     @abstractmethod
     def _build_hf_config(self) -> AutoConfig:
         pass
+
+    def build_hf_config(self) -> AutoConfig:
+        log.info(
+            f"[bold green]Building hf config for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
+        )
+        return self._build_hf_config()
 
     @abstractmethod
     @override
@@ -45,92 +66,48 @@ class VisualEncoder(nn.Module, ABC):
         pass
 
     def verify_config(self) -> None:
-        model_feature_dim: int | None = self.get_output_dim()
-        model_img_size: int | None = self.get_img_size()
-        model_patch_size: int | None = self.get_patch_size()
+        model_feature_dim: int | str | None = self.get_config("hidden_size")
+        model_img_size: int | str | None = self.get_config("image_size")
+        model_patch_size: int | str | None = self.get_config("patch_size")
 
-        if self.feature_dim is None and model_feature_dim is None:
+        self.verify_equal("feature_dim", model_feature_dim, self.feature_dim)
+        self.verify_equal("img_size", model_img_size, self.img_size)
+        self.verify_equal("patch_size", model_patch_size, self.patch_size)
+
+    def get_config(self, key: str) -> int | str | None:
+        if getattr(self.hf_config, "vision_config", None) is not None:
+            if getattr(self.hf_config.vision_config, key, None) is not None:  # pyright: ignore
+                return getattr(self.hf_config.vision_config, key)  # pyright: ignore
+        elif getattr(self.hf_config, key, None) is not None:
+            return getattr(self.hf_config, key)  # pyright: ignore
+        else:
+            return None
+
+    def verify_equal(
+        self, key: str, model_value: int | str | None, config_value: int | str | None
+    ) -> None:
+        if model_value is None and config_value is None:
             log.warning(
-                f"[bold yellow]Feature dimension not found in config for {self.hf_name}[/bold yellow]"
+                f"[bold yellow]{key.capitalize()} not found in config for[/bold yellow] [bold blue] {self.hf_name}[/bold blue]"
             )
-        elif self.feature_dim is None and model_feature_dim is not None:
-            self.feature_dim = model_feature_dim
+        elif model_value is not None and config_value is None:
+            setattr(self, key, int(model_value))
             log.info(
-                f"[bold green]Feature dimension not found in config, using hf config: {model_feature_dim}[/bold green]"
+                f"[bold green]{key.capitalize()} not found in config, using hf config:[/bold green] [bold blue] {model_value}[/bold blue]"
             )
-        elif self.feature_dim is not None and model_feature_dim is None:
-            log.info(
-                f"[bold green]Feature dimension not found in hf config, using config: {self.feature_dim}[/bold green]"
+        elif model_value is None and config_value is not None:
+            log.warning(
+                f"[bold yellow]{key.capitalize()} not found in hf config for[/bold yellow {self.hf_name}"
             )
-        elif self.feature_dim is not None and model_feature_dim is not None:
-            if self.feature_dim != model_feature_dim:
+        elif model_value is not None and config_value is not None:
+            if model_value != config_value:
                 log.error(
-                    f"[bold red]Feature dimension mismatch: {self.feature_dim} != {model_feature_dim}[/bold red]"
+                    f"[bold red]{key.capitalize()} mismatch: hf config:[/bold red] [bold blue] {model_value}[/bold blue] [bold red]!= config:[/bold red] [bold blue] {config_value}[/bold blue]"
                 )
                 raise ValueError(
-                    f"Feature dimension mismatch: {self.feature_dim} != {model_feature_dim}"
+                    f"{key.capitalize()} mismatch: hf config:[/bold red] [bold blue] {model_value}[/bold blue] [bold red]!= config:[/bold red] [bold blue] {config_value}[/bold blue]"
                 )
             else:
                 log.info(
-                    f"[bold green]Feature dimension verified: {self.feature_dim} == {model_feature_dim}[/bold green]"
+                    f"[bold green]{key.capitalize()} verified: hf config:[/bold green] [bold blue] {model_value}[/bold blue] [bold green]== config:[/bold green] [bold blue] {config_value}[/bold blue]"
                 )
-
-        if self.img_size is None and model_img_size is None:
-            log.warning(
-                f"[bold yellow]Image size not found in config for {self.hf_name}[/bold yellow]"
-            )
-        elif self.img_size is None and model_img_size is not None:
-            self.img_size = model_img_size
-            log.info(
-                f"[bold green]Image size not found in config, using hf config: {model_img_size}[/bold green]"
-            )
-        elif self.img_size is not None and model_img_size is None:
-            log.warning(
-                f"[bold yellow]Image size not found in hf config for {self.hf_name}[/bold yellow]"
-            )
-        elif self.img_size is not None and model_img_size is not None:
-            if self.img_size != model_img_size:
-                log.error(
-                    f"[bold red]Image size mismatch: {self.img_size} != {model_img_size}[/bold red]"
-                )
-                raise ValueError(f"Image size mismatch: {self.img_size} != {model_img_size}")
-            else:
-                log.info(
-                    f"[bold green]Image size verified: {self.img_size} == {model_img_size}[/bold green]"
-                )
-
-        if self.patch_size is None and model_patch_size is None:
-            log.warning(
-                f"[bold yellow]Patch size not found in config for {self.hf_name}[/bold yellow]"
-            )
-        elif self.patch_size is None and model_patch_size is not None:
-            self.patch_size = model_patch_size
-            log.info(
-                f"[bold green]Patch size not found in config, using hf config: {model_patch_size}[/bold green]"
-            )
-        elif self.patch_size is not None and model_patch_size is None:
-            log.warning(
-                f"[bold yellow]Patch size not found in hf config for {self.hf_name}[/bold yellow]"
-            )
-        elif self.patch_size is not None and model_patch_size is not None:
-            if self.patch_size != model_patch_size:
-                log.error(
-                    f"[bold red]Patch size mismatch: {self.patch_size} != {model_patch_size}[/bold red]"
-                )
-                raise ValueError(f"Patch size mismatch: {self.patch_size} != {model_patch_size}")
-            else:
-                log.info(
-                    f"[bold green]Patch size verified: {self.patch_size} == {model_patch_size}[/bold green]"
-                )
-
-    @abstractmethod
-    def get_output_dim(self) -> int | None:
-        pass
-
-    @abstractmethod
-    def get_img_size(self) -> int | None:
-        pass
-
-    @abstractmethod
-    def get_patch_size(self) -> int | None:
-        pass

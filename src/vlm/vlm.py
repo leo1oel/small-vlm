@@ -35,10 +35,10 @@ def print_model(cfg: ModelConfig) -> None:
 
     log.info(f"Loading model: [bold red][link={model_url}]{model_name}[/link][/bold red]")
     log.info(
-        f"Visual encoder: [bold yellow][link={visual_url}]{visual_encoder_name}[/link][/bold yellow]"
+        f"Visual encoder: [bold cyan][link={visual_url}]{visual_encoder_name}[/link][/bold cyan]"
     )
     log.info(f"LLM: [bold blue][link={llm_url}]{llm_name}[/link][/bold blue]")
-    log.info(f"Connector: [bold green][link={connector_url}]{connector_name}[/link][/bold green]")
+    log.info(f"Connector: [bold yellow][link={connector_url}]{connector_name}[/link][/bold yellow]")
 
 
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
@@ -55,7 +55,7 @@ def vlm(cfg: AppConfig) -> None:
         inference(cfg.trainer, model)
 
 
-@hydra.main(version_base=None, config_path=str(config_path), config_name="config")  # pyright: ignore[reportAny]
+@hydra.main(version_base=None, config_path=str(config_path), config_name="config")  # pyright: ignore
 def main(cfg: AppConfig) -> None:
     vlm(cfg)
 

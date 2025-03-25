@@ -8,6 +8,10 @@ class VisualEncoderConfig:
     name: str
     hf_name: str
     type: str
+    feature_dim: int
+    img_size: int
+    patch_size: int
+    output_layer: int
 
 
 @dataclass
@@ -21,6 +25,8 @@ class LLMConfig:
 class ConnectorConfig:
     name: str
     type: str
+    visual_dim: int
+    text_dim: int
 
 
 @dataclass

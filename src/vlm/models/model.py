@@ -36,6 +36,7 @@ class VLM(pl.LightningModule):
         if encoder_config.type == "vit":
             from .visual_encoders import ViTEncoder
 
+            log.info("[bold green]Building ViTEncoder[/bold green]")
             return ViTEncoder(encoder_config)
         else:
             log.error(f"[bold red]Unknown visual encoder type: {encoder_config.type}[/bold red]")
@@ -46,6 +47,7 @@ class VLM(pl.LightningModule):
         if llm_config.type == "hf_llm":
             from .language_models import HFLLMLanguageModel
 
+            log.info("[bold green]Building HFLLMLanguageModel[/bold green]")
             return HFLLMLanguageModel(llm_config)
         else:
             log.error(f"[bold red]Unknown language model type: {llm_config.type}[/bold red]")
@@ -56,17 +58,33 @@ class VLM(pl.LightningModule):
         if connector_config.type == "linear":
             from .connectors import LinearConnector
 
+            log.info("[bold green]Building LinearConnector[/bold green]")
             return LinearConnector(connector_config)
         else:
             log.error(f"[bold red]Unknown connector type: {connector_config.type}[/bold red]")
             raise ValueError(f"Unknown connector type: {connector_config.type}")
 
     @override
-    def forward(self, images: torch.Tensor, text: None | torch.Tensor = None) -> torch.Tensor:
-        vision_features: torch.Tensor = self.visual_encoder(images)
+    def forward(
+        self, images: torch.Tensor | list[torch.Tensor], text: torch.Tensor
+    ) -> torch.Tensor:
+        if isinstance(images, list):
+            image_counts: list[int] = [tensor.shape[0] for tensor in images]
+            all_images: torch.Tensor = torch.cat(images, dim=0)  # [total_images, C, H, W]
+            all_features: torch.Tensor = self.visual_encoder(all_images)
+            vision_features: tuple[torch.Tensor, ...] = torch.split(
+                all_features, image_counts, dim=0
+            )
+        else:
+            vision_features = (self.visual_encoder(images),)
 
-        multimodal_features: torch.Tensor = self.connector(vision_features, text)
-        outputs: torch.Tensor = self.language_model(multimodal_features)
+        llm: LanguageModel = self.language_model
+        connector_output: tuple[torch.Tensor, torch.Tensor] = self.connector(
+            vision_features, text, llm.embeddings, llm.image_token_id
+        )
+        multimodal_features: torch.Tensor = connector_output[0]
+        attention_mask: torch.Tensor = connector_output[1]
+        outputs: torch.Tensor = llm(input_embeds=multimodal_features, attention_mask=attention_mask)
 
         return outputs
 
@@ -79,7 +97,7 @@ class VLM(pl.LightningModule):
         outputs: torch.Tensor = self(images, text)
         loss: torch.Tensor = self._calculate_loss(outputs, labels)
 
-        self.log("train_loss", loss, prog_bar=True)  # pyright: ignore[reportUnknownMemberType]
+        self.log("train_loss", loss, prog_bar=True)
         return loss
 
     @override
@@ -91,7 +109,7 @@ class VLM(pl.LightningModule):
         outputs: torch.Tensor = self(images, text)
         loss: torch.Tensor = self._calculate_loss(outputs, labels)
 
-        self.log("val_loss", loss, prog_bar=True)  # pyright: ignore[reportUnknownMemberType]
+        self.log("val_loss", loss, prog_bar=True)
         return loss
 
     @override
