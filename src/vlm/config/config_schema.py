@@ -7,17 +7,20 @@ from hydra.core.config_store import ConfigStore
 class VisualEncoderConfig:
     name: str
     hf_name: str
+    type: str
 
 
 @dataclass
 class LLMConfig:
     name: str
     hf_name: str
+    type: str
 
 
 @dataclass
 class ConnectorConfig:
     name: str
+    type: str
 
 
 @dataclass

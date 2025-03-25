@@ -3,8 +3,10 @@ from pathlib import Path
 
 import hydra
 
-from .config.config_schema import AppConfig, ModelConfig, register_configs
+from .config.config_schema import AppConfig, ModelConfig, TrainerConfig, register_configs
+from .inference.inference import inference
 from .models.model import VLM
+from .train.trainer import train
 
 log: logging.Logger = logging.getLogger(name=__name__)
 config_path: Path = Path(__file__).resolve().parent / "config"
@@ -39,14 +41,18 @@ def print_model(cfg: ModelConfig) -> None:
     log.info(f"Connector: [bold green][link={connector_url}]{connector_name}[/link][/bold green]")
 
 
-def load_model(cfg: ModelConfig) -> VLM:
-    print_model(cfg)
-    model: VLM = VLM(cfg)
+def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
+    print_model(model_cfg)
+    model: VLM = VLM(model_cfg, trainer_cfg)
     return model
 
 
 def vlm(cfg: AppConfig) -> None:
-    load_model(cfg.model)
+    model: VLM = load_model(cfg.model, cfg.trainer)
+    if cfg.mode.is_training:
+        train(cfg.trainer, model)
+    else:
+        inference(cfg.trainer, model)
 
 
 @hydra.main(version_base=None, config_path=str(config_path), config_name="config")  # pyright: ignore[reportAny]

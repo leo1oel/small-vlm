@@ -1,2 +1,3 @@
 name: phi-4-mini-instruct
 hf_name: microsoft/Phi-4-mini-instruct
+type: hf_llm
