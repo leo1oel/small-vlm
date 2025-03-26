@@ -42,11 +42,11 @@ class Connector(nn.Module, ABC):
     def forward(
         self,
         visual_features: tuple[torch.Tensor, ...],
-        text: torch.Tensor,
+        texts: torch.Tensor,
         embeddings: nn.Embedding,
         image_token_id: int | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size, seq_len = text.shape
+        batch_size, seq_len = texts.shape
 
         projected_visual_features: list[torch.Tensor] = []
         for _batch_idx, visual_feature in enumerate(visual_features):
@@ -58,13 +58,13 @@ class Connector(nn.Module, ABC):
             )  # [image_num*feature, text_dim]
             projected_visual_features.append(projected)
 
-        text_embeddings: torch.Tensor = embeddings(text)  # [batch_size, seq_len, text_dim]
+        text_embeddings: torch.Tensor = embeddings(texts)  # [batch_size, seq_len, text_dim]
 
         fused_embeddings_list: list[torch.Tensor] = []
         attention_mask_list: list[torch.Tensor] = []
 
         for batch_idx in range(batch_size):
-            current_text: torch.Tensor = text[batch_idx]  # [seq_len]
+            current_text: torch.Tensor = texts[batch_idx]  # [seq_len]
             current_text_embeddings: torch.Tensor = text_embeddings[
                 batch_idx
             ]  # [seq_len, text_dim]
@@ -74,7 +74,7 @@ class Connector(nn.Module, ABC):
             num_image_tokens: int = len(image_token_positions)
 
             if num_image_tokens == 0:
-                mask: torch.Tensor = torch.tril(torch.ones(seq_len, seq_len, device=text.device))
+                mask: torch.Tensor = torch.tril(torch.ones(seq_len, seq_len, device=texts.device))
                 fused_embeddings_list.append(current_text_embeddings)
                 attention_mask_list.append(mask)
                 continue
@@ -114,7 +114,7 @@ class Connector(nn.Module, ABC):
 
             fused_length: int = fused_embeddings.size(0)
             attention_mask: torch.Tensor = torch.zeros(
-                fused_length, fused_length, device=text.device
+                fused_length, fused_length, device=texts.device
             )
 
             current_pos: int = 0
@@ -131,7 +131,7 @@ class Connector(nn.Module, ABC):
                     attention_mask[
                         current_pos : current_pos + chunk_size,
                         current_pos : current_pos + chunk_size,
-                    ] = torch.tril(torch.ones(chunk_size, chunk_size, device=text.device))
+                    ] = torch.tril(torch.ones(chunk_size, chunk_size, device=texts.device))
 
                 if i > 0:
                     for j in range(i):
@@ -154,15 +154,20 @@ class Connector(nn.Module, ABC):
             batch_size,
             max_length,
             text_embeddings.size(-1),
-            device=text.device,
+            device=texts.device,
             dtype=text_embeddings.dtype,
         )
         padded_attention_mask: torch.Tensor = torch.zeros(
             batch_size,
             max_length,
             max_length,
-            device=text.device,
+            device=texts.device,
             dtype=attention_mask_list[0].dtype,
+        )
+
+        log.debug(f"[bold yellow]padded_embeddings: {padded_embeddings.shape}[/bold yellow]")
+        log.debug(
+            f"[bold yellow]padded_attention_mask: {padded_attention_mask.shape}[/bold yellow]"
         )
 
         for i, (embed, mask) in enumerate(
@@ -172,7 +177,7 @@ class Connector(nn.Module, ABC):
             padded_embeddings[i, :length] = embed
             padded_attention_mask[i, :length, :length] = mask
 
-        return padded_embeddings, padded_attention_mask
+        return padded_embeddings, padded_attention_mask.unsqueeze(1)
 
     @abstractmethod
     def projection(self, visual_features: torch.Tensor) -> torch.Tensor:

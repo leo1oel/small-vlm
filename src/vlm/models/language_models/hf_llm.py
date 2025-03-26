@@ -28,9 +28,19 @@ class HFLLMLanguageModel(LanguageModel):
 
     @override
     def _build_language_model(self) -> AutoModel:
-        self.language_model: AutoModel = AutoModelForCausalLM.from_pretrained(
-            self.hf_name, trust_remote_code=True
-        )
+        try:
+            self.language_model: AutoModel = AutoModelForCausalLM.from_pretrained(
+                self.hf_name, trust_remote_code=True, attn_implementation="flash_attention_2"
+            )
+            log.info("[bold green]Successfully loaded model with flash_attention_2[/bold green]")
+        except Exception as e:
+            log.warning(
+                f"[bold yellow]Failed to load model with flash_attention_2: {e} Falling back to sdpa implementation...[/bold yellow]"
+            )
+            self.language_model = AutoModelForCausalLM.from_pretrained(
+                self.hf_name, trust_remote_code=True, attn_implementation="sdpa"
+            )
+            log.info("[bold green]Successfully loaded model with sdpa[/bold green]")
         return self.language_model  # pyright: ignore
 
     @override
@@ -48,7 +58,7 @@ class HFLLMLanguageModel(LanguageModel):
         attention_mask: None | torch.Tensor = None,
     ) -> torch.Tensor:
         if input_embeds is not None:
-            outputs = self.language_model(input_embeds=input_embeds, attention_mask=attention_mask)  # pyright: ignore
+            outputs = self.language_model(inputs_embeds=input_embeds, attention_mask=attention_mask)  # pyright: ignore
         elif input_ids is not None:
             outputs = self.language_model(input_ids, attention_mask=attention_mask)  # pyright: ignore
         else:

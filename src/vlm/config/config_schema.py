@@ -45,6 +45,7 @@ class DatasetConfig:
 @dataclass
 class TrainerConfig:
     name: str
+    ignore_index: int = -100
 
 
 @dataclass

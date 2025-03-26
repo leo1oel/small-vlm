@@ -28,6 +28,14 @@ class VLM(pl.LightningModule):
         self.visual_encoder: VisualEncoder = self._build_visual_encoder()
         self.language_model: LanguageModel = self._build_language_model()
         self.connector: Connector = self._build_connector()
+        self.example_input_array: tuple[torch.Tensor | list[torch.Tensor], torch.Tensor] = (
+            [torch.randn(1, 3, 224, 224), torch.randn(3, 3, 224, 224)],  # 图像输入
+            self.language_model.tokenizer(
+                ["test <|image|>.", "test <|image|> multiple <|image|> images <|image|>."],
+                padding=True,
+                return_tensors="pt",
+            ).input_ids,  # pyright: ignore
+        )
 
         self.save_hyperparameters(model_config, trainer_config)
 
@@ -66,7 +74,7 @@ class VLM(pl.LightningModule):
 
     @override
     def forward(
-        self, images: torch.Tensor | list[torch.Tensor], text: torch.Tensor
+        self, images: torch.Tensor | list[torch.Tensor], texts: torch.Tensor
     ) -> torch.Tensor:
         if isinstance(images, list):
             image_counts: list[int] = [tensor.shape[0] for tensor in images]
@@ -80,46 +88,50 @@ class VLM(pl.LightningModule):
 
         llm: LanguageModel = self.language_model
         connector_output: tuple[torch.Tensor, torch.Tensor] = self.connector(
-            vision_features, text, llm.embeddings, llm.image_token_id
+            vision_features, texts, llm.embeddings, llm.image_token_id
         )
         multimodal_features: torch.Tensor = connector_output[0]
         attention_mask: torch.Tensor = connector_output[1]
+        log.debug(f"[bold yellow]multimodal_features: {multimodal_features.shape}[/bold yellow]")
+        log.debug(f"[bold yellow]attention_mask: {attention_mask.shape}[/bold yellow]")
         outputs: torch.Tensor = llm(input_embeds=multimodal_features, attention_mask=attention_mask)
-
+        log.debug(f"[bold yellow]outputs: {outputs.shape}[/bold yellow]")
         return outputs
 
     @override
     def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        images: torch.Tensor = batch["images"]
-        text: None | torch.Tensor = batch.get("text")
+        images: torch.Tensor | list[torch.Tensor] = batch["images"]
+        text: torch.Tensor = batch["text"]
         labels: torch.Tensor = batch["labels"]
 
         outputs: torch.Tensor = self(images, text)
         loss: torch.Tensor = self._calculate_loss(outputs, labels)
 
-        self.log("train_loss", loss, prog_bar=True)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     @override
     def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        images: torch.Tensor = batch["images"]
-        text: None | torch.Tensor = batch.get("text")
+        images: torch.Tensor | list[torch.Tensor] = batch["images"]
+        text: torch.Tensor = batch["text"]
         labels: torch.Tensor = batch["labels"]
 
         outputs: torch.Tensor = self(images, text)
         loss: torch.Tensor = self._calculate_loss(outputs, labels)
 
-        self.log("val_loss", loss, prog_bar=True)
+        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     @override
     def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        images: torch.Tensor = batch["images"]
-        text: None | torch.Tensor = batch.get("text")
+        images: torch.Tensor | list[torch.Tensor] = batch["images"]
+        text: torch.Tensor = batch["text"]
         labels: torch.Tensor = batch["labels"]
 
         outputs: torch.Tensor = self(images, text)
         loss: torch.Tensor = self._calculate_loss(outputs, labels)
+
+        self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     def _calculate_loss(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:

@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 
 import hydra
+from lightning.pytorch.utilities.model_summary.model_summary import ModelSummary
 
 from .config.config_schema import AppConfig, ModelConfig, TrainerConfig, register_configs
 from .inference.inference import inference
@@ -44,6 +45,17 @@ def print_model(cfg: ModelConfig) -> None:
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
     print_model(model_cfg)
     model: VLM = VLM(model_cfg, trainer_cfg)
+    # example_input_array: tuple[torch.Tensor | list[torch.Tensor], torch.Tensor] = (
+    #         [torch.randn(1, 3, 224, 224), torch.randn(3, 3, 224, 224)],  # 图像输入
+    #         model.language_model.tokenizer(
+    #             ["test <|image|>.", "test <|image|> multiple <|image|> images <|image|>."],
+    #             padding=True,
+    #             return_tensors="pt",
+    #         ).input_ids,  # pyright: ignore
+    #     )
+    # model(example_input_array[0], example_input_array[1])
+    summary = ModelSummary(model)  # pyright: ignore
+    print(summary)
     return model
 
 

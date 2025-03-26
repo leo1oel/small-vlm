@@ -26,6 +26,9 @@ class ViTEncoder(VisualEncoder):
         self.visual_encoder: AutoModel = AutoModel.from_pretrained(
             self.hf_name, trust_remote_code=True
         )
+        if getattr(self.visual_encoder, "vision_model", None) is not None:  # pyright: ignore
+            self.visual_encoder = self.visual_encoder.vision_model  # pyright: ignore
+
         return self.visual_encoder  # pyright: ignore
 
     @override
