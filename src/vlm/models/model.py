@@ -88,7 +88,7 @@ class VLM(pl.LightningModule):
 
         llm: LanguageModel = self.language_model
         connector_output: tuple[torch.Tensor, torch.Tensor] = self.connector(
-            vision_features, texts, llm.embeddings, llm.image_token_id
+            vision_features, texts, llm.embeddings, llm.image_token_id, llm.pad_token_id
         )
         multimodal_features: torch.Tensor = connector_output[0]
         attention_mask: torch.Tensor = connector_output[1]

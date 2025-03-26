@@ -45,8 +45,14 @@ class Connector(nn.Module, ABC):
         texts: torch.Tensor,
         embeddings: nn.Embedding,
         image_token_id: int | None,
+        pad_token_id: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size, seq_len = texts.shape
+        log.debug(f"[bold yellow]texts: {texts}[/bold yellow]")
+        log.debug(f"[bold yellow]image_token_id: {image_token_id}[/bold yellow]")
+        log.debug(f"[bold yellow]pad_token_id: {pad_token_id}[/bold yellow]")
+        batch_size, _ = texts.shape
+
+        padding_mask = (texts != pad_token_id).bool()  # [batch_size, seq_len]
 
         projected_visual_features: list[torch.Tensor] = []
         for _batch_idx, visual_feature in enumerate(visual_features):
@@ -65,18 +71,27 @@ class Connector(nn.Module, ABC):
 
         for batch_idx in range(batch_size):
             current_text: torch.Tensor = texts[batch_idx]  # [seq_len]
+            current_padding_mask: torch.Tensor = padding_mask[batch_idx]  # [seq_len]
             current_text_embeddings: torch.Tensor = text_embeddings[
                 batch_idx
             ]  # [seq_len, text_dim]
-            image_token_positions: torch.Tensor = (current_text == image_token_id).nonzero(
+
+            valid_length: int = int(current_padding_mask.sum().item())
+
+            valid_text: torch.Tensor = current_text[:valid_length]
+            valid_text_embeddings: torch.Tensor = current_text_embeddings[:valid_length]
+
+            image_token_positions: torch.Tensor = (valid_text == image_token_id).nonzero(
                 as_tuple=True
             )[0]
             num_image_tokens: int = len(image_token_positions)
 
             if num_image_tokens == 0:
-                mask: torch.Tensor = torch.tril(torch.ones(seq_len, seq_len, device=texts.device))
-                fused_embeddings_list.append(current_text_embeddings)
-                attention_mask_list.append(mask)
+                valid_mask: torch.Tensor = torch.tril(
+                    torch.ones(valid_length, valid_length, device=texts.device)
+                )
+                fused_embeddings_list.append(valid_text_embeddings)
+                attention_mask_list.append(valid_mask)
                 continue
 
             current_visual_features: torch.Tensor = projected_visual_features[
@@ -89,11 +104,11 @@ class Connector(nn.Module, ABC):
             for img_pos_tensor in image_token_positions:
                 img_pos = int(img_pos_tensor.item())
                 if img_pos > start_idx:
-                    text_embedding_chunks.append(current_text_embeddings[start_idx:img_pos])
+                    text_embedding_chunks.append(valid_text_embeddings[start_idx:img_pos])
                     start_idx = img_pos + 1
 
-            if start_idx < seq_len:
-                text_embedding_chunks.append(current_text_embeddings[start_idx:seq_len])
+            if start_idx < valid_length:
+                text_embedding_chunks.append(valid_text_embeddings[start_idx:valid_length])
 
             num_visual_chunks: int = len(image_token_positions)
             visual_features_per_chunk: int = current_visual_features.size(0) // num_visual_chunks

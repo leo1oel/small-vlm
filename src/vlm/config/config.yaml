@@ -11,4 +11,4 @@ hydra:
     chdir: true
   job_logging:
     root:
-      level: INFO
+      level: DEBUG

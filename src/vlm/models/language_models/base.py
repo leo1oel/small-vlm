@@ -23,12 +23,14 @@ class LanguageModel(nn.Module, ABC):
         self.max_seq_length: int | None = getattr(self.config, "max_seq_length", None)
         self.output_layer: int = getattr(self.config, "output_layer", -1)
         self.image_token: str | None = getattr(self.config, "image_token", None)
+        self.pad_token: str = getattr(self.config, "pad_token", "PAD")
         self.tokenizer: AutoTokenizer = self.build_tokenizer()
         self.language_model: AutoModel = self.build_language_model()
         self.hf_config: AutoConfig = self.build_hf_config()
         self.image_token_id: int | None = (
             self.add_image_token(self.image_token) if self.image_token else None
         )
+        self.pad_token_id: int = self.add_pad_token(self.pad_token)
         self.embeddings: nn.Embedding = self.build_embeddings()
         self.verify_config()
 
@@ -38,6 +40,12 @@ class LanguageModel(nn.Module, ABC):
         image_token_id: int = self.tokenizer.convert_tokens_to_ids(image_token)  # pyright: ignore
         self.language_model.resize_token_embeddings(len(self.tokenizer))  # pyright: ignore
         return image_token_id  # pyright: ignore
+
+    def add_pad_token(self, pad_token: str) -> int:
+        log.info(f"[bold green]Adding pad token: {pad_token}[/bold green]")
+        self.tokenizer.add_special_tokens({"pad_token": pad_token})  # pyright: ignore
+        pad_token_id: int = self.tokenizer.convert_tokens_to_ids(pad_token)  # pyright: ignore
+        return pad_token_id  # pyright: ignore
 
     @abstractmethod
     def _build_embedding_layer(self) -> nn.Embedding:

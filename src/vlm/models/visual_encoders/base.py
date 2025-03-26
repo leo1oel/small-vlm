@@ -29,6 +29,7 @@ class VisualEncoder(nn.Module, ABC):
         self.visual_encoder: AutoModel = self.build_visual_encoder()
         self.hf_config: AutoConfig = self.build_hf_config()
         self.verify_config()
+        self.token_size: int = (self.img_size // self.patch_size) ** 2  # pyright: ignore
 
     @abstractmethod
     def _build_preprocessor(self) -> AutoImageProcessor:

@@ -28,19 +28,23 @@ class HFLLMLanguageModel(LanguageModel):
 
     @override
     def _build_language_model(self) -> AutoModel:
-        try:
-            self.language_model: AutoModel = AutoModelForCausalLM.from_pretrained(
-                self.hf_name, trust_remote_code=True, attn_implementation="flash_attention_2"
-            )
-            log.info("[bold green]Successfully loaded model with flash_attention_2[/bold green]")
-        except Exception as e:
-            log.warning(
-                f"[bold yellow]Failed to load model with flash_attention_2: {e} Falling back to sdpa implementation...[/bold yellow]"
-            )
-            self.language_model = AutoModelForCausalLM.from_pretrained(
-                self.hf_name, trust_remote_code=True, attn_implementation="sdpa"
-            )
-            log.info("[bold green]Successfully loaded model with sdpa[/bold green]")
+        # try:
+        #     self.language_model: AutoModel = AutoModelForCausalLM.from_pretrained(
+        #         self.hf_name, trust_remote_code=True, attn_implementation="flash_attention_2"
+        #     )
+        #     log.info("[bold green]Successfully loaded model with flash_attention_2[/bold green]")
+        # except Exception as e:
+        #     log.warning(
+        #         f"[bold yellow]Failed to load model with flash_attention_2: {e} Falling back to sdpa implementation...[/bold yellow]"
+        #     )
+        #     self.language_model = AutoModelForCausalLM.from_pretrained(
+        #         self.hf_name, trust_remote_code=True, attn_implementation="sdpa"
+        #     )
+        #     log.info("[bold green]Successfully loaded model with sdpa[/bold green]")
+        self.language_model: AutoModel = AutoModelForCausalLM.from_pretrained(
+            self.hf_name, trust_remote_code=True, attn_implementation="sdpa"
+        )
+        log.info("[bold green]Successfully loaded model with sdpa[/bold green]")
         return self.language_model  # pyright: ignore
 
     @override
