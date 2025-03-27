@@ -1,0 +1,3 @@
+debug: true
+batch_size: 16
+type: huggingface

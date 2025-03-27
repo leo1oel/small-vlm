@@ -40,12 +40,16 @@ class ModelConfig:
 @dataclass
 class DatasetConfig:
     name: str
+    type: str
+    batch_size: int
 
 
 @dataclass
 class TrainerConfig:
     name: str
     ignore_index: int = -100
+    default_root_dir: str = "./checkpoints"
+    debug: bool = False
 
 
 @dataclass

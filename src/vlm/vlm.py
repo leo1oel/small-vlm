@@ -2,9 +2,12 @@ import logging
 from pathlib import Path
 
 import hydra
+import torch
 from lightning.pytorch.utilities.model_summary.model_summary import ModelSummary
+from torch.utils.data import DataLoader
 
 from .config.config_schema import AppConfig, ModelConfig, TrainerConfig, register_configs
+from .data.dataloaders import get_inference_dataloader, get_train_dataloader, get_val_dataloader
 from .inference.inference import inference
 from .models.model import VLM
 from .train.trainer import train
@@ -53,9 +56,16 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
 def vlm(cfg: AppConfig) -> None:
     model: VLM = load_model(cfg.model, cfg.trainer)
     if cfg.mode.is_training:
-        train(cfg.trainer, model)
+        train_dataloader: DataLoader[dict[str, torch.Tensor]] = get_train_dataloader(
+            cfg.dataset, model
+        )
+        val_dataloader: DataLoader[dict[str, torch.Tensor]] = get_val_dataloader(cfg.dataset, model)
+        train(cfg.trainer, model, train_dataloader, val_dataloader)
     else:
-        inference(cfg.trainer, model)
+        inference_dataloader: DataLoader[dict[str, torch.Tensor]] = get_inference_dataloader(
+            cfg.dataset, model
+        )
+        inference(cfg.trainer, inference_dataloader)
 
 
 @hydra.main(version_base=None, config_path=str(config_path), config_name="config")  # pyright: ignore

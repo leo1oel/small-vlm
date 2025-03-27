@@ -1,8 +1,11 @@
+import json
 import logging
+from collections.abc import Callable
 from typing import override
 
 import pytorch_lightning as pl
 import torch
+from PIL import Image
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
 
 from ..config.config_schema import (
@@ -28,6 +31,10 @@ class VLM(pl.LightningModule):
         self.visual_encoder: VisualEncoder = self._build_visual_encoder()
         self.language_model: LanguageModel = self._build_language_model()
         self.connector: Connector = self._build_connector()
+        self.transform: Callable[
+            [dict[str, Image.Image | list[dict[str, str]]]],
+            dict[str, torch.Tensor | list[torch.Tensor]],
+        ] = self._build_transform()
         self.example_input_array: tuple[torch.Tensor | list[torch.Tensor], torch.Tensor] = (
             [torch.randn(1, 3, 224, 224), torch.randn(3, 3, 224, 224)],  # 图像输入
             self.language_model.tokenizer(
@@ -71,6 +78,37 @@ class VLM(pl.LightningModule):
         else:
             log.error(f"[bold red]Unknown connector type: {connector_config.type}[/bold red]")
             raise ValueError(f"Unknown connector type: {connector_config.type}")
+
+    def _build_transform(
+        self,
+    ) -> Callable[
+        [dict[str, Image.Image | list[dict[str, str]]]],
+        dict[str, torch.Tensor | list[torch.Tensor]],
+    ]:
+        def transform(
+            item: dict[str, Image.Image | list[dict[str, str]]],
+        ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
+            if "image" in item:
+                original_image: Image.Image = item["image"].convert("RGB")  # pyright: ignore
+            else:
+                log.error(f"Cannot find image in item {item}")
+                raise ValueError(f"Cannot find image in item {item}")
+            if "text" in item:
+                text_str: str = item["text"]  # pyright: ignore
+            elif "conversations" in item:
+                text_str: str = item["conversations"]  # pyright: ignore
+            else:
+                log.error(f"Cannot find text in item {item}")
+                raise ValueError(f"Cannot find text in item {item}")
+            input_image = self.visual_encoder.preprocessor(original_image, return_tensors="pt")  # pyright: ignore
+            image_tensor: torch.Tensor = input_image["pixel_values"]  # pyright: ignore
+            text: list[dict[str, str]] = json.loads(text_str)
+            text_and_label: tuple[torch.Tensor, torch.Tensor] = self.language_model.transform(
+                text, self.visual_encoder.token_size
+            )
+            return {"image": image_tensor, "text": text_and_label[0], "label": text_and_label[1]}  # pyright: ignore
+
+        return transform
 
     @override
     def forward(

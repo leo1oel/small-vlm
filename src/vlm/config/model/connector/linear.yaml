@@ -1,4 +1,4 @@
 name: linear
 type: linear
 visual_dim: 768
-text_dim: 2048
+text_dim: 3072

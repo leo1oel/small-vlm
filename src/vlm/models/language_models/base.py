@@ -1,5 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import override
 
 import torch
@@ -33,6 +34,9 @@ class LanguageModel(nn.Module, ABC):
         self.pad_token_id: int = self.add_pad_token(self.pad_token)
         self.embeddings: nn.Embedding = self.build_embeddings()
         self.verify_config()
+        self.transform: Callable[[list[dict[str, str]], int], tuple[torch.Tensor, torch.Tensor]] = (
+            self._build_transform()
+        )
 
     def add_image_token(self, image_token: str) -> int:
         log.info(f"[bold green]Adding image token: {image_token}[/bold green]")
@@ -84,6 +88,69 @@ class LanguageModel(nn.Module, ABC):
             f"[bold green]Building hf config for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
         )
         return self._build_hf_config()
+
+    def _build_transform(
+        self,
+    ) -> Callable[[list[dict[str, str]], int], tuple[torch.Tensor, torch.Tensor]]:
+        def transform(
+            text: list[dict[str, str]], image_token_size: int
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            conversation = []
+            for item in text:
+                role = "user" if item["from"] == "human" else "assistant"
+                conversation.append({"role": role, "content": item["value"]})
+
+            formatted_text = self.tokenizer.apply_chat_template(  # pyright: ignore
+                conversation, tokenize=False, add_generation_prompt=False
+            )
+
+            tokens = self.tokenizer(  # pyright: ignore
+                formatted_text,
+                return_tensors="pt",
+                padding=False,
+                truncation=True,
+            )
+
+            input_ids: torch.Tensor = tokens["input_ids"][0]  # pyright: ignore
+            labels: torch.Tensor = input_ids.clone()  # pyright: ignore
+
+            image_token_positions: list[int] = []
+            for i, token_id in enumerate(input_ids):  # pyright: ignore
+                if token_id == self.image_token_id:
+                    image_token_positions.append(i)
+
+            assistant_ranges: list[tuple[int, int]] = []
+            in_assistant: bool = False
+            start_idx: int | None = None
+
+            for i, token_id in enumerate(input_ids):  # pyright: ignore
+                token = self.tokenizer.decode([token_id])  # pyright: ignore
+
+                if "<|assistant|>" in token:
+                    in_assistant = True
+                    start_idx = i
+                elif "<|end|>" in token and in_assistant:
+                    if start_idx is not None:
+                        assistant_ranges.append((start_idx, i))
+                    in_assistant = False
+                    start_idx = None
+
+            for i in range(len(labels)):  # pyright: ignore
+                is_in_assistant_range = any(start <= i <= end for start, end in assistant_ranges)
+                if not is_in_assistant_range:
+                    labels[i] = -100
+
+            expanded_labels = []
+
+            for i, token_id in enumerate(input_ids):  # pyright: ignore
+                expanded_labels.append(labels[i].item())
+
+                if token_id == self.image_token_id:
+                    expanded_labels.extend([-100] * (image_token_size - 1))
+
+            return (input_ids, torch.tensor(expanded_labels))  # pyright: ignore
+
+        return transform
 
     @abstractmethod
     @override
