@@ -11,10 +11,14 @@ log: logging.Logger = logging.getLogger(name=__name__)
 
 
 class Connector(nn.Module, ABC):
-    def __init__(self, config: ConnectorConfig) -> None:
+    def __init__(
+        self, config: ConnectorConfig, image_hidden_size: int, text_hidden_size: int
+    ) -> None:
         super().__init__()
         self.config: ConnectorConfig = config
         self.name: str = self.config.name
+        self.image_hidden_size: int = image_hidden_size
+        self.text_hidden_size: int = text_hidden_size
         self.projection_layer: nn.Module = self.build_projection_layer()
         self.initialize_layers()
 

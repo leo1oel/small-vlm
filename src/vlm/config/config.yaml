@@ -1,8 +1,8 @@
 defaults:
   - mode: train
   - model: small-vlm
-  - trainer: default
-  - dataset: default
+  - trainer: pretrain
+  - dataset: llava-pretrain
   - override hydra/job_logging: rich
   - _self_
 

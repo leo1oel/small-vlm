@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from logging import getLogger
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -7,6 +8,8 @@ from transformers import AutoTokenizer
 from ..config.config_schema import DatasetConfig
 from ..models.model import VLM
 from .datasets import get_dataset
+
+log = getLogger(__name__)
 
 
 def get_collate_fn(
@@ -59,6 +62,14 @@ def get_train_dataloader(cfg: DatasetConfig, model: VLM) -> DataLoader[dict[str,
 
 def get_val_dataloader(cfg: DatasetConfig, model: VLM) -> DataLoader[dict[str, torch.Tensor]]:  # pyright: ignore
     dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "val")
+    collate_fn: Callable[
+        [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
+    ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
+    return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
+
+
+def get_test_dataloader(cfg: DatasetConfig, model: VLM) -> DataLoader[dict[str, torch.Tensor]]:  # pyright: ignore
+    dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "test")
     collate_fn: Callable[
         [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
     ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore

@@ -20,8 +20,10 @@ resume_from_checkpoint: true
 checkpoint_path: None
 wandb_project_name: vlm-training
 log_model_to_wandb: true
-train_visual_encoder: false
-train_language_model: false
-train_connector: true
 num_training_samples: 558000
 batch_size: 128
+
+defaults:
+  - unfreeze: 001
+  - learning_rate: default
+  - weight_decay: default

@@ -1,0 +1,3 @@
+visual_encoder_weight_decay: 0.0
+language_model_weight_decay: 0.0
+connector_weight_decay: 0.0

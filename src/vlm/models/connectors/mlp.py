@@ -7,7 +7,7 @@ from ...config.config_schema import ConnectorConfig
 from .base import Connector
 
 
-class LinearConnector(Connector):
+class MLPConnector(Connector):
     def __init__(
         self, config: ConnectorConfig, image_hidden_size: int, text_hidden_size: int
     ) -> None:
@@ -15,7 +15,11 @@ class LinearConnector(Connector):
 
     @override
     def _build_projection_layer(self) -> nn.Module:
-        return nn.Linear(self.image_hidden_size, self.text_hidden_size)
+        return nn.Sequential(
+            nn.Linear(self.image_hidden_size, self.text_hidden_size),
+            nn.ReLU(),
+            nn.Linear(self.text_hidden_size, self.text_hidden_size),
+        )
 
     @override
     def _initialize_layers(self) -> None:

@@ -18,7 +18,7 @@ class VisualEncoder(nn.Module, ABC):
         self.name: str = self.config.name
         self.hf_name: str = self.config.hf_name
         self.model_type: str = self.config.type
-        self.feature_dim: int | None = getattr(self.config, "feature_dim", None)
+        self.hidden_size: int | None = getattr(self.config, "hidden_size", None)
         self.img_size: int | None = getattr(self.config, "img_size", None)
         self.patch_size: int | None = getattr(self.config, "patch_size", None)
         self.output_layer: int = getattr(self.config, "output_layer", -1)
@@ -67,11 +67,11 @@ class VisualEncoder(nn.Module, ABC):
         pass
 
     def verify_config(self) -> None:
-        model_feature_dim: int | str | None = self.get_config("hidden_size")
+        model_hidden_size: int | str | None = self.get_config("hidden_size")
         model_img_size: int | str | None = self.get_config("image_size")
         model_patch_size: int | str | None = self.get_config("patch_size")
 
-        self.verify_equal("feature_dim", model_feature_dim, self.feature_dim)
+        self.verify_equal("hidden_size", model_hidden_size, self.hidden_size)
         self.verify_equal("img_size", model_img_size, self.img_size)
         self.verify_equal("patch_size", model_patch_size, self.patch_size)
 

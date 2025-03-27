@@ -7,8 +7,9 @@ import pytorch_lightning as pl
 import torch
 from PIL import Image
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
+from torch.nn.parameter import Parameter
 
-from ..config.config_schema import (
+from ..config import (
     ConnectorConfig,
     LLMConfig,
     ModelConfig,
@@ -30,6 +31,8 @@ class VLM(pl.LightningModule):
         self.trainer_config: TrainerConfig = trainer_config
         self.visual_encoder: VisualEncoder = self._build_visual_encoder()
         self.language_model: LanguageModel = self._build_language_model()
+        self.image_hidden_size: int = self.visual_encoder.hidden_size  # pyright: ignore
+        self.text_hidden_size: int = self.language_model.hidden_size  # pyright: ignore
         self.connector: Connector = self._build_connector()
         self.transform: Callable[
             [dict[str, Image.Image | list[dict[str, str]]]],
@@ -74,7 +77,12 @@ class VLM(pl.LightningModule):
             from .connectors import LinearConnector
 
             log.info("[bold green]Building LinearConnector[/bold green]")
-            return LinearConnector(connector_config)
+            return LinearConnector(connector_config, self.image_hidden_size, self.text_hidden_size)
+        elif connector_config.type == "mlp":
+            from .connectors import MLPConnector
+
+            log.info("[bold green]Building MLPConnector[/bold green]")
+            return MLPConnector(connector_config, self.image_hidden_size, self.text_hidden_size)
         else:
             log.error(f"[bold red]Unknown connector type: {connector_config.type}[/bold red]")
             raise ValueError(f"Unknown connector type: {connector_config.type}")
@@ -102,7 +110,7 @@ class VLM(pl.LightningModule):
                 raise ValueError(f"Cannot find text in item {item}")
             input_image = self.visual_encoder.preprocessor(original_image, return_tensors="pt")  # pyright: ignore
             image_tensor: torch.Tensor = input_image["pixel_values"]  # pyright: ignore
-            text: list[dict[str, str]] = json.loads(text_str)
+            text: list[dict[str, str]] = json.loads(text_str.replace("\n", "\\n"))
             text_and_label: tuple[torch.Tensor, torch.Tensor] = self.language_model.transform(
                 text, self.visual_encoder.token_size
             )
@@ -177,4 +185,109 @@ class VLM(pl.LightningModule):
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
-        return get_optimizer(self.trainer_config)
+        no_decay: list[str] = ["bias", "LayerNorm.weight", "layer_norm.weight", "ln_"]
+        param_groups: dict[str, dict[str, list[Parameter]]] = {}
+
+        if self.trainer_config.unfreeze.train_visual_encoder:
+            decay_params: list[Parameter] = [
+                p
+                for n, p in self.visual_encoder.named_parameters()
+                if p.requires_grad and not any(no_decay_name in n for no_decay_name in no_decay)
+            ]
+
+            no_decay_params: list[Parameter] = [
+                p
+                for n, p in self.visual_encoder.named_parameters()
+                if p.requires_grad and any(no_decay_name in n for no_decay_name in no_decay)
+            ]
+
+            if decay_params or no_decay_params:
+                param_groups["visual_encoder"] = {
+                    "decay": decay_params,
+                    "no_decay": no_decay_params,
+                }
+
+        if self.trainer_config.unfreeze.train_language_model:
+            decay_params = [
+                p
+                for n, p in self.language_model.named_parameters()
+                if p.requires_grad and not any(no_decay_name in n for no_decay_name in no_decay)
+            ]
+
+            no_decay_params = [
+                p
+                for n, p in self.language_model.named_parameters()
+                if p.requires_grad and any(no_decay_name in n for no_decay_name in no_decay)
+            ]
+
+            if decay_params or no_decay_params:
+                param_groups["language_model"] = {
+                    "decay": decay_params,
+                    "no_decay": no_decay_params,
+                }
+
+        if self.trainer_config.unfreeze.train_connector:
+            decay_params = [
+                p
+                for n, p in self.connector.named_parameters()
+                if p.requires_grad and not any(no_decay_name in n for no_decay_name in no_decay)
+            ]
+
+            no_decay_params = [
+                p
+                for n, p in self.connector.named_parameters()
+                if p.requires_grad and any(no_decay_name in n for no_decay_name in no_decay)
+            ]
+
+            if decay_params or no_decay_params:
+                param_groups["connector"] = {"decay": decay_params, "no_decay": no_decay_params}
+
+        return get_optimizer(self.trainer_config, param_groups)
+
+    def freeze_visual_encoder(self, freeze: bool = True) -> None:
+        for param in self.visual_encoder.parameters():
+            param.requires_grad = not freeze
+
+    def freeze_language_model(self, freeze: bool = True, except_layer_norm: bool = True) -> None:
+        for name, param in self.language_model.named_parameters():
+            if except_layer_norm and (
+                "layernorm" in name.lower()
+                or "layer_norm" in name.lower()
+                or "ln_" in name.lower()
+                or "embedding" in name.lower()
+            ):
+                param.requires_grad = True
+            else:
+                param.requires_grad = not freeze
+
+    def freeze_connector(self, freeze: bool = True) -> None:
+        for param in self.connector.parameters():
+            param.requires_grad = not freeze
+
+    def set_trainable_params(self, config: dict[str, bool]) -> None:
+        if "visual_encoder" in config:
+            self.freeze_visual_encoder(not config["visual_encoder"])
+
+        if "language_model" in config:
+            self.freeze_language_model(not config["language_model"])
+
+        if "connector" in config:
+            self.freeze_connector(not config["connector"])
+
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.parameters())
+        log.debug(
+            f"[bold yellow]Trainable parameters: {trainable_params:,} ({trainable_params / total_params:.2%} of total)[/bold yellow]"
+        )
+
+        for module_name, module in [
+            ("visual_encoder", self.visual_encoder),
+            ("language_model", self.language_model),
+            ("connector", self.connector),
+        ]:
+            trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+            total = sum(p.numel() for p in module.parameters())
+            if total > 0:
+                log.debug(
+                    f"[bold yellow]  - {module_name}: {trainable:,} ({trainable / total:.2%} of {total:,})[/bold yellow]"
+                )

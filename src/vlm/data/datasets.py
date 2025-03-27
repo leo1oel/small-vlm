@@ -13,6 +13,7 @@ log = getLogger(__name__)
 def get_dataset(cfg: DatasetConfig, model: VLM, split: str) -> Dataset[dict[str, torch.Tensor]]:
     dataset_type: str = cfg.type
     if dataset_type == "huggingface":
+        log.info(f"[bold green]Start loading huggingface dataset:[/bold green] {cfg.name}")
         return load_dataset(cfg.name, split=split, trust_remote_code=True).map(
             model.transform, batched=True
         )  # pyright: ignore

@@ -19,7 +19,7 @@ class LanguageModel(nn.Module, ABC):
         self.name: str = self.config.name
         self.hf_name: str = self.config.hf_name
         self.model_type: str = self.config.type
-        self.hidden_dim: int | None = getattr(self.config, "hidden_dim", None)
+        self.hidden_size: int | None = getattr(self.config, "hidden_size", None)
         self.vocab_size: int | None = getattr(self.config, "vocab_size", None)
         self.max_seq_length: int | None = getattr(self.config, "max_seq_length", None)
         self.output_layer: int = getattr(self.config, "output_layer", -1)
@@ -112,7 +112,8 @@ class LanguageModel(nn.Module, ABC):
             )
 
             input_ids: torch.Tensor = tokens["input_ids"][0]  # pyright: ignore
-            labels: torch.Tensor = input_ids.clone()  # pyright: ignore
+            labels: torch.Tensor = torch.full_like(input_ids, -100)  # pyright: ignore
+            labels[:-1] = input_ids[1:].clone()
 
             image_token_positions: list[int] = []
             for i, token_id in enumerate(input_ids):  # pyright: ignore
@@ -131,7 +132,7 @@ class LanguageModel(nn.Module, ABC):
                     start_idx = i
                 elif "<|end|>" in token and in_assistant:
                     if start_idx is not None:
-                        assistant_ranges.append((start_idx, i))
+                        assistant_ranges.append((start_idx, i - 1))
                     in_assistant = False
                     start_idx = None
 
@@ -163,11 +164,11 @@ class LanguageModel(nn.Module, ABC):
         pass
 
     def verify_config(self) -> None:
-        model_hidden_dim: int | str | None = self.get_config("hidden_size")
+        model_hidden_size: int | str | None = self.get_config("hidden_size")
         model_vocab_size: int | str | None = self.get_config("vocab_size")
         model_max_seq_length: int | str | None = self.get_config("max_position_embeddings")
 
-        self.verify_equal("hidden_dim", model_hidden_dim, self.hidden_dim)
+        self.verify_equal("hidden_size", model_hidden_size, self.hidden_size)
         self.verify_equal("vocab_size", model_vocab_size, self.vocab_size)
         self.verify_equal("max_seq_length", model_max_seq_length, self.max_seq_length)
 

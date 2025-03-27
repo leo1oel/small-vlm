@@ -1,0 +1,45 @@
+defaults:
+  - override hydra/job_logging: rich
+  - _self_
+
+# test_config.yaml
+mode:
+  is_training: true
+
+model:
+  name: test_model
+  visual_encoder:
+    name: test_visual_encoder
+    hf_name: openai/clip-vit-base-patch32
+    type: vit
+    hidden_size: 768
+    img_size: 224
+    patch_size: 32
+    output_layer: -2
+  llm:
+    name: test_llm
+    hf_name: microsoft/Phi-4-mini-instruct
+    type: hf_llm
+    image_token: <image>
+  connector:
+    name: test_connector
+    type: linear
+
+dataset:
+  name: test_dataset
+  hf_name: theblackcat102/llava-pretrain
+  type: huggingface
+  batch_size: 2
+
+trainer:
+  name: test_trainer
+  ignore_index: -100
+  default_root_dir: ./test_checkpoints
+  debug: true
+
+hydra:
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: DEBUG

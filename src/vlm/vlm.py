@@ -6,10 +6,15 @@ import torch
 from lightning.pytorch.utilities.model_summary.model_summary import ModelSummary
 from torch.utils.data import DataLoader
 
-from .config.config_schema import AppConfig, ModelConfig, TrainerConfig, register_configs
-from .data.dataloaders import get_inference_dataloader, get_train_dataloader, get_val_dataloader
-from .inference.inference import inference
-from .models.model import VLM
+from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
+from .data import (
+    get_inference_dataloader,
+    get_test_dataloader,
+    get_train_dataloader,
+    get_val_dataloader,
+)
+from .inference import inference
+from .models import VLM
 from .train.trainer import train
 
 log: logging.Logger = logging.getLogger(name=__name__)
@@ -59,11 +64,24 @@ def vlm(cfg: AppConfig) -> None:
         train_dataloader: DataLoader[dict[str, torch.Tensor]] = get_train_dataloader(
             cfg.dataset, model
         )
+        log.info(
+            f"[bold green]Training data load successfully:[/bold green] {len(train_dataloader)}"
+        )
         val_dataloader: DataLoader[dict[str, torch.Tensor]] = get_val_dataloader(cfg.dataset, model)
-        train(cfg.trainer, model, train_dataloader, val_dataloader)
+        log.info(
+            f"[bold green]Validation data load successfully:[/bold green] {len(val_dataloader)}"
+        )
+        test_dataloader: DataLoader[dict[str, torch.Tensor]] = get_test_dataloader(
+            cfg.dataset, model
+        )
+        log.info(f"[bold green]Test data load successfully:[/bold green] {len(test_dataloader)}")
+        train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
     else:
         inference_dataloader: DataLoader[dict[str, torch.Tensor]] = get_inference_dataloader(
             cfg.dataset, model
+        )
+        log.info(
+            f"[bold green]Inference data load successfully:[/bold green] {len(inference_dataloader)}"
         )
         inference(cfg.trainer, inference_dataloader)
 
