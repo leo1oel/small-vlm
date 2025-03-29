@@ -1,8 +1,8 @@
 name: default
 debug: true
-default_root_dir: ./checkpoints
+default_root_dir: ${hydra:runtime.cwd}
 experiment_name: vlm_training
-max_epochs: 30
+max_epochs: 1
 save_top_k: 3
 monitor_metric: val_loss
 monitor_mode: min
@@ -15,15 +15,15 @@ accumulate_grad_batches: 1
 precision: 16-mixed
 accelerator: gpu
 devices: 1
-strategy: None
+strategy: null
 resume_from_checkpoint: true
-checkpoint_path: None
+checkpoint_path: null
 wandb_project_name: vlm-training
 log_model_to_wandb: true
 num_training_samples: 558000
-batch_size: 128
+batch_size: 16
 
 defaults:
-  - unfreeze: 001
+  - unfreeze: pretrain
   - learning_rate: default
   - weight_decay: default

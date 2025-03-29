@@ -1,6 +1,6 @@
 name: default
 debug: true
-default_root_dir: ./checkpoints
+default_root_dir: ${hydra:runtime.cwd}
 experiment_name: vlm_training
 max_epochs: 30
 save_top_k: 3
@@ -15,9 +15,9 @@ accumulate_grad_batches: 1
 precision: 16-mixed
 accelerator: gpu
 devices: 1
-strategy: None
+strategy: null
 resume_from_checkpoint: true
-checkpoint_path: None
+checkpoint_path: null
 wandb_project_name: vlm-training
 log_model_to_wandb: true
 train_visual_encoder: false

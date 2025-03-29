@@ -1,3 +1,4 @@
+import os
 from collections.abc import Callable
 from logging import getLogger
 
@@ -8,6 +9,8 @@ from transformers import AutoTokenizer
 from ..config.config_schema import DatasetConfig
 from ..models.model import VLM
 from .datasets import get_dataset
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 log = getLogger(__name__)
 
@@ -52,33 +55,53 @@ def get_collate_fn(
     return collate_fn
 
 
-def get_train_dataloader(cfg: DatasetConfig, model: VLM) -> DataLoader[dict[str, torch.Tensor]]:  # pyright: ignore
-    dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "train")
-    collate_fn: Callable[
-        [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
-    ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
-    return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn)
+def get_train_dataloader(
+    cfg: DatasetConfig, model: VLM
+) -> DataLoader[dict[str, torch.Tensor]] | None:  # pyright: ignore
+    try:
+        dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "train")
+        collate_fn: Callable[
+            [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
+        ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
+        return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn)
+    except ValueError:
+        return None
 
 
-def get_val_dataloader(cfg: DatasetConfig, model: VLM) -> DataLoader[dict[str, torch.Tensor]]:  # pyright: ignore
-    dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "val")
-    collate_fn: Callable[
-        [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
-    ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
-    return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
+def get_val_dataloader(
+    cfg: DatasetConfig, model: VLM
+) -> DataLoader[dict[str, torch.Tensor]] | None:  # pyright: ignore
+    try:
+        dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "val")
+        collate_fn: Callable[
+            [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
+        ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
+        return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
+    except ValueError:
+        return None
 
 
-def get_test_dataloader(cfg: DatasetConfig, model: VLM) -> DataLoader[dict[str, torch.Tensor]]:  # pyright: ignore
-    dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "test")
-    collate_fn: Callable[
-        [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
-    ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
-    return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
+def get_test_dataloader(
+    cfg: DatasetConfig, model: VLM
+) -> DataLoader[dict[str, torch.Tensor]] | None:  # pyright: ignore
+    try:
+        dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "test")
+        collate_fn: Callable[
+            [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
+        ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
+        return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
+    except ValueError:
+        return None
 
 
-def get_inference_dataloader(cfg: DatasetConfig, model: VLM) -> DataLoader[dict[str, torch.Tensor]]:  # pyright: ignore
-    dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "test")
-    collate_fn: Callable[
-        [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
-    ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
-    return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
+def get_inference_dataloader(
+    cfg: DatasetConfig, model: VLM
+) -> DataLoader[dict[str, torch.Tensor]] | None:  # pyright: ignore
+    try:
+        dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "test")
+        collate_fn: Callable[
+            [list[tuple[torch.Tensor, torch.Tensor]]], tuple[torch.Tensor, torch.Tensor]
+        ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
+        return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn)
+    except ValueError:
+        return None

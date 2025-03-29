@@ -23,8 +23,11 @@ class MLPConnector(Connector):
 
     @override
     def _initialize_layers(self) -> None:
-        nn.init.normal_(self.projection_layer.weight, mean=0.0, std=0.02)  # pyright: ignore
-        nn.init.zeros_(self.projection_layer.bias)  # pyright: ignore
+        nn.init.normal_(self.projection_layer[0].weight, mean=0.0, std=0.02)  # pyright: ignore
+        nn.init.zeros_(self.projection_layer[0].bias)  # pyright: ignore
+
+        nn.init.normal_(self.projection_layer[2].weight, mean=0.0, std=0.02)  # pyright: ignore
+        nn.init.zeros_(self.projection_layer[2].bias)  # pyright: ignore
 
     @override
     def projection(self, visual_features: torch.Tensor) -> torch.Tensor:

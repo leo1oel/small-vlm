@@ -17,14 +17,14 @@ def train(
     config: TrainerConfig,
     model: VLM,
     train_dataloader: DataLoader[dict[str, torch.Tensor]],
-    val_dataloader: DataLoader[dict[str, torch.Tensor]],
+    val_dataloader: DataLoader[dict[str, torch.Tensor]] | None = None,
     test_dataloader: DataLoader[dict[str, torch.Tensor]] | None = None,
 ) -> str:
     # Setup Wandb logger
     wandb_logger: WandbLogger = WandbLogger(
         name=config.experiment_name,
         project=config.wandb_project_name,
-        save_dir=Path(config.default_root_dir) / "logs",
+        save_dir=Path(config.default_root_dir) / "wandb",
         log_model="all" if config.log_model_to_wandb else False,
     )
 

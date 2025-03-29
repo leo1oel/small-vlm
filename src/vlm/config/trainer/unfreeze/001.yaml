@@ -1,3 +1,0 @@
-train_visual_encoder: false
-train_language_model: false
-train_connector: true

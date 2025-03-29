@@ -61,29 +61,50 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
 def vlm(cfg: AppConfig) -> None:
     model: VLM = load_model(cfg.model, cfg.trainer)
     if cfg.mode.is_training:
-        train_dataloader: DataLoader[dict[str, torch.Tensor]] = get_train_dataloader(
+        train_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_train_dataloader(
             cfg.dataset, model
         )
-        log.info(
-            f"[bold green]Training data load successfully:[/bold green] {len(train_dataloader)}"
-        )
-        val_dataloader: DataLoader[dict[str, torch.Tensor]] = get_val_dataloader(cfg.dataset, model)
-        log.info(
-            f"[bold green]Validation data load successfully:[/bold green] {len(val_dataloader)}"
-        )
-        test_dataloader: DataLoader[dict[str, torch.Tensor]] = get_test_dataloader(
+        if train_dataloader is not None:
+            log.info(
+                f"[bold green]Training data load successfully:[/bold green] {len(train_dataloader)}"
+            )
+        else:
+            log.error("[bold red]Training data load failed[/bold red]")
+            raise ValueError("Training data load failed")
+
+        val_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_val_dataloader(
             cfg.dataset, model
         )
-        log.info(f"[bold green]Test data load successfully:[/bold green] {len(test_dataloader)}")
+        if val_dataloader is not None:
+            log.info(
+                f"[bold green]Validation data load successfully:[/bold green] {len(val_dataloader)}"
+            )
+        else:
+            log.warning("[bold yellow]Validation data load failed[/bold yellow]")
+
+        test_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_test_dataloader(
+            cfg.dataset, model
+        )
+        if test_dataloader is not None:
+            log.info(
+                f"[bold green]Test data load successfully:[/bold green] {len(test_dataloader)}"
+            )
+        else:
+            log.warning("[bold yellow]Test data load failed[/bold yellow]")
+
         train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
     else:
-        inference_dataloader: DataLoader[dict[str, torch.Tensor]] = get_inference_dataloader(
+        inference_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_inference_dataloader(
             cfg.dataset, model
         )
-        log.info(
-            f"[bold green]Inference data load successfully:[/bold green] {len(inference_dataloader)}"
-        )
-        inference(cfg.trainer, inference_dataloader)
+        if inference_dataloader is not None:
+            log.info(
+                f"[bold green]Inference data load successfully:[/bold green] {len(inference_dataloader)}"
+            )
+            inference(cfg.trainer, inference_dataloader)
+        else:
+            log.error("[bold red]Inference data load failed[/bold red]")
+            raise ValueError("Inference data load failed")
 
 
 @hydra.main(version_base=None, config_path=str(config_path), config_name="config")  # pyright: ignore

@@ -2,3 +2,4 @@ name: llava-pretrain
 hf_name: theblackcat102/llava-pretrain
 type: huggingface
 batch_size: 16
+num_proc: None
