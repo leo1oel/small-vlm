@@ -44,9 +44,20 @@ def test_transform_function():
             {"from": "assistant", "value": "This is a blue image."},
             {"from": "human", "value": "Describe the image. \n"},
         ]
+        tokenizer = model.language_model.tokenizer
+        ic(tokenizer)
         ic(test_conversations)
+        conversation = []
+        for item in test_conversations:
+            role = "user" if item["from"] == "human" else "assistant"
+            conversation.append({"role": role, "content": item["value"]})
+        ic(tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True))  # pyright: ignore
+        ic(tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=False))  # pyright: ignore
+        ic(tokenizer.apply_chat_template(  # pyright: ignore
+            conversation, tokenize=True, add_generation_prompt=False, return_tensors="pt", padding=False, truncation=True
+        ))
         transform_text = model.language_model.transform
-        text_and_label = transform_text(test_conversations, 5)
+        text_and_label = transform_text(test_conversations, 5, False)
         ic(text_and_label[0])
         ic(text_and_label[1])
 
@@ -54,5 +65,8 @@ def test_transform_function():
         test_conversations_str = '[{"from": "human", "value": "Describe the image <image>. \n"},{"from": "assistant", "value": "This is a blue image."},{"from": "human", "value": "Describe the image. \n"}]'
         test_item = {"image": test_image, "text": test_conversations_str}
         result = model.transform(test_item)  # pyright: ignore
-        assert result["image"].shape == (1, 3, 224, 224)  # pyright: ignore
+        assert isinstance(result["image"], torch.Tensor)
+        assert isinstance(result["text"], torch.Tensor)
+        assert isinstance(result["label"], torch.Tensor)
+        assert result["image"].shape == (3, 224, 224)  # pyright: ignore
         assert result["label"].shape[0] - result["text"].shape[0] == 4  # pyright: ignore

@@ -1,0 +1,3 @@
+checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-03-30/07-58-33/checkpoints/last.ckpt
+image_path: ["/pasteur2/u/yuhuiz/yiming/small-vlm/example/image.jpg"]
+text: ["Give a short and clear explanation of the subsequent image <image>. \n"]

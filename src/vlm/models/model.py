@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from torch.nn.parameter import Parameter
-
+from omegaconf import OmegaConf
 from ..config import (
     ConnectorConfig,
     LLMConfig,
@@ -27,15 +27,15 @@ log: logging.Logger = logging.getLogger(name=__name__)
 class VLM(pl.LightningModule):
     def __init__(self, model_config: ModelConfig, trainer_config: TrainerConfig) -> None:
         super().__init__()
-        self.model_config: ModelConfig = model_config
-        self.trainer_config: TrainerConfig = trainer_config
+        self.model_config: ModelConfig = OmegaConf.create(model_config) if isinstance(model_config, dict) else model_config  # pyright: ignore
+        self.trainer_config: TrainerConfig = OmegaConf.create(trainer_config) if isinstance(trainer_config, dict) else trainer_config  # pyright: ignore
         self.visual_encoder: VisualEncoder = self._build_visual_encoder()
         self.language_model: LanguageModel = self._build_language_model()
         self.image_hidden_size: int = self.visual_encoder.hidden_size  # pyright: ignore
         self.text_hidden_size: int = self.language_model.hidden_size  # pyright: ignore
         self.connector: Connector = self._build_connector()
         self.transform: Callable[
-            [dict[str, Image.Image | list[dict[str, str]]]],
+            [dict[str, Image.Image | list[dict[str, str]]], bool],
             dict[str, torch.Tensor | list[torch.Tensor]],
         ] = self._build_transform()
         self.example_input_array: tuple[torch.Tensor | list[torch.Tensor], torch.Tensor] = (
@@ -47,7 +47,10 @@ class VLM(pl.LightningModule):
             ).input_ids,  # pyright: ignore
         )
 
-        self.save_hyperparameters(model_config, trainer_config)
+        self.save_hyperparameters({
+            "model_config": OmegaConf.to_container(self.model_config, resolve=True),
+            "trainer_config": OmegaConf.to_container(self.trainer_config, resolve=True)
+        })
 
     def _build_visual_encoder(self) -> VisualEncoder:
         encoder_config: VisualEncoderConfig = self.model_config.visual_encoder
@@ -90,14 +93,19 @@ class VLM(pl.LightningModule):
     def _build_transform(
         self,
     ) -> Callable[
-        [dict[str, Image.Image | list[dict[str, str]]]],
+        [dict[str, Image.Image | list[dict[str, str]]], bool],
         dict[str, torch.Tensor | list[torch.Tensor]],
     ]:
         def transform(
-            item: dict[str, Image.Image | list[dict[str, str]]],
+            item: dict[str, Image.Image | list[dict[str, str]]], generation: bool = False
         ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
             if "image" in item:
-                original_image: Image.Image = item["image"].convert("RGB")  # pyright: ignore
+                if isinstance(item["image"], torch.Tensor):
+                    image_tensor: torch.Tensor = item["image"]
+                elif isinstance(item["image"], Image.Image):
+                    original_image: Image.Image = item["image"].convert("RGB")  # pyright: ignore
+                    input_image = self.visual_encoder.preprocessor(original_image, return_tensors="pt")  # pyright: ignore
+                    image_tensor = input_image["pixel_values"].squeeze(0)  # pyright: ignore
             else:
                 log.error(f"Cannot find image in item {item}")
                 raise ValueError(f"Cannot find image in item {item}")
@@ -108,11 +116,9 @@ class VLM(pl.LightningModule):
             else:
                 log.error(f"Cannot find text in item {item}")
                 raise ValueError(f"Cannot find text in item {item}")
-            input_image = self.visual_encoder.preprocessor(original_image, return_tensors="pt")  # pyright: ignore
-            image_tensor: torch.Tensor = input_image["pixel_values"]  # pyright: ignore
             text: list[dict[str, str]] = json.loads(text_str.replace("\n", "\\n"))
             text_and_label: tuple[torch.Tensor, torch.Tensor] = self.language_model.transform(
-                text, self.visual_encoder.token_size
+                text, self.visual_encoder.token_size, generation
             )
             return {"image": image_tensor, "text": text_and_label[0], "label": text_and_label[1]}  # pyright: ignore
 
@@ -134,51 +140,86 @@ class VLM(pl.LightningModule):
 
         llm: LanguageModel = self.language_model
         connector_output: tuple[torch.Tensor, torch.Tensor] = self.connector(
-            vision_features, texts, llm.embeddings, llm.image_token_id, llm.pad_token_id
+            vision_features, texts, llm.embeddings, llm.image_token_id, llm.pad_token_id, self.model_config.connector.mask_format
         )
         multimodal_features: torch.Tensor = connector_output[0]
+        # Save multimodal features tensor to current directory
         attention_mask: torch.Tensor = connector_output[1]
         log.debug(f"[bold yellow]multimodal_features: {multimodal_features.shape}[/bold yellow]")
         log.debug(f"[bold yellow]attention_mask: {attention_mask.shape}[/bold yellow]")
-        outputs: torch.Tensor = llm(input_embeds=multimodal_features, attention_mask=attention_mask)
+        outputs: torch.Tensor = llm(inputs_embeds=multimodal_features, attention_mask=attention_mask)
         log.debug(f"[bold yellow]outputs: {outputs.shape}[/bold yellow]")
         return outputs
 
     @override
     def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         images: torch.Tensor | list[torch.Tensor] = batch["images"]
-        text: torch.Tensor = batch["text"]
+        texts: torch.Tensor = batch["texts"]
         labels: torch.Tensor = batch["labels"]
+        log.debug(f"[bold yellow]texts: {texts.shape}[/bold yellow]")
+        log.debug(f"[bold yellow]labels: {labels.shape}[/bold yellow]")
 
-        outputs: torch.Tensor = self(images, text)
+        outputs: torch.Tensor = self(images, texts)
         loss: torch.Tensor = self._calculate_loss(outputs, labels)
 
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
 
     @override
     def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         images: torch.Tensor | list[torch.Tensor] = batch["images"]
-        text: torch.Tensor = batch["text"]
+        texts: torch.Tensor = batch["texts"]
         labels: torch.Tensor = batch["labels"]
 
-        outputs: torch.Tensor = self(images, text)
+        outputs: torch.Tensor = self(images, texts)
         loss: torch.Tensor = self._calculate_loss(outputs, labels)
 
-        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log("val_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
 
     @override
     def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
         images: torch.Tensor | list[torch.Tensor] = batch["images"]
-        text: torch.Tensor = batch["text"]
+        texts: torch.Tensor = batch["texts"]
         labels: torch.Tensor = batch["labels"]
 
-        outputs: torch.Tensor = self(images, text)
+        outputs: torch.Tensor = self(images, texts)
         loss: torch.Tensor = self._calculate_loss(outputs, labels)
 
-        self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        self.log("test_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
         return loss
+
+    @override
+    def predict_step(self, batch: list[dict[str, torch.Tensor | str]], batch_idx: int) -> list[str]:
+        device = next(self.parameters()).device
+        image_tensors_list: list[torch.Tensor] = []
+        text_tensors_list: list[torch.Tensor] = []
+        if not isinstance(batch, list):  # pyright: ignore
+            batch = [batch]  # pyright: ignore
+        for item in batch:
+            image: Image.Image | torch.Tensor = item["image"]  # pyright: ignore
+            text: str = item["text"][0]  # pyright: ignore
+            text_template = f'[{{"from": "human", "value": "{text}"}}]'
+            transformed_item = self.transform({"image": image, "text": text_template}, generation=True)  # pyright: ignore
+            image_tensors_list.append(transformed_item["image"].to(device))  # pyright: ignore
+            text_tensors_list.append(transformed_item["text"].to(device))  # pyright: ignore
+
+        image_tensors: torch.Tensor = torch.cat(image_tensors_list, dim=0).to(device)
+        text_tensors: torch.Tensor = torch.stack(text_tensors_list, dim=0).to(device)
+        vision_features = (self.visual_encoder(image_tensors),)
+        llm: LanguageModel = self.language_model
+        connector_output: tuple[torch.Tensor, torch.Tensor] = self.connector(
+            vision_features, text_tensors, llm.embeddings, llm.image_token_id, llm.pad_token_id, self.model_config.connector.mask_format
+        )
+        multimodal_features: torch.Tensor = connector_output[0]
+        # Save multimodal features tensor to current directory
+        attention_mask: torch.Tensor = connector_output[1]
+        outputs: torch.Tensor = llm.language_model.generate(  # pyright: ignore
+            inputs_embeds=multimodal_features, attention_mask=attention_mask, max_new_tokens=20, do_sample=False
+        )
+        predictions: list[str] = [llm.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]  # pyright: ignore
+        return predictions
+
 
     def _calculate_loss(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         return get_loss(self.trainer_config, outputs, labels)

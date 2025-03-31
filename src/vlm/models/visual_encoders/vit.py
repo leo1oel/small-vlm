@@ -41,4 +41,7 @@ class ViTEncoder(VisualEncoder):
     @override
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         outputs = self.visual_encoder(images, output_hidden_states=True)  # pyright: ignore
-        return outputs.hidden_states[self.output_layer]  # pyright: ignore
+        hidden_states: torch.Tensor = outputs.hidden_states[self.output_layer]  # pyright: ignore
+        if not self.config.use_cls_token:
+            return hidden_states[:, 1:].contiguous()  # pyright: ignore
+        return hidden_states  # pyright: ignore

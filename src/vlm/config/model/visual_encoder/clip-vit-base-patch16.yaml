@@ -5,3 +5,4 @@ hidden_size: 768
 img_size: 224
 patch_size: 16
 output_layer: -2
+use_cls_token: False

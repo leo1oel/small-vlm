@@ -4,6 +4,9 @@ formatters:
     format: '%(message)s'
   detailed:
     format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
+filters:
+  rank_zero_filter:
+    (): 'vlm.utils.logging_utils.RankZeroFilter'
 handlers:
   console:
     class: rich.logging.RichHandler
@@ -13,6 +16,8 @@ handlers:
     show_time: true
     show_level: true
     show_path: true
+    filters:
+      - rank_zero_filter
   file:
     class: logging.FileHandler
     formatter: detailed

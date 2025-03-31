@@ -34,7 +34,7 @@ class LanguageModel(nn.Module, ABC):
         self.pad_token_id: int = self.add_pad_token(self.pad_token)
         self.embeddings: nn.Embedding = self.build_embeddings()
         self.verify_config()
-        self.transform: Callable[[list[dict[str, str]], int], tuple[torch.Tensor, torch.Tensor]] = (
+        self.transform: Callable[[list[dict[str, str]], int, bool], tuple[torch.Tensor, torch.Tensor]] = (
             self._build_transform()
         )
 
@@ -49,6 +49,7 @@ class LanguageModel(nn.Module, ABC):
         log.info(f"[bold green]Adding pad token: {pad_token}[/bold green]")
         self.tokenizer.add_special_tokens({"pad_token": pad_token})  # pyright: ignore
         pad_token_id: int = self.tokenizer.convert_tokens_to_ids(pad_token)  # pyright: ignore
+        self.language_model.resize_token_embeddings(len(self.tokenizer))  # pyright: ignore
         return pad_token_id  # pyright: ignore
 
     @abstractmethod
@@ -91,27 +92,19 @@ class LanguageModel(nn.Module, ABC):
 
     def _build_transform(
         self,
-    ) -> Callable[[list[dict[str, str]], int], tuple[torch.Tensor, torch.Tensor]]:
+    ) -> Callable[[list[dict[str, str]], int, bool], tuple[torch.Tensor, torch.Tensor]]:
         def transform(
-            text: list[dict[str, str]], image_token_size: int
+            text: list[dict[str, str]], image_token_size: int, generation: bool = False
         ) -> tuple[torch.Tensor, torch.Tensor]:
             conversation = []
             for item in text:
                 role = "user" if item["from"] == "human" else "assistant"
                 conversation.append({"role": role, "content": item["value"]})
-
-            formatted_text = self.tokenizer.apply_chat_template(  # pyright: ignore
-                conversation, tokenize=False, add_generation_prompt=False
-            )
-
-            tokens = self.tokenizer(  # pyright: ignore
-                formatted_text,
-                return_tensors="pt",
-                padding=False,
-                truncation=True,
-            )
-
-            input_ids: torch.Tensor = tokens["input_ids"][0]  # pyright: ignore
+            input_ids: torch.Tensor = self.tokenizer.apply_chat_template(  # pyright: ignore
+                conversation, tokenize=True, add_generation_prompt=generation, return_tensors="pt", padding=False, truncation=True
+            )[0]
+            print(self.tokenizer.apply_chat_template(  # pyright: ignore
+                conversation, tokenize=False, add_generation_prompt=generation, padding=False, truncation=True))
             labels: torch.Tensor = torch.full_like(input_ids, -100)  # pyright: ignore
             labels[:-1] = input_ids[1:].clone()
 
@@ -158,7 +151,7 @@ class LanguageModel(nn.Module, ABC):
     def forward(
         self,
         input_ids: None | torch.Tensor = None,
-        input_embeds: None | torch.Tensor = None,
+        inputs_embeds: None | torch.Tensor = None,
         attention_mask: None | torch.Tensor = None,
     ) -> torch.Tensor:
         pass

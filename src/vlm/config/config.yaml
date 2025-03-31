@@ -1,7 +1,9 @@
 defaults:
+  - cfg
   - mode: train
   - model: small-vlm
   - trainer: pretrain
+  - inference: default
   - dataset: llava-pretrain
   - override hydra/job_logging: rich
   - _self_
@@ -11,4 +13,4 @@ hydra:
     chdir: true
   job_logging:
     root:
-      level: DEBUG
+      level: INFO

@@ -10,6 +10,8 @@ from torch.utils.data import DataLoader
 from ..config import TrainerConfig
 from ..models import VLM
 
+torch.set_float32_matmul_precision('high')
+
 log = getLogger(__name__)
 
 
@@ -24,20 +26,28 @@ def train(
     wandb_logger: WandbLogger = WandbLogger(
         name=config.experiment_name,
         project=config.wandb_project_name,
-        save_dir=Path(config.default_root_dir) / "wandb",
         log_model="all" if config.log_model_to_wandb else False,
     )
+    wandb_logger.watch(model)
 
     callbacks = []
 
     # Checkpoint callback
+    has_val_dataloader = val_dataloader is not None
+
+    monitor_metric = config.monitor_metric
+    if not has_val_dataloader and "val_" in monitor_metric:
+        monitor_metric = monitor_metric.replace("val_", "train_")
+        log.warning(f"[bold yellow]No validation dataloader provided. Falling back to monitor {monitor_metric}[/bold yellow]")
+
     checkpoint_callback = ModelCheckpoint(
         dirpath=Path(config.default_root_dir) / "checkpoints",
-        filename="{epoch:02d}-{val_loss:.4f}",
-        save_top_k=config.save_top_k,
-        monitor=config.monitor_metric,
+        monitor=monitor_metric,
         mode=config.monitor_mode,
         save_last=True,
+        every_n_epochs=config.save_every_n_epochs,
+        every_n_train_steps=config.save_every_n_train_steps,
+        verbose=True,
     )
     callbacks.append(checkpoint_callback)
 
@@ -67,28 +77,20 @@ def train(
         "val_check_interval": config.val_check_interval,
         "gradient_clip_val": config.gradient_clip_val,
         "accumulate_grad_batches": config.accumulate_grad_batches,
+        "accelerator": config.accelerator,
+        "devices": config.devices,
+        "strategy": config.strategy,
+        "precision": config.precision,
+        "deterministic": True,
     }
-
-    if hasattr(config, "precision") and config.precision:
-        trainer_kwargs["precision"] = config.precision
-
-    if hasattr(config, "devices") and config.devices:
-        trainer_kwargs["devices"] = config.devices
-
-    if hasattr(config, "accelerator") and config.accelerator:
-        trainer_kwargs["accelerator"] = config.accelerator
-
-    if config.accelerator == "ddp" and hasattr(config, "strategy"):
-        trainer_kwargs["strategy"] = config.strategy  # pyright: ignore
 
     if config.debug:
         trainer_kwargs.update(
             {
                 "fast_dev_run": True,
-                "limit_train_batches": 0.01,
-                "limit_val_batches": 0.01,
-                "num_sanity_val_steps": 2,
-                "profiler": "simple",
+                "profiler": "advanced",
+                "overfit_batches": 0.01,
+                "detect_anomaly": True,
             }
         )
 
@@ -123,8 +125,10 @@ def train(
     log.info(
         f"[bold green]Best model checkpoint:[/bold green] {checkpoint_callback.best_model_path}"
     )
-    log.info(
-        f"[bold green]Best validation score:[/bold green] {checkpoint_callback.best_model_score:.4f}"
-    )
+    best_score = checkpoint_callback.best_model_score
+    if best_score is not None:
+        log.info(f"[bold green]Best validation score:[/bold green] {best_score:.4f}")
+    else:
+        log.info("[bold red]Best validation score is not available.[/bold red]")
 
     return checkpoint_callback.best_model_path  # pyright: ignore

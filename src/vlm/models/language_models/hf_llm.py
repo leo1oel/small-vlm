@@ -42,9 +42,9 @@ class HFLLMLanguageModel(LanguageModel):
         #     )
         #     log.info("[bold green]Successfully loaded model with sdpa[/bold green]")
         self.language_model: AutoModel = AutoModelForCausalLM.from_pretrained(
-            self.hf_name, trust_remote_code=True, attn_implementation="sdpa"
+            self.hf_name, trust_remote_code=True
         )
-        log.info("[bold green]Successfully loaded model with sdpa[/bold green]")
+        log.info("[bold green]Successfully loaded model[/bold green]")
         return self.language_model  # pyright: ignore
 
     @override
@@ -58,14 +58,15 @@ class HFLLMLanguageModel(LanguageModel):
     def forward(
         self,
         input_ids: None | torch.Tensor = None,
-        input_embeds: None | torch.Tensor = None,
+        inputs_embeds: None | torch.Tensor = None,
         attention_mask: None | torch.Tensor = None,
     ) -> torch.Tensor:
-        if input_embeds is not None:
-            outputs = self.language_model(inputs_embeds=input_embeds, attention_mask=attention_mask)  # pyright: ignore
+
+        if inputs_embeds is not None:
+            outputs = self.language_model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)  # pyright: ignore
         elif input_ids is not None:
             outputs = self.language_model(input_ids, attention_mask=attention_mask)  # pyright: ignore
         else:
-            log.error("[bold red]Either input_ids or input_embeds must be provided[/bold red]")
-            raise ValueError("Either input_ids or input_embeds must be provided")
+            log.error("[bold red]Either input_ids or inputs_embeds must be provided[/bold red]")
+            raise ValueError("Either input_ids or inputs_embeds must be provided")
         return outputs[0]  # pyright: ignore
