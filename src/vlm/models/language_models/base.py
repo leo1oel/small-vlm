@@ -34,9 +34,9 @@ class LanguageModel(nn.Module, ABC):
         self.pad_token_id: int = self.add_pad_token(self.pad_token)
         self.embeddings: nn.Embedding = self.build_embeddings()
         self.verify_config()
-        self.transform: Callable[[list[dict[str, str]], int, bool], tuple[torch.Tensor, torch.Tensor]] = (
-            self._build_transform()
-        )
+        self.transform: Callable[
+            [list[dict[str, str]], int, bool], tuple[torch.Tensor, torch.Tensor]
+        ] = self._build_transform()
 
     def add_image_token(self, image_token: str) -> int:
         log.info(f"[bold green]Adding image token: {image_token}[/bold green]")
@@ -101,10 +101,22 @@ class LanguageModel(nn.Module, ABC):
                 role = "user" if item["from"] == "human" else "assistant"
                 conversation.append({"role": role, "content": item["value"]})
             input_ids: torch.Tensor = self.tokenizer.apply_chat_template(  # pyright: ignore
-                conversation, tokenize=True, add_generation_prompt=generation, return_tensors="pt", padding=False, truncation=True
+                conversation,
+                tokenize=True,
+                add_generation_prompt=generation,
+                return_tensors="pt",
+                padding=False,
+                truncation=True,
             )[0]
-            print(self.tokenizer.apply_chat_template(  # pyright: ignore
-                conversation, tokenize=False, add_generation_prompt=generation, padding=False, truncation=True))
+            print(
+                self.tokenizer.apply_chat_template(  # pyright: ignore
+                    conversation,
+                    tokenize=False,
+                    add_generation_prompt=generation,
+                    padding=False,
+                    truncation=True,
+                )
+            )
             labels: torch.Tensor = torch.full_like(input_ids, -100)  # pyright: ignore
             labels[:-1] = input_ids[1:].clone()
 

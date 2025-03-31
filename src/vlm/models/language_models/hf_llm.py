@@ -61,9 +61,10 @@ class HFLLMLanguageModel(LanguageModel):
         inputs_embeds: None | torch.Tensor = None,
         attention_mask: None | torch.Tensor = None,
     ) -> torch.Tensor:
-
         if inputs_embeds is not None:
-            outputs = self.language_model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)  # pyright: ignore
+            outputs = self.language_model(  # pyright: ignore
+                inputs_embeds=inputs_embeds, attention_mask=attention_mask
+            )
         elif input_ids is not None:
             outputs = self.language_model(input_ids, attention_mask=attention_mask)  # pyright: ignore
         else:

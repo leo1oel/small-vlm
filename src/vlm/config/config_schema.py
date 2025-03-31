@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING  # pyright: ignore
 
+
 @dataclass
 class VisualEncoderConfig:
     name: str = MISSING

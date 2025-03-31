@@ -50,9 +50,8 @@ class Connector(nn.Module, ABC):
         embeddings: nn.Embedding,
         image_token_id: int | None,
         pad_token_id: int,
-        mask_format: str = "2d"
+        mask_format: str = "2d",
     ) -> tuple[torch.Tensor, torch.Tensor]:
-
         batch_size, _ = texts.shape
         padding_mask = (texts != pad_token_id).bool()  # [batch_size, seq_len]
         need_complex_mask = mask_format in ["4d", "3d"]
@@ -63,21 +62,13 @@ class Connector(nn.Module, ABC):
             batch_projected = self.projection(
                 batch_visual_features.view(-1, batch_visual_features.size(-1))
             )
-            batch_projected = batch_projected.view(
-                batch_size, -1, batch_projected.size(-1)
-            )
-            projected_visual_features = [
-                batch_projected[i] for i in range(batch_size)
-            ]
+            batch_projected = batch_projected.view(batch_size, -1, batch_projected.size(-1))
+            projected_visual_features = [batch_projected[i] for i in range(batch_size)]
         else:
             projected_visual_features = []
             for _batch_idx, visual_feature in enumerate(visual_features):
-                flattened_features: torch.Tensor = visual_feature.view(
-                    -1, visual_feature.size(-1)
-                )
-                projected: torch.Tensor = self.projection(
-                    flattened_features
-                )
+                flattened_features: torch.Tensor = visual_feature.view(-1, visual_feature.size(-1))
+                projected: torch.Tensor = self.projection(flattened_features)
                 projected_visual_features.append(projected)
 
         text_embeddings: torch.Tensor = embeddings(texts)  # [batch_size, seq_len, text_dim]
@@ -195,9 +186,7 @@ class Connector(nn.Module, ABC):
             padded_embeddings[i, :length] = embed
 
         if mask_format == "2d":
-            padded_mask = torch.zeros(
-                batch_size, max_length, device=texts.device, dtype=torch.bool
-            )
+            padded_mask = torch.zeros(batch_size, max_length, device=texts.device, dtype=torch.bool)
             for i, length in enumerate(valid_lengths_list):
                 padded_mask[i, :length] = True
             return padded_embeddings, padded_mask

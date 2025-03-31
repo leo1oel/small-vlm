@@ -4,8 +4,9 @@ from pathlib import Path
 import hydra
 import torch
 from omegaconf import OmegaConf
-from torch.utils.data import DataLoader
 from pytorch_lightning import seed_everything
+from torch.utils.data import DataLoader
+
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
 from .data import (
     get_inference_dataloader,
@@ -20,6 +21,7 @@ from .train.trainer import train
 log: logging.Logger = logging.getLogger(name=__name__)
 config_path: Path = Path(__file__).resolve().parent / "config"
 seed_everything(42, workers=True)
+
 
 def print_model(cfg: ModelConfig) -> None:
     model_name: str = cfg.name
@@ -59,7 +61,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
 def vlm(cfg: AppConfig) -> None:
     if cfg.mode.is_training:
         model: VLM = load_model(cfg.model, cfg.trainer)
-        log.info(f"[bold red]Training mode[/bold red]")
+        log.info("[bold red]Training mode[/bold red]")
         train_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_train_dataloader(
             cfg.dataset, model
         )
@@ -93,19 +95,22 @@ def vlm(cfg: AppConfig) -> None:
 
         train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
     else:
-        log.info(f"[bold red]Inference mode[/bold red]")
+        log.info("[bold red]Inference mode[/bold red]")
         inference_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_inference_dataloader(
             cfg.inference
         )
         inference(cfg.inference, inference_dataloader)
 
+
 def validate_config(cfg: AppConfig) -> None:
     OmegaConf.to_container(cfg, throw_on_missing=True)
+
 
 @hydra.main(version_base=None, config_path=str(config_path), config_name="config")  # pyright: ignore
 def main(cfg: AppConfig) -> None:
     validate_config(cfg)
     vlm(cfg)
+
 
 register_configs()
 

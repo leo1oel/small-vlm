@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from ..config import TrainerConfig
 from ..models import VLM
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision("high")
 
 log = getLogger(__name__)
 
@@ -38,7 +38,9 @@ def train(
     monitor_metric = config.monitor_metric
     if not has_val_dataloader and "val_" in monitor_metric:
         monitor_metric = monitor_metric.replace("val_", "train_")
-        log.warning(f"[bold yellow]No validation dataloader provided. Falling back to monitor {monitor_metric}[/bold yellow]")
+        log.warning(
+            f"[bold yellow]No validation dataloader provided. Falling back to monitor {monitor_metric}[/bold yellow]"
+        )
 
     checkpoint_callback = ModelCheckpoint(
         dirpath=Path(config.default_root_dir) / "checkpoints",

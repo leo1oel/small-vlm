@@ -1,9 +1,11 @@
+import logging
+
 import torch
 
 from ..config.config_schema import TrainerConfig
-import logging
 
 log = logging.getLogger(__name__)
+
 
 def get_loss(
     trainer_config: TrainerConfig, outputs: torch.Tensor, labels: torch.Tensor

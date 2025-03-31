@@ -53,9 +53,16 @@ def test_transform_function():
             conversation.append({"role": role, "content": item["value"]})
         ic(tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True))  # pyright: ignore
         ic(tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=False))  # pyright: ignore
-        ic(tokenizer.apply_chat_template(  # pyright: ignore
-            conversation, tokenize=True, add_generation_prompt=False, return_tensors="pt", padding=False, truncation=True
-        ))
+        ic(
+            tokenizer.apply_chat_template(  # pyright: ignore
+                conversation,
+                tokenize=True,
+                add_generation_prompt=False,
+                return_tensors="pt",
+                padding=False,
+                truncation=True,
+            )
+        )
         transform_text = model.language_model.transform
         text_and_label = transform_text(test_conversations, 5, False)
         ic(text_and_label[0])

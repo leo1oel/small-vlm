@@ -3,9 +3,10 @@ from collections.abc import Callable
 from logging import getLogger
 
 import torch
+from datasets import load_dataset  # pyright: ignore
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
-from datasets import load_dataset  # pyright: ignore
+
 from ..config.config_schema import DatasetConfig, InferenceConfig
 from ..models.model import VLM
 from .datasets import get_dataset
@@ -67,10 +68,18 @@ def get_train_dataloader(
 ) -> DataLoader[dict[str, torch.Tensor]] | None:  # pyright: ignore
     try:
         dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "train")
-        collate_fn: Callable[
-            [list[dict[str, torch.Tensor]]], dict[str, torch.Tensor]
-        ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
-        return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn, num_workers=cfg.num_workers, pin_memory=True, persistent_workers=True,)
+        collate_fn: Callable[[list[dict[str, torch.Tensor]]], dict[str, torch.Tensor]] = (
+            get_collate_fn(model.language_model.tokenizer)
+        )  # pyright: ignore
+        return DataLoader(
+            dataset,
+            batch_size=cfg.batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+            num_workers=cfg.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+        )
     except ValueError:
         return None
 
@@ -80,10 +89,18 @@ def get_val_dataloader(
 ) -> DataLoader[dict[str, torch.Tensor]] | None:  # pyright: ignore
     try:
         dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "val")
-        collate_fn: Callable[
-            [list[dict[str, torch.Tensor]]], dict[str, torch.Tensor]
-        ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
-        return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=cfg.num_workers, pin_memory=True, persistent_workers=True,)
+        collate_fn: Callable[[list[dict[str, torch.Tensor]]], dict[str, torch.Tensor]] = (
+            get_collate_fn(model.language_model.tokenizer)
+        )  # pyright: ignore
+        return DataLoader(
+            dataset,
+            batch_size=cfg.batch_size,
+            shuffle=False,
+            collate_fn=collate_fn,
+            num_workers=cfg.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+        )
     except ValueError:
         return None
 
@@ -93,19 +110,36 @@ def get_test_dataloader(
 ) -> DataLoader[dict[str, torch.Tensor]] | None:  # pyright: ignore
     try:
         dataset: Dataset[dict[str, torch.Tensor]] = get_dataset(cfg, model, "test")
-        collate_fn: Callable[
-            [list[dict[str, torch.Tensor]]], dict[str, torch.Tensor]
-        ] = get_collate_fn(model.language_model.tokenizer)  # pyright: ignore
-        return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=cfg.num_workers, pin_memory=True, persistent_workers=True,)
+        collate_fn: Callable[[list[dict[str, torch.Tensor]]], dict[str, torch.Tensor]] = (
+            get_collate_fn(model.language_model.tokenizer)
+        )  # pyright: ignore
+        return DataLoader(
+            dataset,
+            batch_size=cfg.batch_size,
+            shuffle=False,
+            collate_fn=collate_fn,
+            num_workers=cfg.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+        )
     except ValueError:
         return None
 
 
-def get_inference_dataloader(
-    cfg: InferenceConfig
-) -> DataLoader[dict[str, torch.Tensor]] | None:  # pyright: ignore
+def get_inference_dataloader(cfg: InferenceConfig) -> DataLoader[dict[str, torch.Tensor]] | None:  # pyright: ignore
     try:
-        dataset: Dataset[dict[str, torch.Tensor]] = load_dataset(cfg.hf_name, split=cfg.split, trust_remote_code=True)  # pyright: ignore
-        return DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers, pin_memory=True, persistent_workers=True,)
+        dataset: Dataset[dict[str, torch.Tensor]] = load_dataset(
+            cfg.hf_name,  # pyright: ignore
+            split=cfg.split,
+            trust_remote_code=True,
+        )
+        return DataLoader(
+            dataset,
+            batch_size=cfg.batch_size,
+            shuffle=False,
+            num_workers=cfg.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+        )
     except (ValueError, TypeError):
         return None
