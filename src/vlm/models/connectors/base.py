@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import override
+from typing import NamedTuple, cast, override
 
 import torch
 import torch.nn as nn
@@ -10,6 +10,15 @@ from ...config.config_schema import ConnectorConfig
 log: logging.Logger = logging.getLogger(name=__name__)
 
 
+class ProcessedVisualFeatures(NamedTuple):
+    features: list[torch.Tensor]
+
+
+class ForwardOutput(NamedTuple):
+    embeddings: torch.Tensor
+    attention_mask: torch.Tensor
+
+
 class Connector(nn.Module, ABC):
     def __init__(
         self, config: ConnectorConfig, image_hidden_size: int, text_hidden_size: int
@@ -17,6 +26,7 @@ class Connector(nn.Module, ABC):
         super().__init__()
         self.config: ConnectorConfig = config
         self.name: str = self.config.name
+
         self.image_hidden_size: int = image_hidden_size
         self.text_hidden_size: int = text_hidden_size
         self.projection_layer: nn.Module = self.build_projection_layer()
@@ -27,9 +37,6 @@ class Connector(nn.Module, ABC):
         pass
 
     def build_projection_layer(self) -> nn.Module:
-        log.info(
-            f"[bold green]Building projection layer for[/bold green] [bold blue] {self.name} [/bold blue] [bold green]connector[/bold green]"
-        )
         return self._build_projection_layer()
 
     @abstractmethod
@@ -37,183 +44,263 @@ class Connector(nn.Module, ABC):
         pass
 
     def initialize_layers(self) -> None:
-        log.info(
-            f"[bold green]Initializing layers for[/bold green] [bold blue] {self.name} [/bold blue] [bold green]connector[/bold green]"
-        )
         self._initialize_layers()
+
+    @abstractmethod
+    def projection(self, visual_features: torch.Tensor) -> torch.Tensor:
+        pass
+
+    def _process_visual_features(
+        self, visual_features: tuple[torch.Tensor, ...], batch_size: int
+    ) -> ProcessedVisualFeatures:
+        # Handle batch case
+        if (
+            len(visual_features) == 1 and visual_features[0].size(0) == batch_size
+        ):  # visual features: ([batch_size, image_tokens_num, image_feature_dim])
+            batch_visual = visual_features[0]
+            batch_flat = batch_visual.view(
+                -1, batch_visual.size(-1)
+            )  # [batch_size * image_tokens_num, image_feature_dim]
+            batch_projected = self.projection(
+                batch_flat
+            )  # [batch_size * image_tokens_num, text_feature_dim]
+            batch_projected = batch_projected.view(
+                batch_size, -1, batch_projected.size(-1)
+            )  # [batch_size, image_tokens_num, text_feature_dim]
+            return ProcessedVisualFeatures([batch_projected[i] for i in range(batch_size)])
+
+        # ([image_num1, image_tokens_num, image_feature_dim], [image_num2, image_tokens_num, image_feature_dim], ...)
+        # Handle individual case
+        return ProcessedVisualFeatures(
+            [self.projection(vf.view(-1, vf.size(-1))) for vf in visual_features]
+        )  # [[image_num1 * image_tokens_num, text_feature_dim], [image_num2 * image_tokens_num, text_feature_dim], ...]
+
+    def _create_causal_mask(self, size: int, device: torch.device) -> torch.Tensor:
+        """Create a causal (lower triangular) attention mask."""
+        return torch.tril(torch.ones(size, size, device=device))
+
+    def _process_no_image_case(
+        self, valid_embeddings: torch.Tensor, need_complex_mask: bool, device: torch.device
+    ) -> tuple[torch.Tensor, torch.Tensor | None, int]:
+        """Process a sequence with no image tokens."""
+        valid_length = valid_embeddings.size(0)
+        mask = self._create_causal_mask(valid_length, device) if need_complex_mask else None
+        return valid_embeddings, mask, valid_length
+
+    def _create_fusion_mask(
+        self, chunks: list[torch.Tensor], is_visual: list[bool], device: torch.device
+    ) -> torch.Tensor:
+        """
+        Create attention mask for fused chunks.
+
+        Creates a mask where:
+        - Text chunks have causal attention
+        - Visual chunks have full self-attention
+        - Later chunks can attend to earlier chunks
+        """
+        chunk_sizes = [chunk.size(0) for chunk in chunks]
+        chunk_starts = [sum(chunk_sizes[:i]) for i in range(len(chunks))]
+        total_length = sum(chunk_sizes)
+
+        mask = torch.zeros(total_length, total_length, device=device)
+
+        # Set attention patterns for each chunk
+        for i, (size, start, is_vis) in enumerate(
+            zip(chunk_sizes, chunk_starts, is_visual, strict=False)
+        ):
+            # Set diagonal blocks
+            if is_vis:
+                # Visual chunks have full self-attention
+                mask[start : start + size, start : start + size] = 1.0
+            else:
+                # Text chunks have causal attention
+                mask[start : start + size, start : start + size] = self._create_causal_mask(
+                    size, device
+                )
+
+            # Allow attention to previous chunks
+            if i > 0:
+                mask[start : start + size, :start] = 1.0
+
+        return mask
+
+    def _fuse_with_images(
+        self,
+        valid_embeddings: torch.Tensor,
+        visual_features: torch.Tensor,
+        img_positions: torch.Tensor,
+        need_complex_mask: bool,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, int]:
+        """
+        Fuse text embeddings with visual features at image token positions.
+
+        Creates an interleaved sequence of text and visual embeddings.
+        """
+        valid_length = valid_embeddings.size(0)
+        num_img_tokens = len(img_positions)
+
+        # Split text embeddings at image positions
+        text_chunks: list[torch.Tensor] = []
+        start_idx = 0
+
+        for img_pos in img_positions:
+            img_pos = int(img_pos.item())
+            if img_pos > start_idx:
+                text_chunks.append(valid_embeddings[start_idx:img_pos])
+            start_idx = img_pos + 1
+
+        # Add final text chunk if exists
+        if start_idx < valid_length:
+            text_chunks.append(valid_embeddings[start_idx:valid_length])
+
+        # Divide visual features among image tokens
+        visual_per_token = visual_features.size(0) // num_img_tokens
+        visual_chunks = [
+            visual_features[i * visual_per_token : (i + 1) * visual_per_token]
+            for i in range(num_img_tokens)
+        ]
+
+        # Create is_visual flags list
+        fused_chunks: list[torch.Tensor] = []
+        is_visual: list[bool] = []
+
+        # Interleave text and visual chunks
+        for i in range(max(len(text_chunks), len(visual_chunks))):
+            if i < len(text_chunks):
+                fused_chunks.append(text_chunks[i])
+                is_visual.append(False)
+            if i < len(visual_chunks):
+                fused_chunks.append(visual_chunks[i])
+                is_visual.append(True)
+
+        # Concatenate all chunks
+        fused_embeddings = torch.cat(fused_chunks, dim=0)
+        fused_length = fused_embeddings.size(0)
+
+        # Create attention mask if needed
+        mask: torch.Tensor | None = None
+        if need_complex_mask:
+            mask = self._create_fusion_mask(fused_chunks, is_visual, device)
+
+        return fused_embeddings, mask, fused_length
+
+    def _process_batch_item(
+        self,
+        text: torch.Tensor,
+        mask: torch.Tensor,
+        embeddings: torch.Tensor,
+        visual_features: torch.Tensor,
+        image_token_id: int,
+        need_complex_mask: bool,
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, int]:
+        # Extract valid portions
+        valid_length = int(mask.sum().item())
+        valid_text = text[:valid_length]
+        valid_embeddings = embeddings[:valid_length]
+
+        # Find image token positions
+        img_positions = (valid_text == image_token_id).nonzero(as_tuple=True)[0]
+
+        # Process based on whether image tokens exist
+        if len(img_positions) == 0:
+            return self._process_no_image_case(valid_embeddings, need_complex_mask, device)
+
+        return self._fuse_with_images(
+            valid_embeddings, visual_features, img_positions, need_complex_mask, device
+        )
 
     @override
     def forward(
         self,
         visual_features: tuple[torch.Tensor, ...],
         texts: torch.Tensor,
-        embeddings: nn.Embedding,
-        image_token_id: int | None,
+        embeddings: nn.Module,
+        image_token_id: int,
         pad_token_id: int,
         mask_format: str = "2d",
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> ForwardOutput:
         batch_size, _ = texts.shape
+        device: torch.device = texts.device
+
+        # Create padding mask and determine mask complexity
         padding_mask = (texts != pad_token_id).bool()  # [batch_size, seq_len]
         need_complex_mask = mask_format in ["4d", "3d"]
 
-        if len(visual_features) == 1 and visual_features[0].size(0) == batch_size:
-            batch_visual_features: torch.Tensor = visual_features[0]
-            projected_visual_features: list[torch.Tensor] = []
-            batch_projected = self.projection(
-                batch_visual_features.view(-1, batch_visual_features.size(-1))
-            )
-            batch_projected = batch_projected.view(batch_size, -1, batch_projected.size(-1))
-            projected_visual_features = [batch_projected[i] for i in range(batch_size)]
-        else:
-            projected_visual_features = []
-            for _batch_idx, visual_feature in enumerate(visual_features):
-                flattened_features: torch.Tensor = visual_feature.view(-1, visual_feature.size(-1))
-                projected: torch.Tensor = self.projection(flattened_features)
-                projected_visual_features.append(projected)
+        # Process visual features
+        projected_visual = self._process_visual_features(visual_features, batch_size).features
 
-        text_embeddings: torch.Tensor = embeddings(texts)  # [batch_size, seq_len, text_dim]
+        # Get text embeddings
+        text_embeddings = embeddings(texts)  # [batch_size, seq_len, text_dim]
 
+        # Process each item in batch
         fused_embeddings_list: list[torch.Tensor] = []
-        attention_mask_list: list[torch.Tensor] = []
+        attention_mask_list: list[torch.Tensor | None] = []
         valid_lengths_list: list[int] = []
 
         for batch_idx in range(batch_size):
-            current_text: torch.Tensor = texts[batch_idx]
-            current_padding_mask: torch.Tensor = padding_mask[batch_idx]
-            current_text_embeddings: torch.Tensor = text_embeddings[batch_idx]
+            result: tuple[torch.Tensor, torch.Tensor | None, int] = self._process_batch_item(
+                texts[batch_idx],
+                padding_mask[batch_idx],
+                text_embeddings[batch_idx],
+                projected_visual[batch_idx],
+                image_token_id,
+                need_complex_mask,
+                device,
+            )
+            embedding: torch.Tensor = result[0]
+            mask: torch.Tensor | None = result[1]
+            length: int = result[2]
 
-            valid_length: int = int(current_padding_mask.sum().item())
-
-            valid_text: torch.Tensor = current_text[:valid_length]
-            valid_text_embeddings: torch.Tensor = current_text_embeddings[:valid_length]
-
-            image_token_positions: torch.Tensor = (valid_text == image_token_id).nonzero(
-                as_tuple=True
-            )[0]
-            num_image_tokens: int = len(image_token_positions)
-
-            if num_image_tokens == 0:
-                fused_embeddings_list.append(valid_text_embeddings)
-                if need_complex_mask:
-                    valid_mask: torch.Tensor = torch.tril(
-                        torch.ones(valid_length, valid_length, device=texts.device)
-                    )
-                    attention_mask_list.append(valid_mask)
-                valid_lengths_list.append(valid_length)
-                continue
-
-            current_visual_features: torch.Tensor = projected_visual_features[batch_idx]
-
-            text_embedding_chunks: list[torch.Tensor] = []
-            start_idx: int = 0
-
-            for img_pos_tensor in image_token_positions:
-                img_pos = int(img_pos_tensor.item())
-                if img_pos > start_idx:
-                    text_embedding_chunks.append(valid_text_embeddings[start_idx:img_pos])
-                    start_idx = img_pos + 1
-
-            if start_idx < valid_length:
-                text_embedding_chunks.append(valid_text_embeddings[start_idx:valid_length])
-
-            num_visual_chunks: int = len(image_token_positions)
-            visual_features_per_chunk: int = current_visual_features.size(0) // num_visual_chunks
-
-            fused_chunks: list[torch.Tensor] = []
-            for i in range(num_visual_chunks):
-                if i < len(text_embedding_chunks):
-                    fused_chunks.append(text_embedding_chunks[i])
-
-                start: int = i * visual_features_per_chunk
-                end: int = (i + 1) * visual_features_per_chunk
-                fused_chunks.append(current_visual_features[start:end])
-
-            if num_visual_chunks < len(text_embedding_chunks):
-                fused_chunks.append(text_embedding_chunks[-1])
-
-            fused_embeddings: torch.Tensor = torch.cat(fused_chunks, dim=0)
-            fused_length: int = fused_embeddings.size(0)
-
-            fused_embeddings_list.append(fused_embeddings)
-            valid_lengths_list.append(fused_length)
+            fused_embeddings_list.append(embedding)
             if need_complex_mask:
-                attention_mask: torch.Tensor = torch.zeros(
-                    fused_length, fused_length, device=texts.device
-                )
+                attention_mask_list.append(mask)
+            valid_lengths_list.append(length)
 
-                current_pos: int = 0
-
-                for i, chunk in enumerate(fused_chunks):
-                    chunk_size: int = chunk.size(0)
-
-                    if i % 2 == 1 and i < 2 * num_visual_chunks:
-                        attention_mask[
-                            current_pos : current_pos + chunk_size,
-                            current_pos : current_pos + chunk_size,
-                        ] = 1.0
-                    else:
-                        attention_mask[
-                            current_pos : current_pos + chunk_size,
-                            current_pos : current_pos + chunk_size,
-                        ] = torch.tril(torch.ones(chunk_size, chunk_size, device=texts.device))
-
-                    if i > 0:
-                        for j in range(i):
-                            prev_chunk_size: int = fused_chunks[j].size(0)
-                            prev_start: int = sum(fused_chunks[k].size(0) for k in range(j))
-
-                            attention_mask[
-                                current_pos : current_pos + chunk_size,
-                                prev_start : prev_start + prev_chunk_size,
-                            ] = 1.0
-
-                    current_pos += chunk_size
-
-                attention_mask_list.append(attention_mask)
-
+        # Pad to maximum length
         max_length: int = max(valid_lengths_list)
 
-        padded_embeddings: torch.Tensor = torch.zeros(
+        padded_embeddings = torch.zeros(
             batch_size,
             max_length,
             text_embeddings.size(-1),
-            device=texts.device,
+            device=device,
             dtype=text_embeddings.dtype,
         )
 
-        for i, embed in enumerate(fused_embeddings_list):
-            length = embed.size(0)
+        # Add embeddings with proper padding
+        for i, (embed, length) in enumerate(
+            zip(fused_embeddings_list, valid_lengths_list, strict=False)
+        ):
             padded_embeddings[i, :length] = embed
 
+        # Create final attention mask based on format
         if mask_format == "2d":
-            padded_mask = torch.zeros(batch_size, max_length, device=texts.device, dtype=torch.bool)
+            padded_mask = torch.zeros(batch_size, max_length, device=device, dtype=torch.bool)
             for i, length in enumerate(valid_lengths_list):
                 padded_mask[i, :length] = True
-            return padded_embeddings, padded_mask
+            return ForwardOutput(padded_embeddings, padded_mask)
 
-        else:
-            padded_attention_mask: torch.Tensor = torch.zeros(
-                batch_size,
-                max_length,
-                max_length,
-                device=texts.device,
-                dtype=torch.float32,
-            )
+        # Create complex attention mask
+        padded_attention_mask: torch.Tensor = torch.zeros(
+            batch_size,
+            max_length,
+            max_length,
+            device=device,
+            dtype=torch.float32,
+        )
 
-            for i, mask in enumerate(attention_mask_list):
-                length: int = mask.size(0)
-                padded_attention_mask[i, :length, :length] = mask
+        for i, (mask, length) in enumerate(
+            zip(attention_mask_list, valid_lengths_list, strict=False)
+        ):
+            padded_attention_mask[i, :length, :length] = cast(torch.Tensor, mask)
 
-            log.debug(f"[bold yellow]padded_embeddings: {padded_embeddings.shape}[/bold yellow]")
-            log.debug(
-                f"[bold yellow]padded_attention_mask: {padded_attention_mask.shape}[/bold yellow]"
-            )
+        log.debug(f"padded_embeddings: {padded_embeddings.shape}")
+        log.debug(f"padded_attention_mask: {padded_attention_mask.shape}")
 
-            if mask_format == "4d":
-                return padded_embeddings, padded_attention_mask.unsqueeze(1)
-            else:
-                return padded_embeddings, padded_attention_mask
+        # Return in requested format
+        if mask_format == "4d":
+            return ForwardOutput(padded_embeddings, padded_attention_mask.unsqueeze(1))
 
-    @abstractmethod
-    def projection(self, visual_features: torch.Tensor) -> torch.Tensor:
-        pass
+        return ForwardOutput(padded_embeddings, padded_attention_mask)

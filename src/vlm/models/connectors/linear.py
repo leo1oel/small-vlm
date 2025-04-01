@@ -1,4 +1,4 @@
-from typing import override
+from typing import cast, override
 
 import torch
 import torch.nn as nn
@@ -19,9 +19,10 @@ class LinearConnector(Connector):
 
     @override
     def _initialize_layers(self) -> None:
-        nn.init.normal_(self.projection_layer.weight, mean=0.0, std=0.02)  # pyright: ignore
-        nn.init.zeros_(self.projection_layer.bias)  # pyright: ignore
+        linear_layer = cast(nn.Linear, self.projection_layer)
+        nn.init.normal_(linear_layer.weight, mean=0.0, std=0.02)
+        nn.init.zeros_(linear_layer.bias)
 
     @override
     def projection(self, visual_features: torch.Tensor) -> torch.Tensor:
-        return self.projection_layer(visual_features)  # pyright: ignore
+        return self.projection_layer(visual_features)

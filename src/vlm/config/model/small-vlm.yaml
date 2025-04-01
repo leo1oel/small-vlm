@@ -1,6 +1,6 @@
 defaults:
   - visual_encoder: clip-vit-base-patch32
   - llm: phi-4-mini-instruct
-  - connector: mlp
+  - connector: mlp-2-gelu
 
 name: small-vlm

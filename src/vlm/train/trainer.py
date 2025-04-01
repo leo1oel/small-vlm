@@ -1,12 +1,14 @@
 from logging import getLogger
 from pathlib import Path
 from typing import Any
+
 import pytorch_lightning as pl
 import torch
+from datasets import Dataset
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
-from datasets import Dataset
+
 from ..config import TrainerConfig
 from ..models import VLM
 
@@ -67,9 +69,7 @@ def _setup_callbacks(config: TrainerConfig, has_val_dataloader: bool) -> list[An
     monitor_metric = config.monitor_metric
     if not has_val_dataloader and "val_" in monitor_metric:
         monitor_metric = monitor_metric.replace("val_", "train_")
-        log.warning(
-            f"No validation dataloader provided. Falling back to monitor {monitor_metric}"
-        )
+        log.warning(f"No validation dataloader provided. Falling back to monitor {monitor_metric}")
 
     checkpoint_dir = Path(config.default_root_dir) / "checkpoints"
     checkpoint_callback = ModelCheckpoint(
@@ -100,11 +100,7 @@ def _setup_callbacks(config: TrainerConfig, has_val_dataloader: bool) -> list[An
     return callbacks
 
 
-def _setup_trainer(
-    config: TrainerConfig,
-    callbacks: list[Any],
-    logger: WandbLogger
-) -> pl.Trainer:
+def _setup_trainer(config: TrainerConfig, callbacks: list[Any], logger: WandbLogger) -> pl.Trainer:
     trainer_kwargs = {
         "default_root_dir": config.default_root_dir,
         "callbacks": callbacks,
@@ -120,7 +116,6 @@ def _setup_trainer(
         "precision": config.precision,
         "deterministic": True,
     }
-
 
     if config.debug:
         debug_kwargs = {

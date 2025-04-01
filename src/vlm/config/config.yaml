@@ -1,7 +1,7 @@
 defaults:
   - cfg
   - mode: train
-  - model: small-vlm
+  - model: llava-7b
   - trainer: pretrain
   - inference: default
   - dataset: llava-pretrain

@@ -5,10 +5,13 @@ import hydra
 from omegaconf import OmegaConf
 from pytorch_lightning import seed_everything
 
+from vlm.config.config_schema import DatasetConfig
+
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
-from .data import DataModule, InferenceDataModule
+from .data import DataModule
 from .inference import inference
 from .models import VLM
+from .train.trainer import train
 
 log: logging.Logger = logging.getLogger(name=__name__)
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"
@@ -55,9 +58,11 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
 def vlm(cfg: AppConfig) -> None:
     if cfg.mode.is_training:
         log.info("Training mode")
-        # only load neccessary components for dataset processing
+        # only load necessary components for dataset processing
         model: VLM = load_model(cfg.model, cfg.trainer)
-        data_module = DataModule(cfg.dataset, model)
+        data_module = DataModule(
+            cfg.dataset, model, cfg.trainer.batch_size, cfg.trainer.chat_template
+        )
 
         # Get dataloaders
         train_dataloader = data_module.train_dataloader
@@ -70,7 +75,7 @@ def vlm(cfg: AppConfig) -> None:
             raise ValueError("Training data load failed")
 
         log.info(f"Training data loaded successfully: {len(train_dataloader)} batches")
-        cfg.trainer.num_training_samples = len(train_dataloader)
+        cfg.trainer.num_training_samples = data_module.num_samples["train"]
 
         # Log validation and test data status
         if val_dataloader:
@@ -86,12 +91,17 @@ def vlm(cfg: AppConfig) -> None:
         # initialize all components
         model.initialize_components()
 
-        # train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
+        train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
     else:
         log.info("Inference mode")
-        inference_module = InferenceDataModule(cfg.inference)
-        inference_dataloader = inference_module.get_dataloader()
-        inference(cfg.inference, inference_dataloader)
+        model = load_model(cfg.model, cfg.trainer)
+        data_module = DataModule(
+            DatasetConfig(name="null", hf_name="null", type="null"),
+            model,
+            cfg.trainer.batch_size,
+            cfg.trainer.chat_template,
+        )
+        inference(cfg.inference, data_module)
 
 
 def validate_config(cfg: AppConfig) -> None:

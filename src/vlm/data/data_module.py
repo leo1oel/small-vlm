@@ -10,8 +10,9 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from transformers import BaseImageProcessor, PreTrainedTokenizer
 
-from ..config.config_schema import DatasetConfig, InferenceConfig
+from ..config.config_schema import DatasetConfig
 from ..models.model import VLM
+from ..utils.chat_template import get_chat_template
 
 # Disable tokenizers parallelism warning
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -23,9 +24,15 @@ class DataModule:
         self,
         dataset_config: DatasetConfig,
         model: VLM,
+        batch_size: int,
+        chat_template: str,
     ):
         self.dataset_config: DatasetConfig = dataset_config
         self.model: VLM = model
+        self.batch_size: int = batch_size
+        self.chat_template: str = get_chat_template(chat_template)
+        self._raw_dataset: DatasetDict | None = None
+        self._processed_datasets: dict[str, Dataset] = {}
 
         # model components
         self.tokenizer: PreTrainedTokenizer = self.model.language_model.tokenizer
@@ -37,26 +44,55 @@ class DataModule:
             [dict[str, Image.Image | str], bool], dict[str, torch.Tensor | list[torch.Tensor]]
         ] = self._build_transform()
 
-    def get_dataset(self, split: Literal["train", "val", "test"]) -> Dataset | None:
+        self._load_raw_dataset()
+
+        self.num_samples: dict[str, int] = {}
+
+    def _load_raw_dataset(self):
         try:
             dataset_type = self.dataset_config.type
             if dataset_type == "huggingface":
-                log.info(f"Loading HuggingFace dataset: {self.dataset_config.name} ({split})")
-                # Load the dataset
-                dataset: DatasetDict = cast(
+                log.info(f"Loading HuggingFace dataset: {self.dataset_config.name}")
+                self._raw_dataset = cast(
                     DatasetDict, load_dataset(self.dataset_config.hf_name, trust_remote_code=True)
                 )
-
-                map_dataset: DatasetDict = dataset.map(
-                    self.transform, num_proc=getattr(self.dataset_config, "num_proc", None)
-                )
-
-                return map_dataset[split]
             else:
-                log.error(f"Dataset type {dataset_type} not supported")
+                log.warning(f"Dataset type {dataset_type} not supported")
                 raise ValueError(f"Dataset type {dataset_type} not supported")
         except Exception as e:
-            log.error(f"Failed to load {split} dataset: {str(e)}")
+            log.warning(f"Failed to load raw dataset: {str(e)}")
+            self._raw_dataset = None
+
+    def get_dataset(self, split: Literal["train", "val", "test"]) -> Dataset | None:
+        if split in self._processed_datasets:
+            log.info(f"Using cached processed dataset for split: {split}")
+            return self._processed_datasets[split]
+
+        if self._raw_dataset is None:
+            log.error("Raw dataset is not loaded")
+            return None
+
+        if split not in self._raw_dataset:
+            log.error(f"Split {split} not found in dataset")
+            return None
+
+        try:
+            log.info(f"Processing dataset for split: {split}")
+            num_proc = getattr(self.dataset_config, "num_proc", None)
+            log.info(f"Using {num_proc} processes for mapping")
+
+            processed_split = self._raw_dataset[split].map(
+                self.transform,
+                num_proc=num_proc,
+                load_from_cache_file=True,
+            )
+
+            self._processed_datasets[split] = processed_split
+            self.num_samples[split] = len(processed_split)
+            return processed_split
+
+        except Exception as e:
+            log.error(f"Failed to process dataset for split {split}: {str(e)}")
             return None
 
     def _build_transform(
@@ -113,7 +149,7 @@ class DataModule:
 
         input_ids = self._apply_chat_template(conversation, do_generation)
 
-        labels = self._prepare_labels(input_ids)
+        labels = self._prepare_labels(input_ids, conversation)
 
         expanded_labels = self._handle_image_tokens(input_ids, labels)
         return (input_ids, torch.tensor(expanded_labels))
@@ -127,6 +163,7 @@ class DataModule:
     def _apply_chat_template(
         self, conversation: list[dict[str, str]], do_generation: bool
     ) -> torch.Tensor:
+        self.tokenizer.chat_template = self.chat_template
         input_ids = self.tokenizer.apply_chat_template(
             conversation,
             tokenize=True,
@@ -138,37 +175,72 @@ class DataModule:
 
         return cast(torch.Tensor, input_ids)
 
-    def _prepare_labels(self, input_ids: torch.Tensor) -> torch.Tensor:
+    # def preparelabels(self, input_ids: torch.Tensor) -> torch.Tensor:
+    #     labels = torch.full_like(input_ids, -100)
+    #     labels[:-1] = input_ids[1:].clone()
+    #     assistant_ranges = self._find_assistant_ranges(input_ids)
+    #     for i in range(len(labels)):
+    #         is_in_assistant_range = any(start <= i <= end for start, end in assistant_ranges)
+    #         if not is_in_assistant_range:
+    #             labels[i] = -100
+    #     return labels
+
+    def _prepare_labels(
+        self, input_ids: torch.Tensor, conversation: list[dict[str, str]]
+    ) -> torch.Tensor:
         labels = torch.full_like(input_ids, -100)
         labels[:-1] = input_ids[1:].clone()
 
-        assistant_ranges = self._find_assistant_ranges(input_ids)
+        assistant_msgs = [msg for msg in conversation if msg["role"] == "assistant"]
+        if not assistant_msgs:
+            return torch.full_like(input_ids, -100)
 
-        for i in range(len(labels)):
-            is_in_assistant_range = any(start <= i <= end for start, end in assistant_ranges)
-            if not is_in_assistant_range:
-                labels[i] = -100
+        full_text: str = cast(
+            str,
+            self.tokenizer.apply_chat_template(
+                conversation, tokenize=False, add_generation_prompt=False
+            ),
+        )
+
+        for msg in assistant_msgs:
+            assistant_text = msg["content"]
+            start_char = full_text.find(assistant_text)
+            if start_char != -1:
+                prefix = full_text[:start_char]
+                start_token = len(self.tokenizer.encode(prefix, add_special_tokens=False))
+                end_token = (
+                    start_token
+                    + len(self.tokenizer.encode(assistant_text, add_special_tokens=False))
+                    - 1
+                )
+
+                for _ in range(start_token, min(end_token + 1, len(labels))):
+                    pass
+
+                for i in range(len(labels)):
+                    if not (start_token <= i <= end_token):
+                        labels[i] = -100
 
         return labels
 
-    def _find_assistant_ranges(self, input_ids: torch.Tensor) -> list[tuple[int, int]]:
-        assistant_ranges: list[tuple[int, int]] = []
-        in_assistant = False
-        start_idx = None
+    # def _find_assistant_ranges(self, input_ids: torch.Tensor) -> list[tuple[int, int]]:
+    #     assistant_ranges: list[tuple[int, int]] = []
+    #     in_assistant = False
+    #     start_idx = None
 
-        for i, token_id in enumerate(input_ids):
-            token = self.tokenizer.decode([token_id])
+    #     for i, token_id in enumerate(input_ids):
+    #         token = self.tokenizer.decode([token_id])
 
-            if "<|assistant|>" in token:
-                in_assistant = True
-                start_idx = i
-            elif "<|end|>" in token and in_assistant:
-                if start_idx is not None:
-                    assistant_ranges.append((start_idx, i - 1))
-                in_assistant = False
-                start_idx = None
+    #         if "<|assistant|>" in token:
+    #             in_assistant = True
+    #             start_idx = i
+    #         elif "<|end|>" in token and in_assistant:
+    #             if start_idx is not None:
+    #                 assistant_ranges.append((start_idx, i - 1))
+    #             in_assistant = False
+    #             start_idx = None
 
-        return assistant_ranges
+    #     return assistant_ranges
 
     def _handle_image_tokens(self, input_ids: torch.Tensor, labels: torch.Tensor) -> list[int]:
         expanded_labels: list[int] = []
@@ -229,7 +301,7 @@ class DataModule:
 
         return DataLoader(
             dataset,  # pyright: ignore
-            batch_size=self.dataset_config.batch_size,
+            batch_size=self.batch_size,
             shuffle=(split == "train"),  # Only shuffle training data
             collate_fn=self.collate_fn,
             num_workers=self.dataset_config.num_workers,
@@ -248,30 +320,3 @@ class DataModule:
     @property
     def test_dataloader(self) -> DataLoader[Dataset] | None:
         return self.get_dataloader("test")
-
-
-class InferenceDataModule:
-    """Data module specifically for inference."""
-
-    def __init__(self, config: InferenceConfig):
-        self.config: InferenceConfig = config
-
-    # def get_dataloader(self) -> DataLoader[Dataset] | None:
-    #     try:
-    #         dataset: Dataset = load_dataset(
-    #             self.config.hf_name,
-    #             split=self.config.split,
-    #             trust_remote_code=True
-    #         )
-
-    #         return DataLoader(
-    #             dataset,
-    #             batch_size=self.config.batch_size,
-    #             shuffle=False,
-    #             num_workers=self.config.num_workers,
-    #             pin_memory=True,
-    #             persistent_workers=True
-    #         )
-    #     except Exception as e:
-    #         logger.error(f"Failed to load inference dataset: {str(e)}")
-    #         return None

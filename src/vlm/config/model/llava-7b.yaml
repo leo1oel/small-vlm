@@ -1,0 +1,6 @@
+defaults:
+  - llm: vicuna-7b-v1.5
+  - visual_encoder: clip-vit-large-patch14
+  - connector: mlp-2-gelu
+
+name: llava-7b

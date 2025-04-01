@@ -1,6 +1,6 @@
-from logging import LogRecord
 import logging
 import os
+from logging import LogRecord
 from typing import override
 
 

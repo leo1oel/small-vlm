@@ -38,8 +38,8 @@ class HFVisualEncoder(VisualEncoder):
         visual_encoder: PreTrainedModel = cast(
             PreTrainedModel, AutoModel.from_pretrained(self.hf_name, trust_remote_code=True)
         )
-        if getattr(self.visual_encoder, "vision_model", None):
-            visual_encoder = self.visual_encoder.vision_model  # pyright: ignore
+        if getattr(visual_encoder, "vision_model", None):
+            visual_encoder = visual_encoder.vision_model  # pyright: ignore
 
         return visual_encoder
 

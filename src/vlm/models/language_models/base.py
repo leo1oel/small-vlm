@@ -1,29 +1,33 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import override
-from typing import cast
+from dataclasses import dataclass
+from typing import cast, override
+
 import torch
 import torch.nn as nn
-from transformers import PreTrainedModel, PreTrainedTokenizer, PretrainedConfig
-from dataclasses import dataclass
+from transformers import PretrainedConfig, PreTrainedModel, PreTrainedTokenizer
 
 from ...config.config_schema import LLMConfig
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
+
 @dataclass
 class TokenConfig:
     """Special token configuration"""
+
     image_token: str = "<image>"
     pad_token: str = "PAD"
     image_token_id: int | None = None
     pad_token_id: int | None = None
+
 
 @dataclass
 class LanguageModelConfig:
     hidden_size: int | None = None
     vocab_size: int | None = None
     max_seq_length: int | None = None
+
 
 class LanguageModel(nn.Module, ABC):
     def __init__(self, config: LLMConfig) -> None:
@@ -43,7 +47,7 @@ class LanguageModel(nn.Module, ABC):
         # token config
         self.token_config: TokenConfig = TokenConfig(
             image_token=getattr(self.config, "image_token", "<image>"),
-            pad_token=getattr(self.config, "pad_token", "PAD")
+            pad_token=getattr(self.config, "pad_token", "PAD"),
         )
 
         self._initialize_components()
@@ -66,15 +70,13 @@ class LanguageModel(nn.Module, ABC):
     def _add_special_tokens(self) -> None:
         # Add pad token
         self.token_config.pad_token_id = self._add_special_token(
-            token=self.token_config.pad_token,
-            token_type="pad_token"
+            token=self.token_config.pad_token, token_type="pad_token"
         )
 
         # Add image token (if exists)
         if self.token_config.image_token:
             self.token_config.image_token_id = self._add_special_token(
-                token=self.token_config.image_token,
-                token_type="additional_special_tokens"
+                token=self.token_config.image_token, token_type="additional_special_tokens"
             )
 
     def _add_special_token(self, token: str, token_type: str) -> int:
@@ -162,12 +164,11 @@ class LanguageModel(nn.Module, ABC):
     ) -> torch.Tensor:
         pass
 
-
     def verify_config(self) -> None:
         config_pairs = [
             ("hidden_size", self.get_config("hidden_size"), self.hidden_size),
             ("vocab_size", self.get_config("vocab_size"), self.vocab_size),
-            ("max_seq_length", self.get_config("max_position_embeddings"), self.max_seq_length)
+            ("max_seq_length", self.get_config("max_position_embeddings"), self.max_seq_length),
         ]
 
         for key, model_value, config_value in config_pairs:
@@ -191,7 +192,9 @@ class LanguageModel(nn.Module, ABC):
                 log.error(error_msg)
                 raise ValueError(error_msg)
             else:
-                log.info(f"{capitalized_key} verified: hf config: {model_value} == config: {config_value}")
+                log.info(
+                    f"{capitalized_key} verified: hf config: {model_value} == config: {config_value}"
+                )
 
     def get_config(self, key: str) -> int | str | None:
         return getattr(self.hf_config, key, None)

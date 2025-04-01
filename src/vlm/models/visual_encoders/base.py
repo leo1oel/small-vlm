@@ -1,20 +1,23 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import override, cast
+from dataclasses import dataclass
+from typing import cast, override
 
 import torch
 import torch.nn as nn
-from transformers import BaseImageProcessor, PreTrainedModel, PretrainedConfig
-from dataclasses import dataclass
+from transformers import BaseImageProcessor, PretrainedConfig, PreTrainedModel
+
 from ...config.config_schema import VisualEncoderConfig
 
 log: logging.Logger = logging.getLogger(name=__name__)
+
 
 @dataclass
 class VisualModelConfig:
     hidden_size: int | None = None
     img_size: int | None = None
     patch_size: int | None = None
+
 
 class VisualEncoder(nn.Module, ABC):
     def __init__(self, config: VisualEncoderConfig) -> None:
@@ -28,7 +31,7 @@ class VisualEncoder(nn.Module, ABC):
         self.model_config: VisualModelConfig = VisualModelConfig(
             hidden_size=getattr(self.config, "hidden_size", None),
             img_size=getattr(self.config, "img_size", None),
-            patch_size=getattr(self.config, "patch_size", None)
+            patch_size=getattr(self.config, "patch_size", None),
         )
 
         # output layer
@@ -54,9 +57,8 @@ class VisualEncoder(nn.Module, ABC):
 
         # calculate token size
         self.token_size: int = (
-            (cast(int, self.model_config.img_size) // cast(int, self.model_config.patch_size)) ** 2 +
-            self.use_cls_token
-        )
+            cast(int, self.model_config.img_size) // cast(int, self.model_config.patch_size)
+        ) ** 2 + self.use_cls_token
 
     @property
     def preprocessor(self) -> BaseImageProcessor:
@@ -115,7 +117,7 @@ class VisualEncoder(nn.Module, ABC):
         config_pairs = [
             ("hidden_size", self.get_config("hidden_size"), self.hidden_size),
             ("img_size", self.get_config("image_size"), self.img_size),
-            ("patch_size", self.get_config("patch_size"), self.patch_size)
+            ("patch_size", self.get_config("patch_size"), self.patch_size),
         ]
 
         for key, model_value, config_value in config_pairs:
@@ -146,4 +148,6 @@ class VisualEncoder(nn.Module, ABC):
                 log.error(error_msg)
                 raise ValueError(error_msg)
             else:
-                log.info(f"{capitalized_key} verified: hf config: {model_value} == config: {config_value}")
+                log.info(
+                    f"{capitalized_key} verified: hf config: {model_value} == config: {config_value}"
+                )

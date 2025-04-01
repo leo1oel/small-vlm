@@ -32,8 +32,6 @@ class VLM(pl.LightningModule):
         # initialize components
         self._initialize_components()
 
-        self._save_hyperparameters()
-
     def _process_config(self, config: Any) -> Any:
         if isinstance(config, dict):
             return OmegaConf.create(config)  # pyright: ignore
@@ -47,6 +45,8 @@ class VLM(pl.LightningModule):
         # setup example input
         self._setup_example_input()
 
+        self._save_hyperparameters()
+
     # only initialize components needed for dataset processing
     def _initialize_components(self) -> None:
         self._visual_encoder: VisualEncoder = self._build_visual_encoder()
@@ -55,9 +55,9 @@ class VLM(pl.LightningModule):
 
     def _setup_example_input(self) -> None:
         self.example_input_array: tuple[torch.Tensor | list[torch.Tensor], torch.Tensor] = (
-            [torch.randn(1, 3, 224, 224), torch.randn(3, 3, 224, 224)],
+            [torch.randn(1, 3, 336, 336), torch.randn(2, 3, 336, 336)],
             self.language_model.tokenizer(
-                ["test <|image|>.", "test <|image|> multiple <|image|> images <|image|>."],
+                ["test <|image|>.", "test <|image|> multiple images <|image|>."],
                 padding=True,
                 return_tensors="pt",
             ).input_ids,
@@ -226,18 +226,16 @@ class VLM(pl.LightningModule):
 
             text_template = f'[{{"from": "human", "value": "{text}"}}]'
 
-            transformed_item = self.transform(
+            transformed_item = self.transform(  # pyright: ignore
                 {"image": image, "text": text_template},
                 True,
             )
 
-            # 收集张量
             image_tensors_list.append(transformed_item["image"].to(device))
             text_tensors_list.append(transformed_item["text"].to(device))
 
-        # 组合张量
-        image_tensors = torch.cat(image_tensors_list, dim=0).to(device)
-        text_tensors = torch.stack(text_tensors_list, dim=0).to(device)
+        image_tensors = torch.cat(image_tensors_list, dim=0).to(device)  # pyright: ignore
+        text_tensors = torch.stack(text_tensors_list, dim=0).to(device)  # pyright: ignore
 
         return image_tensors, text_tensors
 
@@ -265,8 +263,7 @@ class VLM(pl.LightningModule):
             do_sample=False,
         )
 
-        # 解码输出
-        return [llm.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
+        return [llm.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]  # pyright: ignore
 
     def _calculate_loss(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         return get_loss(self.trainer_config, outputs, labels)

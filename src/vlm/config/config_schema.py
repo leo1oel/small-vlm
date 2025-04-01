@@ -48,8 +48,7 @@ class DatasetConfig:
     name: str = MISSING
     hf_name: str = MISSING
     type: str = MISSING
-    batch_size: int = 16
-    num_proc: int | None = None
+    num_proc: int = 16
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
@@ -123,6 +122,8 @@ class TrainerConfig:
     save_every_n_epochs: int | None = None
     save_every_n_train_steps: int | None = None
     num_training_samples: int | None = None
+    chat_template: str = "llava_plain"
+
 
 @dataclass
 class ModeConfig:
