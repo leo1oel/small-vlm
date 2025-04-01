@@ -14,7 +14,6 @@ precision: 16-mixed
 devices: auto
 resume_from_checkpoint: false
 checkpoint_path: null
-num_training_samples: 10
 batch_size: 128
 
 defaults:

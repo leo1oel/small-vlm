@@ -1,4 +1,4 @@
 from .base import VisualEncoder
-from .vit import ViTEncoder
+from .hf_visual_encoder import HFVisualEncoder
 
-__all__ = ["VisualEncoder", "ViTEncoder"]
+__all__ = ["VisualEncoder", "HFVisualEncoder"]

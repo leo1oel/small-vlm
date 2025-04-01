@@ -1,16 +1,29 @@
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from typing import override
-
+from typing import cast
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoModel, AutoTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer, PretrainedConfig
+from dataclasses import dataclass
 
 from ...config.config_schema import LLMConfig
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
+@dataclass
+class TokenConfig:
+    """Special token configuration"""
+    image_token: str = "<image>"
+    pad_token: str = "PAD"
+    image_token_id: int | None = None
+    pad_token_id: int | None = None
+
+@dataclass
+class LanguageModelConfig:
+    hidden_size: int | None = None
+    vocab_size: int | None = None
+    max_seq_length: int | None = None
 
 class LanguageModel(nn.Module, ABC):
     def __init__(self, config: LLMConfig) -> None:
@@ -19,195 +32,166 @@ class LanguageModel(nn.Module, ABC):
         self.name: str = self.config.name
         self.hf_name: str = self.config.hf_name
         self.model_type: str = self.config.type
-        self.hidden_size: int | None = getattr(self.config, "hidden_size", None)
-        self.vocab_size: int | None = getattr(self.config, "vocab_size", None)
-        self.max_seq_length: int | None = getattr(self.config, "max_seq_length", None)
-        self.output_layer: int = getattr(self.config, "output_layer", -1)
-        self.image_token: str | None = getattr(self.config, "image_token", None)
-        self.pad_token: str = getattr(self.config, "pad_token", "PAD")
-        self.tokenizer: AutoTokenizer = self.build_tokenizer()
-        self.language_model: AutoModel = self.build_language_model()
-        self.hf_config: AutoConfig = self.build_hf_config()
-        self.image_token_id: int | None = (
-            self.add_image_token(self.image_token) if self.image_token else None
+
+        # model config
+        self.model_config: LanguageModelConfig = LanguageModelConfig(
+            hidden_size=getattr(self.config, "hidden_size", None),
+            vocab_size=getattr(self.config, "vocab_size", None),
+            max_seq_length=getattr(self.config, "max_seq_length", None),
         )
-        self.pad_token_id: int = self.add_pad_token(self.pad_token)
-        self.embeddings: nn.Embedding = self.build_embeddings()
+
+        # token config
+        self.token_config: TokenConfig = TokenConfig(
+            image_token=getattr(self.config, "image_token", "<image>"),
+            pad_token=getattr(self.config, "pad_token", "PAD")
+        )
+
+        self._initialize_components()
+
+    # initialize all components
+    def initialize_components(self) -> None:
+        self._language_model: PreTrainedModel = self._build_language_model()
+        self._embeddings: nn.Module = self._build_embedding_layer()
+        self.language_model.resize_token_embeddings(len(self.tokenizer))
+
+    # only initialize components needed for dataset processing
+    def _initialize_components(self) -> None:
+        self._tokenizer: PreTrainedTokenizer = self._build_tokenizer()
+        self._hf_config: PretrainedConfig = self._build_hf_config()
+
+        self._add_special_tokens()
+
         self.verify_config()
-        self.transform: Callable[
-            [list[dict[str, str]], int, bool], tuple[torch.Tensor, torch.Tensor]
-        ] = self._build_transform()
 
-    def add_image_token(self, image_token: str) -> int:
-        log.info(f"[bold green]Adding image token: {image_token}[/bold green]")
-        self.tokenizer.add_special_tokens({"additional_special_tokens": [image_token]})  # pyright: ignore
-        image_token_id: int = self.tokenizer.convert_tokens_to_ids(image_token)  # pyright: ignore
-        self.language_model.resize_token_embeddings(len(self.tokenizer))  # pyright: ignore
-        return image_token_id  # pyright: ignore
-
-    def add_pad_token(self, pad_token: str) -> int:
-        log.info(f"[bold green]Adding pad token: {pad_token}[/bold green]")
-        self.tokenizer.add_special_tokens({"pad_token": pad_token})  # pyright: ignore
-        pad_token_id: int = self.tokenizer.convert_tokens_to_ids(pad_token)  # pyright: ignore
-        self.language_model.resize_token_embeddings(len(self.tokenizer))  # pyright: ignore
-        return pad_token_id  # pyright: ignore
-
-    @abstractmethod
-    def _build_embedding_layer(self) -> nn.Embedding:
-        pass
-
-    def build_embeddings(self) -> nn.Embedding:
-        log.info(f"[bold green]Building embeddings for {self.hf_name}[/bold green]")
-        return self._build_embedding_layer()
-
-    @abstractmethod
-    def _build_tokenizer(self) -> AutoTokenizer:
-        pass
-
-    def build_tokenizer(self) -> AutoTokenizer:
-        log.info(
-            f"[bold green]Building tokenizer for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
+    def _add_special_tokens(self) -> None:
+        # Add pad token
+        self.token_config.pad_token_id = self._add_special_token(
+            token=self.token_config.pad_token,
+            token_type="pad_token"
         )
-        return self._build_tokenizer()
 
-    @abstractmethod
-    def _build_language_model(self) -> AutoModel:
-        pass
-
-    def build_language_model(self) -> AutoModel:
-        log.info(
-            f"[bold green]Building language model for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
-        )
-        return self._build_language_model()
-
-    @abstractmethod
-    def _build_hf_config(self) -> AutoConfig:
-        pass
-
-    def build_hf_config(self) -> AutoConfig:
-        log.info(
-            f"[bold green]Building hf config for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
-        )
-        return self._build_hf_config()
-
-    def _build_transform(
-        self,
-    ) -> Callable[[list[dict[str, str]], int, bool], tuple[torch.Tensor, torch.Tensor]]:
-        def transform(
-            text: list[dict[str, str]], image_token_size: int, generation: bool = False
-        ) -> tuple[torch.Tensor, torch.Tensor]:
-            conversation = []
-            for item in text:
-                role = "user" if item["from"] == "human" else "assistant"
-                conversation.append({"role": role, "content": item["value"]})
-            input_ids: torch.Tensor = self.tokenizer.apply_chat_template(  # pyright: ignore
-                conversation,
-                tokenize=True,
-                add_generation_prompt=generation,
-                return_tensors="pt",
-                padding=False,
-                truncation=True,
-            )[0]
-            print(
-                self.tokenizer.apply_chat_template(  # pyright: ignore
-                    conversation,
-                    tokenize=False,
-                    add_generation_prompt=generation,
-                    padding=False,
-                    truncation=True,
-                )
+        # Add image token (if exists)
+        if self.token_config.image_token:
+            self.token_config.image_token_id = self._add_special_token(
+                token=self.token_config.image_token,
+                token_type="additional_special_tokens"
             )
-            labels: torch.Tensor = torch.full_like(input_ids, -100)  # pyright: ignore
-            labels[:-1] = input_ids[1:].clone()
 
-            image_token_positions: list[int] = []
-            for i, token_id in enumerate(input_ids):  # pyright: ignore
-                if token_id == self.image_token_id:
-                    image_token_positions.append(i)
+    def _add_special_token(self, token: str, token_type: str) -> int:
+        log.info(f"Adding {token_type}: {token}")
 
-            assistant_ranges: list[tuple[int, int]] = []
-            in_assistant: bool = False
-            start_idx: int | None = None
+        if token_type == "pad_token":
+            self.tokenizer.add_special_tokens({"pad_token": token})
+        else:
+            self.tokenizer.add_special_tokens({token_type: [token]})  # pyright: ignore
 
-            for i, token_id in enumerate(input_ids):  # pyright: ignore
-                token = self.tokenizer.decode([token_id])  # pyright: ignore
+        token_id: int = cast(int, self.tokenizer.convert_tokens_to_ids(token))
+        return token_id
 
-                if "<|assistant|>" in token:
-                    in_assistant = True
-                    start_idx = i
-                elif "<|end|>" in token and in_assistant:
-                    if start_idx is not None:
-                        assistant_ranges.append((start_idx, i - 1))
-                    in_assistant = False
-                    start_idx = None
+    @property
+    def tokenizer(self) -> PreTrainedTokenizer:
+        return self._tokenizer
 
-            for i in range(len(labels)):  # pyright: ignore
-                is_in_assistant_range = any(start <= i <= end for start, end in assistant_ranges)
-                if not is_in_assistant_range:
-                    labels[i] = -100
+    @property
+    def language_model(self) -> PreTrainedModel:
+        return self._language_model
 
-            expanded_labels = []
+    @property
+    def hf_config(self) -> PretrainedConfig:
+        return self._hf_config
 
-            for i, token_id in enumerate(input_ids):  # pyright: ignore
-                expanded_labels.append(labels[i].item())
+    @property
+    def hidden_size(self) -> int:
+        return cast(int, self.model_config.hidden_size)
 
-                if token_id == self.image_token_id:
-                    expanded_labels.extend([-100] * (image_token_size - 1))
+    @hidden_size.setter
+    def hidden_size(self, value: int) -> None:
+        self.model_config.hidden_size = value
 
-            return (input_ids, torch.tensor(expanded_labels))  # pyright: ignore
+    @property
+    def vocab_size(self) -> int:
+        return cast(int, self.model_config.vocab_size)
 
-        return transform
+    @vocab_size.setter
+    def vocab_size(self, value: int) -> None:
+        self.model_config.vocab_size = value
+
+    @property
+    def max_seq_length(self) -> int:
+        return cast(int, self.model_config.max_seq_length)
+
+    @max_seq_length.setter
+    def max_seq_length(self, value: int) -> None:
+        self.model_config.max_seq_length = value
+
+    @property
+    def embeddings(self) -> nn.Module:
+        return self._embeddings
+
+    @property
+    def image_token_id(self) -> int:
+        return cast(int, self.token_config.image_token_id)
+
+    @property
+    def pad_token_id(self) -> int:
+        return cast(int, self.token_config.pad_token_id)
+
+    @abstractmethod
+    def _build_embedding_layer(self) -> nn.Module:
+        pass
+
+    @abstractmethod
+    def _build_tokenizer(self) -> PreTrainedTokenizer:
+        pass
+
+    @abstractmethod
+    def _build_language_model(self) -> PreTrainedModel:
+        pass
+
+    @abstractmethod
+    def _build_hf_config(self) -> PretrainedConfig:
+        pass
 
     @abstractmethod
     @override
     def forward(
         self,
-        input_ids: None | torch.Tensor = None,
-        inputs_embeds: None | torch.Tensor = None,
-        attention_mask: None | torch.Tensor = None,
+        input_ids: torch.Tensor | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         pass
 
+
     def verify_config(self) -> None:
-        model_hidden_size: int | str | None = self.get_config("hidden_size")
-        model_vocab_size: int | str | None = self.get_config("vocab_size")
-        model_max_seq_length: int | str | None = self.get_config("max_position_embeddings")
+        config_pairs = [
+            ("hidden_size", self.get_config("hidden_size"), self.hidden_size),
+            ("vocab_size", self.get_config("vocab_size"), self.vocab_size),
+            ("max_seq_length", self.get_config("max_position_embeddings"), self.max_seq_length)
+        ]
 
-        self.verify_equal("hidden_size", model_hidden_size, self.hidden_size)
-        self.verify_equal("vocab_size", model_vocab_size, self.vocab_size)
-        self.verify_equal("max_seq_length", model_max_seq_length, self.max_seq_length)
+        for key, model_value, config_value in config_pairs:
+            self._verify_param_match(key, model_value, config_value)
 
-    def get_config(self, key: str) -> int | str | None:
-        if getattr(self.hf_config, key, None) is not None:
-            return getattr(self.hf_config, key)  # pyright: ignore
-        else:
-            return None
-
-    def verify_equal(
+    def _verify_param_match(
         self, key: str, model_value: int | str | None, config_value: int | str | None
     ) -> None:
+        capitalized_key = key.capitalize()
+
         if model_value is None and config_value is None:
-            log.warning(
-                f"[bold yellow]{key.capitalize()} not found in config for[/bold yellow] [bold blue] {self.hf_name}[/bold blue]"
-            )
+            log.warning(f"{capitalized_key} not found in config for {self.name}")
         elif model_value is not None and config_value is None:
             setattr(self, key, int(model_value))
-            log.info(
-                f"[bold green]{key.capitalize()} not found in config, using hf config:[/bold green] [bold blue] {model_value}[/bold blue]"
-            )
+            log.info(f"{capitalized_key} not found in config, using hf config: {model_value}")
         elif model_value is None and config_value is not None:
-            log.warning(
-                f"[bold yellow]{key.capitalize()} not found in hf config for[/bold yellow] [bold blue] {self.hf_name}[/bold blue]"
-            )
+            log.warning(f"{capitalized_key} not found in hf config for {self.name}")
         elif model_value is not None and config_value is not None:
             if model_value != config_value:
-                log.error(
-                    f"[bold red]{key.capitalize()} mismatch: hf config:[/bold red] [bold blue] {model_value}[/bold blue] [bold red]!= config:[/bold red] [bold blue] {config_value}[/bold blue]"
-                )
-                raise ValueError(
-                    f"{key.capitalize()} mismatch: hf config:[/bold red] [bold blue] {model_value}[/bold blue] [bold red]!= config:[/bold red] [bold blue] {config_value}[/bold blue]"
-                )
+                error_msg = f"{capitalized_key} mismatch: hf config: {model_value} != config: {config_value}"
+                log.error(error_msg)
+                raise ValueError(error_msg)
             else:
-                log.info(
-                    f"[bold green]{key.capitalize()} verified: hf config:[/bold green] [bold blue] {model_value}[/bold blue] [bold green]== config:[/bold green] [bold blue] {config_value}[/bold blue]"
-                )
+                log.info(f"{capitalized_key} verified: hf config: {model_value} == config: {config_value}")
+
+    def get_config(self, key: str) -> int | str | None:
+        return getattr(self.hf_config, key, None)

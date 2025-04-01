@@ -1,15 +1,20 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import override
+from typing import override, cast
 
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoImageProcessor, AutoModel
-
+from transformers import BaseImageProcessor, PreTrainedModel, PretrainedConfig
+from dataclasses import dataclass
 from ...config.config_schema import VisualEncoderConfig
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
+@dataclass
+class VisualModelConfig:
+    hidden_size: int | None = None
+    img_size: int | None = None
+    patch_size: int | None = None
 
 class VisualEncoder(nn.Module, ABC):
     def __init__(self, config: VisualEncoderConfig) -> None:
@@ -18,48 +23,88 @@ class VisualEncoder(nn.Module, ABC):
         self.name: str = self.config.name
         self.hf_name: str = self.config.hf_name
         self.model_type: str = self.config.type
-        self.hidden_size: int | None = getattr(self.config, "hidden_size", None)
-        self.img_size: int | None = getattr(self.config, "img_size", None)
-        self.patch_size: int | None = getattr(self.config, "patch_size", None)
+
+        # model config
+        self.model_config: VisualModelConfig = VisualModelConfig(
+            hidden_size=getattr(self.config, "hidden_size", None),
+            img_size=getattr(self.config, "img_size", None),
+            patch_size=getattr(self.config, "patch_size", None)
+        )
+
+        # output layer
         self.output_layer: int = getattr(self.config, "output_layer", -1)
-        log.info(
-            f"[bold green]Using[/bold green] [bold blue] {self.output_layer} [/bold blue] [bold green]layer as output layer[/bold green]"
-        )
-        self.preprocessor: AutoImageProcessor = self.build_preprocessor()
-        self.visual_encoder: AutoModel = self.build_visual_encoder()
-        self.hf_config: AutoConfig = self.build_hf_config()
+        log.info(f"Using {self.output_layer} layer as output layer")
+
+        # use cls token
+        self.use_cls_token: bool = getattr(self.config, "use_cls_token", False)
+        log.info(f"Use cls token: {self.use_cls_token}")
+
+        self._initialize_components()
+
+    # initialize all components
+    def initialize_components(self) -> None:
+        self._visual_encoder: PreTrainedModel = self._build_visual_encoder()
+
+    # only initialize components needed for dataset processing
+    def _initialize_components(self) -> None:
+        self._preprocessor: BaseImageProcessor = self._build_preprocessor()
+        self._hf_config: PretrainedConfig = self._build_hf_config()
+
         self.verify_config()
-        self.token_size: int = (self.img_size // self.patch_size) ** 2 + self.config.use_cls_token  # pyright: ignore
+
+        # calculate token size
+        self.token_size: int = (
+            (cast(int, self.model_config.img_size) // cast(int, self.model_config.patch_size)) ** 2 +
+            self.use_cls_token
+        )
+
+    @property
+    def preprocessor(self) -> BaseImageProcessor:
+        return self._preprocessor
+
+    @property
+    def visual_encoder(self) -> PreTrainedModel:
+        return self._visual_encoder
+
+    @property
+    def hf_config(self) -> PretrainedConfig:
+        return self._hf_config
+
+    @property
+    def hidden_size(self) -> int:
+        return cast(int, self.model_config.hidden_size)
+
+    @hidden_size.setter
+    def hidden_size(self, value: int) -> None:
+        self.model_config.hidden_size = value
+
+    @property
+    def img_size(self) -> int:
+        return cast(int, self.model_config.img_size)
+
+    @img_size.setter
+    def img_size(self, value: int) -> None:
+        self.model_config.img_size = value
+
+    @property
+    def patch_size(self) -> int:
+        return cast(int, self.model_config.patch_size)
+
+    @patch_size.setter
+    def patch_size(self, value: int) -> None:
+        self.model_config.patch_size = value
 
     @abstractmethod
-    def _build_preprocessor(self) -> AutoImageProcessor:
+    def _build_preprocessor(self) -> BaseImageProcessor:
         pass
-
-    def build_preprocessor(self) -> AutoImageProcessor:
-        log.info(
-            f"[bold green]Building image preprocessor for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
-        )
-        return self._build_preprocessor()
 
     @abstractmethod
-    def _build_visual_encoder(self) -> AutoModel:
+    def _build_visual_encoder(self) -> PreTrainedModel:
         pass
-
-    def build_visual_encoder(self) -> AutoModel:
-        log.info(
-            f"[bold green]Building visual encoder for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
-        )
-        return self._build_visual_encoder()
 
     @abstractmethod
-    def _build_hf_config(self) -> AutoConfig:
+    def _build_hf_config(self) -> PretrainedConfig:
         pass
-
-    def build_hf_config(self) -> AutoConfig:
-        log.info(
-            f"[bold green]Building hf config for[/bold green] [bold blue] {self.hf_name}[/bold blue]"
-        )
-        return self._build_hf_config()
 
     @abstractmethod
     @override
@@ -67,48 +112,38 @@ class VisualEncoder(nn.Module, ABC):
         pass
 
     def verify_config(self) -> None:
-        model_hidden_size: int | str | None = self.get_config("hidden_size")
-        model_img_size: int | str | None = self.get_config("image_size")
-        model_patch_size: int | str | None = self.get_config("patch_size")
+        config_pairs = [
+            ("hidden_size", self.get_config("hidden_size"), self.hidden_size),
+            ("img_size", self.get_config("image_size"), self.img_size),
+            ("patch_size", self.get_config("patch_size"), self.patch_size)
+        ]
 
-        self.verify_equal("hidden_size", model_hidden_size, self.hidden_size)
-        self.verify_equal("img_size", model_img_size, self.img_size)
-        self.verify_equal("patch_size", model_patch_size, self.patch_size)
+        for key, model_value, config_value in config_pairs:
+            self._verify_param_match(key, model_value, config_value)
 
     def get_config(self, key: str) -> int | str | None:
-        if getattr(self.hf_config, "vision_config", None) is not None:
-            if getattr(self.hf_config.vision_config, key, None) is not None:  # pyright: ignore
-                return getattr(self.hf_config.vision_config, key)  # pyright: ignore
-        elif getattr(self.hf_config, key, None) is not None:
-            return getattr(self.hf_config, key)  # pyright: ignore
-        else:
-            return None
+        vision_config = getattr(self.hf_config, "vision_config", None)
+        if vision_config and hasattr(vision_config, key):
+            return getattr(vision_config, key)
 
-    def verify_equal(
+        return getattr(self.hf_config, key, None)
+
+    def _verify_param_match(
         self, key: str, model_value: int | str | None, config_value: int | str | None
     ) -> None:
+        capitalized_key = key.capitalize()
+
         if model_value is None and config_value is None:
-            log.warning(
-                f"[bold yellow]{key.capitalize()} not found in config for[/bold yellow] [bold blue] {self.hf_name}[/bold blue]"
-            )
+            log.warning(f"{capitalized_key} not found in config for {self.hf_name}")
         elif model_value is not None and config_value is None:
             setattr(self, key, int(model_value))
-            log.info(
-                f"[bold green]{key.capitalize()} not found in config, using hf config:[/bold green] [bold blue] {model_value}[/bold blue]"
-            )
+            log.info(f"{capitalized_key} not found in config, using hf config: {model_value}")
         elif model_value is None and config_value is not None:
-            log.warning(
-                f"[bold yellow]{key.capitalize()} not found in hf config for[/bold yellow {self.hf_name}"
-            )
+            log.warning(f"{capitalized_key} not found in hf config for {self.hf_name}")
         elif model_value is not None and config_value is not None:
             if model_value != config_value:
-                log.error(
-                    f"[bold red]{key.capitalize()} mismatch: hf config:[/bold red] [bold blue] {model_value}[/bold blue] [bold red]!= config:[/bold red] [bold blue] {config_value}[/bold blue]"
-                )
-                raise ValueError(
-                    f"{key.capitalize()} mismatch: hf config:[/bold red] [bold blue] {model_value}[/bold blue] [bold red]!= config:[/bold red] [bold blue] {config_value}[/bold blue]"
-                )
+                error_msg = f"{capitalized_key} mismatch: hf config: {model_value} != config: {config_value}"
+                log.error(error_msg)
+                raise ValueError(error_msg)
             else:
-                log.info(
-                    f"[bold green]{key.capitalize()} verified: hf config:[/bold green] [bold blue] {model_value}[/bold blue] [bold green]== config:[/bold green] [bold blue] {config_value}[/bold blue]"
-                )
+                log.info(f"{capitalized_key} verified: hf config: {model_value} == config: {config_value}")

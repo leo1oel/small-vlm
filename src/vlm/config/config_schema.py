@@ -8,7 +8,7 @@ from omegaconf import MISSING  # pyright: ignore
 class VisualEncoderConfig:
     name: str = MISSING
     hf_name: str = MISSING
-    type: str = MISSING
+    type: str = "hf_visual_encoder"
     hidden_size: int | None = None
     img_size: int | None = None
     patch_size: int | None = None
@@ -20,7 +20,7 @@ class VisualEncoderConfig:
 class LLMConfig:
     name: str = MISSING
     hf_name: str = MISSING
-    type: str = MISSING
+    type: str = "hf_llm"
     hidden_size: int | None = None
     vocab_size: int | None = None
     max_seq_length: int | None = None
@@ -51,6 +51,8 @@ class DatasetConfig:
     batch_size: int = 16
     num_proc: int | None = None
     num_workers: int = 4
+    pin_memory: bool = True
+    persistent_workers: bool = True
 
 
 @dataclass
@@ -96,7 +98,6 @@ class TrainerConfig:
     weight_decay: WeightDecayConfig = field(default_factory=WeightDecayConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    num_training_samples: int = 1000
     batch_size: int = 16
     ignore_index: int = -100
     default_root_dir: str = "."
@@ -121,7 +122,7 @@ class TrainerConfig:
     log_model_to_wandb: bool = False
     save_every_n_epochs: int | None = None
     save_every_n_train_steps: int | None = None
-
+    num_training_samples: int | None = None
 
 @dataclass
 class ModeConfig:

@@ -2,54 +2,47 @@ import logging
 from pathlib import Path
 
 import hydra
-import torch
 from omegaconf import OmegaConf
 from pytorch_lightning import seed_everything
-from torch.utils.data import DataLoader
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
 from .data import (
-    get_inference_dataloader,
-    get_test_dataloader,
-    get_train_dataloader,
-    get_val_dataloader,
+    DataModule, InferenceDataModule
 )
 from .inference import inference
 from .models import VLM
 from .train.trainer import train
 
 log: logging.Logger = logging.getLogger(name=__name__)
-config_path: Path = Path(__file__).resolve().parent / "config"
+CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"
 seed_everything(42, workers=True)
 
 
 def print_model(cfg: ModelConfig) -> None:
-    model_name: str = cfg.name
-    model_config_path: Path = (config_path / "model" / f"{model_name}.yaml").resolve()
-    model_url: str = f"file://{model_config_path}"
+    components = {
+        "model": {
+            "name": cfg.name,
+            "path": CONFIG_PATH / "model" / f"{cfg.name}.yaml"
+        },
+        "visual_encoder": {
+            "name": cfg.visual_encoder.name,
+            "path": CONFIG_PATH / "model" / "visual_encoder" / f"{cfg.visual_encoder.name}.yaml"
+        },
+        "llm": {
+            "name": cfg.llm.name,
+            "path": CONFIG_PATH / "model" / "llm" / f"{cfg.llm.name}.yaml"
+        },
+        "connector": {
+            "name": cfg.connector.name,
+            "path": CONFIG_PATH / "model" / "connector" / f"{cfg.connector.name}.yaml"
+        }
+    }
 
-    visual_encoder_name: str = cfg.visual_encoder.name
-    visual_encoder_path: Path = (
-        config_path / "model" / "visual_encoder" / f"{visual_encoder_name}.yaml"
-    ).resolve()
-    visual_url: str = f"file://{visual_encoder_path}"
+    log.info(f"Loading model: [bold red][link=file://{components['model']['path']}]{components['model']['name']}[/link][/bold red]")
+    log.info(f"Visual encoder: [bold cyan][link=file://{components['visual_encoder']['path']}]{components['visual_encoder']['name']}[/link][/bold cyan]")
+    log.info(f"LLM: [bold blue][link=file://{components['llm']['path']}]{components['llm']['name']}[/link][/bold blue]")
+    log.info(f"Connector: [bold yellow][link=file://{components['connector']['path']}]{components['connector']['name']}[/link][/bold yellow]")
 
-    llm_name: str = cfg.llm.name
-    llm_path: Path = (config_path / "model" / "llm" / f"{llm_name}.yaml").resolve()
-    llm_url: str = f"file://{llm_path}"
-
-    connector_name: str = cfg.connector.name
-    connector_path: Path = (
-        config_path / "model" / "connector" / f"{connector_name}.yaml"
-    ).resolve()
-    connector_url: str = f"file://{connector_path}"
-
-    log.info(f"Loading model: [bold red][link={model_url}]{model_name}[/link][/bold red]")
-    log.info(
-        f"Visual encoder: [bold cyan][link={visual_url}]{visual_encoder_name}[/link][/bold cyan]"
-    )
-    log.info(f"LLM: [bold blue][link={llm_url}]{llm_name}[/link][/bold blue]")
-    log.info(f"Connector: [bold yellow][link={connector_url}]{connector_name}[/link][/bold yellow]")
 
 
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
@@ -60,45 +53,44 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
 
 def vlm(cfg: AppConfig) -> None:
     if cfg.mode.is_training:
+
+        log.info("Training mode")
+        # only load neccessary components for dataset processing
         model: VLM = load_model(cfg.model, cfg.trainer)
-        log.info("[bold red]Training mode[/bold red]")
-        train_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_train_dataloader(
-            cfg.dataset, model
-        )
-        if train_dataloader is not None:
-            log.info(
-                f"[bold green]Training data load successfully:[/bold green] {len(train_dataloader)}"
-            )
-        else:
-            log.error("[bold red]Training data load failed[/bold red]")
+        data_module = DataModule(cfg.dataset, model)
+
+        # Get dataloaders
+        train_dataloader = data_module.train_dataloader
+        val_dataloader = data_module.val_dataloader
+        test_dataloader = data_module.test_dataloader
+
+        # Check if training data is available
+        if train_dataloader is None:
+            log.error("Training data load failed")
             raise ValueError("Training data load failed")
 
-        val_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_val_dataloader(
-            cfg.dataset, model
-        )
-        if val_dataloader is not None:
-            log.info(
-                f"[bold green]Validation data load successfully:[/bold green] {len(val_dataloader)}"
-            )
-        else:
-            log.warning("[bold yellow]Validation data load failed[/bold yellow]")
+        log.info(f"Training data loaded successfully: {len(train_dataloader)} batches")
+        cfg.trainer.num_training_samples = len(train_dataloader)
 
-        test_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_test_dataloader(
-            cfg.dataset, model
-        )
-        if test_dataloader is not None:
-            log.info(
-                f"[bold green]Test data load successfully:[/bold green] {len(test_dataloader)}"
-            )
+        # Log validation and test data status
+        if val_dataloader:
+            log.info(f"Validation data loaded successfully: {len(val_dataloader)} batches")
         else:
-            log.warning("[bold yellow]Test data load failed[/bold yellow]")
+            log.warning("Validation data load failed")
 
-        train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
+        if test_dataloader:
+            log.info(f"Test data loaded successfully: {len(test_dataloader)} batches")
+        else:
+            log.warning("Test data load failed")
+
+        # initialize all components
+        model.initialize_components()
+
+        # train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
     else:
-        log.info("[bold red]Inference mode[/bold red]")
-        inference_dataloader: DataLoader[dict[str, torch.Tensor]] | None = get_inference_dataloader(
-            cfg.inference
-        )
+        log.info("Inference mode")
+        inference_module = InferenceDataModule(cfg.inference)
+        inference_dataloader = inference_module.get_dataloader()
         inference(cfg.inference, inference_dataloader)
 
 
@@ -106,7 +98,7 @@ def validate_config(cfg: AppConfig) -> None:
     OmegaConf.to_container(cfg, throw_on_missing=True)
 
 
-@hydra.main(version_base=None, config_path=str(config_path), config_name="config")  # pyright: ignore
+@hydra.main(version_base=None, config_path=str(CONFIG_PATH), config_name="config")  # pyright: ignore
 def main(cfg: AppConfig) -> None:
     validate_config(cfg)
     vlm(cfg)

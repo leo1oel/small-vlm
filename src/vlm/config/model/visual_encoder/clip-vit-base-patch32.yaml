@@ -1,6 +1,5 @@
 name: clip-vit-base-patch32
 hf_name: openai/clip-vit-base-patch32
-type: vit
 hidden_size: 768
 img_size: 224
 patch_size: 32
