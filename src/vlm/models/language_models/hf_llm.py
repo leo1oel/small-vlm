@@ -1,10 +1,17 @@
 import logging
-from typing import override, cast
+from typing import Any, cast, override
 
 import torch
 import torch.nn as nn
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer, PreTrainedModel, PretrainedConfig
-from typing import Any
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    PretrainedConfig,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+)
+
 from ...config.config_schema import LLMConfig
 from .base import LanguageModel
 
@@ -21,21 +28,28 @@ class HFLLMLanguageModel(LanguageModel):
 
     @override
     def _build_tokenizer(self) -> PreTrainedTokenizer:
-        return cast(PreTrainedTokenizer, AutoTokenizer.from_pretrained(
-            self.hf_name, trust_remote_code=True
-        ))
+        return cast(
+            PreTrainedTokenizer,
+            AutoTokenizer.from_pretrained(
+                self.hf_name,
+                trust_remote_code=True,
+                use_fast=True,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+            ),
+        )
 
     @override
     def _build_language_model(self) -> PreTrainedModel:
-        return cast(PreTrainedModel, AutoModelForCausalLM.from_pretrained(
-            self.hf_name, trust_remote_code=True
-        ))
+        return cast(
+            PreTrainedModel,
+            AutoModelForCausalLM.from_pretrained(self.hf_name, trust_remote_code=True),
+        )
 
     @override
     def _build_hf_config(self) -> PretrainedConfig:
-        return cast(PretrainedConfig, AutoConfig.from_pretrained(
-            self.hf_name, trust_remote_code=True
-        ))
+        return cast(
+            PretrainedConfig, AutoConfig.from_pretrained(self.hf_name, trust_remote_code=True)
+        )
 
     @override
     def forward(

@@ -1,12 +1,14 @@
-import os
-import logging
-from typing import Literal, cast, Callable, Any
 import json
-from PIL import Image
+import logging
+import os
+from collections.abc import Callable
+from typing import Any, Literal, cast
+
 import torch
+from datasets import Dataset, DatasetDict, load_dataset  # pyright: ignore
+from PIL import Image
 from torch.utils.data import DataLoader
-from datasets import load_dataset, DatasetDict, Dataset  # pyright: ignore
-from transformers import PreTrainedTokenizer, BaseImageProcessor
+from transformers import BaseImageProcessor, PreTrainedTokenizer
 
 from ..config.config_schema import DatasetConfig, InferenceConfig
 from ..models.model import VLM
@@ -31,7 +33,9 @@ class DataModule:
         self.image_token_id: int = cast(int, self.model.language_model.token_config.image_token_id)
         self.image_token_size: int = self.model.visual_encoder.token_size
 
-        self.transform: Callable[[dict[str, Image.Image | str], bool], dict[str, torch.Tensor | list[torch.Tensor]]] = self._build_transform()
+        self.transform: Callable[
+            [dict[str, Image.Image | str], bool], dict[str, torch.Tensor | list[torch.Tensor]]
+        ] = self._build_transform()
 
     def get_dataset(self, split: Literal["train", "val", "test"]) -> Dataset | None:
         try:
@@ -39,14 +43,12 @@ class DataModule:
             if dataset_type == "huggingface":
                 log.info(f"Loading HuggingFace dataset: {self.dataset_config.name} ({split})")
                 # Load the dataset
-                dataset: DatasetDict = cast(DatasetDict, load_dataset(
-                    self.dataset_config.hf_name,
-                    trust_remote_code=True
-                ))
+                dataset: DatasetDict = cast(
+                    DatasetDict, load_dataset(self.dataset_config.hf_name, trust_remote_code=True)
+                )
 
                 map_dataset: DatasetDict = dataset.map(
-                    self.transform,
-                    num_proc=getattr(self.dataset_config, "num_proc", None)
+                    self.transform, num_proc=getattr(self.dataset_config, "num_proc", None)
                 )
 
                 return map_dataset[split]
@@ -59,7 +61,9 @@ class DataModule:
 
     def _build_transform(
         self,
-    ) -> Callable[[dict[str, Image.Image | str], bool], dict[str, torch.Tensor | list[torch.Tensor]]]:
+    ) -> Callable[
+        [dict[str, Image.Image | str], bool], dict[str, torch.Tensor | list[torch.Tensor]]
+    ]:
         def transform(
             item: dict[str, Image.Image | str], do_generation: bool = False
         ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
@@ -68,14 +72,12 @@ class DataModule:
             text_str = self._extract_text(item)
 
             text = json.loads(text_str.replace("\n", "\\n"))
-            text_and_label = self._text_transform(
-                text, do_generation
-            )
+            text_and_label = self._text_transform(text, do_generation)
 
             return {
                 "image": cast(torch.Tensor, image_tensor),
                 "text": text_and_label[0],
-                "label": text_and_label[1]
+                "label": text_and_label[1],
             }
 
         return transform
@@ -91,9 +93,7 @@ class DataModule:
             return image
         elif isinstance(image, Image.Image):
             original_image = image.convert("RGB")
-            input_image = self.image_preprocessor(
-                original_image, return_tensors="pt"
-            )
+            input_image = self.image_preprocessor(original_image, return_tensors="pt")
             return input_image["pixel_values"].squeeze(0)
 
     def _extract_text(self, item: dict[str, Any]) -> str:
@@ -107,9 +107,7 @@ class DataModule:
             raise ValueError(error_msg)
 
     def _text_transform(
-        self,
-        text: list[dict[str, str]],
-        do_generation: bool = False
+        self, text: list[dict[str, str]], do_generation: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor]:
         conversation = self._prepare_conversation(text)
 
@@ -126,7 +124,9 @@ class DataModule:
             for item in text
         ]
 
-    def _apply_chat_template(self, conversation: list[dict[str, str]], do_generation: bool) -> torch.Tensor:
+    def _apply_chat_template(
+        self, conversation: list[dict[str, str]], do_generation: bool
+    ) -> torch.Tensor:
         input_ids = self.tokenizer.apply_chat_template(
             conversation,
             tokenize=True,
@@ -195,20 +195,20 @@ class DataModule:
 
         # Process each item in the batch
         for item in batch:
-
             # Pad input sequences
             text_pad_length = max_text_length - len(item["text"])
-            padded_input_ids = torch.cat([
-                torch.tensor(item["text"]),
-                torch.full((text_pad_length,), cast(int, self.tokenizer.pad_token_id))
-            ])
+            padded_input_ids = torch.cat(
+                [
+                    torch.tensor(item["text"]),
+                    torch.full((text_pad_length,), cast(int, self.tokenizer.pad_token_id)),
+                ]
+            )
 
             # Pad label sequences (using -100 as padding)
             label_pad_length = max_label_length - len(item["label"])
-            padded_labels = torch.cat([
-                torch.tensor(item["label"]),
-                torch.full((label_pad_length,), -100)
-            ])
+            padded_labels = torch.cat(
+                [torch.tensor(item["label"]), torch.full((label_pad_length,), -100)]
+            )
 
             # Add to lists
             input_ids.append(padded_input_ids)
@@ -219,7 +219,7 @@ class DataModule:
         return {
             "images": torch.stack(images),
             "texts": torch.stack(input_ids),
-            "labels": torch.stack(labels)
+            "labels": torch.stack(labels),
         }
 
     def get_dataloader(self, split: Literal["train", "val", "test"]) -> DataLoader[Dataset] | None:
@@ -234,7 +234,7 @@ class DataModule:
             collate_fn=self.collate_fn,
             num_workers=self.dataset_config.num_workers,
             pin_memory=self.dataset_config.pin_memory,
-            persistent_workers=self.dataset_config.persistent_workers
+            persistent_workers=self.dataset_config.persistent_workers,
         )
 
     @property

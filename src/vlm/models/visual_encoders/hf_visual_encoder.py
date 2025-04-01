@@ -1,8 +1,15 @@
 import logging
-from typing import override, cast
+from typing import cast, override
 
 import torch
-from transformers import AutoConfig, AutoImageProcessor, AutoModel, BaseImageProcessor, PreTrainedModel, PretrainedConfig
+from transformers import (
+    AutoConfig,
+    AutoImageProcessor,
+    AutoModel,
+    BaseImageProcessor,
+    PretrainedConfig,
+    PreTrainedModel,
+)
 
 from ...config.config_schema import VisualEncoderConfig
 from .base import VisualEncoder
@@ -19,17 +26,17 @@ class HFVisualEncoder(VisualEncoder):
         return cast(
             BaseImageProcessor,
             AutoImageProcessor.from_pretrained(
-                self.hf_name, trust_remote_code=True, use_fast=True
-            )
+                self.hf_name,
+                trust_remote_code=True,
+                use_fast=True,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+            ),
         )
 
     @override
     def _build_visual_encoder(self) -> PreTrainedModel:
         visual_encoder: PreTrainedModel = cast(
-            PreTrainedModel,
-            AutoModel.from_pretrained(
-                self.hf_name, trust_remote_code=True
-            )
+            PreTrainedModel, AutoModel.from_pretrained(self.hf_name, trust_remote_code=True)
         )
         if getattr(self.visual_encoder, "vision_model", None):
             visual_encoder = self.visual_encoder.vision_model  # pyright: ignore
@@ -39,10 +46,7 @@ class HFVisualEncoder(VisualEncoder):
     @override
     def _build_hf_config(self) -> PretrainedConfig:
         return cast(
-            PretrainedConfig,
-            AutoConfig.from_pretrained(
-                self.hf_name, trust_remote_code=True
-            )
+            PretrainedConfig, AutoConfig.from_pretrained(self.hf_name, trust_remote_code=True)
         )
 
     @override

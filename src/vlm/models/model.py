@@ -1,12 +1,9 @@
-import json
 import logging
-from collections.abc import Callable
 from typing import Any, override
 
 import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
-from PIL import Image
 from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from torch.nn.parameter import Parameter
 
@@ -90,6 +87,7 @@ class VLM(pl.LightningModule):
         encoder_config: VisualEncoderConfig = self.model_config.visual_encoder
         if encoder_config.type == "hf_visual_encoder":
             from .visual_encoders import HFVisualEncoder
+
             return HFVisualEncoder(encoder_config)
         else:
             error_msg = f"Unknown visual encoder type: {encoder_config.type}"
@@ -100,6 +98,7 @@ class VLM(pl.LightningModule):
         llm_config: LLMConfig = self.model_config.llm
         if llm_config.type == "hf_llm":
             from .language_models import HFLLMLanguageModel
+
             return HFLLMLanguageModel(llm_config)
         else:
             error_msg = f"Unknown language model type: {llm_config.type}"
@@ -110,10 +109,16 @@ class VLM(pl.LightningModule):
         connector_config: ConnectorConfig = self.model_config.connector
         if connector_config.type == "linear":
             from .connectors import LinearConnector
-            return LinearConnector(connector_config, self.visual_encoder.hidden_size, self.language_model.hidden_size)
+
+            return LinearConnector(
+                connector_config, self.visual_encoder.hidden_size, self.language_model.hidden_size
+            )
         elif connector_config.type == "mlp":
             from .connectors import MLPConnector
-            return MLPConnector(connector_config, self.visual_encoder.hidden_size, self.language_model.hidden_size)
+
+            return MLPConnector(
+                connector_config, self.visual_encoder.hidden_size, self.language_model.hidden_size
+            )
         else:
             error_msg = f"Unknown connector type: {connector_config.type}"
             log.error(error_msg)
@@ -198,9 +203,7 @@ class VLM(pl.LightningModule):
         return loss
 
     @override
-    def predict_step(
-        self, batch: list[dict[str, torch.Tensor | str]], batch_idx: int
-    ) -> list[str]:
+    def predict_step(self, batch: list[dict[str, torch.Tensor | str]], batch_idx: int) -> list[str]:
         device = next(self.parameters()).device
         processed_data = self._prepare_prediction_data(batch, device)
         image_tensors, text_tensors = processed_data
@@ -263,10 +266,7 @@ class VLM(pl.LightningModule):
         )
 
         # 解码输出
-        return [
-            llm.tokenizer.decode(output, skip_special_tokens=True)
-            for output in outputs
-        ]
+        return [llm.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
 
     def _calculate_loss(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         return get_loss(self.trainer_config, outputs, labels)
@@ -287,9 +287,7 @@ class VLM(pl.LightningModule):
             )
 
         if self.trainer_config.unfreeze.train_connector:
-            param_groups["connector"] = self._collect_param_groups(
-                self.connector, no_decay
-            )
+            param_groups["connector"] = self._collect_param_groups(self.connector, no_decay)
 
         return get_optimizer(self.trainer_config, param_groups)
 
@@ -344,7 +342,6 @@ class VLM(pl.LightningModule):
 
         self._log_trainable_params()
 
-
     def _log_trainable_params(self) -> None:
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.parameters())
@@ -359,6 +356,4 @@ class VLM(pl.LightningModule):
             trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
             total = sum(p.numel() for p in module.parameters())
             if total > 0:
-                log.info(
-                    f"  - {module_name}: {trainable:,} ({trainable / total:.2%} of {total:,})"
-                )
+                log.info(f"  - {module_name}: {trainable:,} ({trainable / total:.2%} of {total:,})")
