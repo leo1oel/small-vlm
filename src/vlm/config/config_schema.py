@@ -46,7 +46,8 @@ class ModelConfig:
 @dataclass
 class DatasetConfig:
     name: str = MISSING
-    hf_name: str = MISSING
+    hf_name: str | None = None
+    json_path: str | None = None
     type: str = MISSING
     num_proc: int = 8
     num_workers: int = 4
@@ -134,12 +135,8 @@ class ModeConfig:
 @dataclass
 class InferenceConfig:
     checkpoint_path: str = MISSING
-    num_workers: int = 4
-    batch_size: int = 16
-    hf_name: str | None = None
-    split: str | None = None
-    image_path: list[str] | None = None
-    text: list[str] | None = None
+    num_inference_samples: int | None = None
+    chat_template: str = "llava_plain"
 
 
 @dataclass

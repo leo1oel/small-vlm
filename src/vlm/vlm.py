@@ -7,6 +7,7 @@ from pytorch_lightning import seed_everything
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
 from .data import DataModule
+from .inference import inference
 from .models import VLM
 from .train.trainer import train
 
@@ -94,7 +95,7 @@ def vlm(cfg: AppConfig) -> None:
         train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
     else:
         log.info("Inference mode")
-        model = load_model(cfg.model, cfg.trainer)
+        inference(cfg.inference, cfg.dataset)
 
 
 def validate_config(cfg: AppConfig) -> None:

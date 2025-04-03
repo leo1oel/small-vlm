@@ -28,7 +28,6 @@ def get_optimizer(
             "scheduler": scheduler,
             "interval": "step",
             "frequency": 1,
-            "monitor": "val_loss",
             "name": "learning_rate",
         },
     }

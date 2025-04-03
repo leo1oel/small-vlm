@@ -47,7 +47,7 @@ class VLM(pl.LightningModule):
         self.language_model.initialize_components()
         self._connector = self._build_connector()
         # setup example input
-        self._setup_example_input()
+        self._setup_example_input(self.visual_encoder.img_size)
 
         self._save_hyperparameters()
 
@@ -57,9 +57,9 @@ class VLM(pl.LightningModule):
         self._language_model: LanguageModel = self._build_language_model()
         self._connector: Connector
 
-    def _setup_example_input(self) -> None:
+    def _setup_example_input(self, img_size: int) -> None:
         self.example_input_array: tuple[torch.Tensor | list[torch.Tensor], torch.Tensor] = (
-            [torch.randn(1, 3, 336, 336), torch.randn(2, 3, 336, 336)],
+            [torch.randn(1, 3, img_size, img_size), torch.randn(2, 3, img_size, img_size)],
             self.language_model.tokenizer(
                 ["test <|image|>.", "test <|image|> multiple images <|image|>."],
                 padding=True,
@@ -207,67 +207,30 @@ class VLM(pl.LightningModule):
         return loss
 
     @override
-    def predict_step(self, batch: list[dict[str, torch.Tensor | str]], batch_idx: int) -> list[str]:
-        device = next(self.parameters()).device
-        processed_data = self._prepare_prediction_data(batch, device)
-        image_tensors, text_tensors = processed_data
+    def predict_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> str:
+        images = batch["images"]
+        texts = batch["texts"]
 
-        vision_features = (self.visual_encoder(image_tensors),)
+        vision_features = self._process_vision_features(images)
 
-        predictions = self._generate_predictions(vision_features, text_tensors)
+        connector_output = self._connect_features(vision_features, texts)
+        multimodal_features, attention_mask = connector_output
+
+        predictions = self._generate_predictions(multimodal_features, attention_mask)
 
         return predictions
 
-    def _prepare_prediction_data(
-        self, batch: list[dict[str, Any]], device: torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        image_tensors_list = []
-        text_tensors_list = []
-
-        for item in batch:
-            image = item["image"]
-            text = item["text"][0]
-
-            text_template = f'[{{"from": "human", "value": "{text}"}}]'
-
-            transformed_item = self.transform(  # pyright: ignore
-                {"image": image, "text": text_template},
-                True,
-            )
-
-            image_tensors_list.append(transformed_item["image"].to(device))
-            text_tensors_list.append(transformed_item["text"].to(device))
-
-        image_tensors = torch.cat(image_tensors_list, dim=0).to(device)  # pyright: ignore
-        text_tensors = torch.stack(text_tensors_list, dim=0).to(device)  # pyright: ignore
-
-        return image_tensors, text_tensors
-
     def _generate_predictions(
-        self, vision_features: tuple[torch.Tensor, ...], text_tensors: torch.Tensor
-    ) -> list[str]:
-        """生成预测结果"""
-        # 获取连接特征
-        llm = self.language_model
-        connector_output = self.connector(
-            vision_features,
-            text_tensors,
-            llm.embeddings,
-            llm.image_token_id,
-            llm.pad_token_id,
-            self.model_config.connector.mask_format,
-        )
-        multimodal_features, attention_mask = connector_output
-
-        # 生成文本
-        outputs = llm.language_model.generate(
+        self, multimodal_features: torch.Tensor, attention_mask: torch.Tensor
+    ) -> str:
+        output = self.language_model.language_model.generate(
             inputs_embeds=multimodal_features,
             attention_mask=attention_mask,
             max_new_tokens=20,
             do_sample=False,
         )
 
-        return [llm.tokenizer.decode(output, skip_special_tokens=True) for output in outputs]  # pyright: ignore
+        return self.language_model.tokenizer.decode(output, skip_special_tokens=True)
 
     def _calculate_loss(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         return get_loss(self.trainer_config, outputs, labels)

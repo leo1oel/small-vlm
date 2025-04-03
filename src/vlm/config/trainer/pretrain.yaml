@@ -3,7 +3,7 @@ max_epochs: 1
 save_every_n_epochs: null
 save_every_n_train_steps: null
 log_every_n_steps: 5
-accumulate_grad_batches: 4
+accumulate_grad_batches: 1
 # choose from [64, 32, 16, 'transformer-engine', 'transformer-engine-float16', '16-true', '16-mixed', 'bf16-true', 'bf16-mixed', '32-true', '64-true', '64', '32', '16', 'bf16']
 precision: bf16-mixed
 # devices can be int or str, but currently don't support list since OmegaConf doesn't support Union[list]
@@ -11,9 +11,9 @@ strategy: deepspeed_stage_2
 devices: auto
 resume_from_checkpoint: false
 checkpoint_path: null
-batch_size: 8
+batch_size: 4
 chat_template: "llava_plain"
-num_training_samples: null
+num_training_samples: 1000
 
 defaults:
   - unfreeze: pretrain

@@ -6,6 +6,7 @@ from typing import Any, Literal, cast
 
 import torch
 from datasets import Dataset, DatasetDict, load_dataset  # pyright: ignore
+from datasets import Image as HFImage
 from PIL import Image
 from torch.utils.data import DataLoader
 from transformers import BaseImageProcessor, PreTrainedTokenizer
@@ -55,7 +56,21 @@ class DataModule:
             if dataset_type == "huggingface":
                 log.info(f"Loading HuggingFace dataset: {self.dataset_config.name}")
                 self._raw_dataset = cast(
-                    DatasetDict, load_dataset(self.dataset_config.hf_name, trust_remote_code=True)
+                    DatasetDict,
+                    load_dataset(cast(str, self.dataset_config.hf_name), trust_remote_code=True),
+                )
+                if self.num_training_samples is not None:
+                    self._raw_dataset["train"] = self._raw_dataset["train"].select(
+                        range(min(self.num_training_samples, len(self._raw_dataset["train"])))
+                    )
+            elif dataset_type == "json":
+                log.info(f"Loading JSON dataset: {self.dataset_config.name}")
+                self._raw_dataset = cast(
+                    DatasetDict,
+                    load_dataset(
+                        "json",
+                        data_files=self.dataset_config.json_path,
+                    ).cast_column("image", HFImage()),
                 )
                 if self.num_training_samples is not None:
                     self._raw_dataset["train"] = self._raw_dataset["train"].select(

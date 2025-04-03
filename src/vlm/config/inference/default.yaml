@@ -1,3 +1,2 @@
-checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-01/04-50-27/checkpoints/last.ckpt
-image_path: ["/pasteur2/u/yuhuiz/yiming/small-vlm/example/image.jpg"]
-text: ["Give a short and clear explanation of the subsequent image <image>. \n"]
+checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-03/08-06-48/checkpoints/last.ckpt
+num_inference_samples: 5
