@@ -23,7 +23,11 @@ log: logging.Logger = logging.getLogger(name=__name__)
 
 
 class VLM(pl.LightningModule):
-    def __init__(self, model_config: ModelConfig, trainer_config: TrainerConfig) -> None:
+    def __init__(
+        self,
+        model_config: ModelConfig,
+        trainer_config: TrainerConfig,
+    ) -> None:
         super().__init__()
         # process config
         self.model_config: ModelConfig = self._process_config(model_config)
@@ -41,7 +45,7 @@ class VLM(pl.LightningModule):
     def initialize_components(self) -> None:
         self.visual_encoder.initialize_components()
         self.language_model.initialize_components()
-
+        self._connector = self._build_connector()
         # setup example input
         self._setup_example_input()
 
@@ -51,7 +55,7 @@ class VLM(pl.LightningModule):
     def _initialize_components(self) -> None:
         self._visual_encoder: VisualEncoder = self._build_visual_encoder()
         self._language_model: LanguageModel = self._build_language_model()
-        self._connector: Connector = self._build_connector()
+        self._connector: Connector
 
     def _setup_example_input(self) -> None:
         self.example_input_array: tuple[torch.Tensor | list[torch.Tensor], torch.Tensor] = (

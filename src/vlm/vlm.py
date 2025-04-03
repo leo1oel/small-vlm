@@ -5,11 +5,8 @@ import hydra
 from omegaconf import OmegaConf
 from pytorch_lightning import seed_everything
 
-from vlm.config.config_schema import DatasetConfig
-
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
 from .data import DataModule
-from .inference import inference
 from .models import VLM
 from .train.trainer import train
 
@@ -61,9 +58,12 @@ def vlm(cfg: AppConfig) -> None:
         # only load necessary components for dataset processing
         model: VLM = load_model(cfg.model, cfg.trainer)
         data_module = DataModule(
-            cfg.dataset, model, cfg.trainer.batch_size, cfg.trainer.chat_template
+            cfg.dataset,
+            cfg.trainer.num_training_samples,
+            model,
+            cfg.trainer.batch_size,
+            cfg.trainer.chat_template,
         )
-
         # Get dataloaders
         train_dataloader = data_module.train_dataloader
         val_dataloader = data_module.val_dataloader
@@ -75,7 +75,8 @@ def vlm(cfg: AppConfig) -> None:
             raise ValueError("Training data load failed")
 
         log.info(f"Training data loaded successfully: {len(train_dataloader)} batches")
-        cfg.trainer.num_training_samples = data_module.num_samples["train"]
+        if cfg.trainer.num_training_samples is None:
+            cfg.trainer.num_training_samples = data_module.num_samples["train"]
 
         # Log validation and test data status
         if val_dataloader:
@@ -90,18 +91,10 @@ def vlm(cfg: AppConfig) -> None:
 
         # initialize all components
         model.initialize_components()
-
         train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
     else:
         log.info("Inference mode")
         model = load_model(cfg.model, cfg.trainer)
-        data_module = DataModule(
-            DatasetConfig(name="null", hf_name="null", type="null"),
-            model,
-            cfg.trainer.batch_size,
-            cfg.trainer.chat_template,
-        )
-        inference(cfg.inference, data_module)
 
 
 def validate_config(cfg: AppConfig) -> None:

@@ -4,7 +4,6 @@ from typing import Any
 
 import pytorch_lightning as pl
 import torch
-from datasets import Dataset
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
@@ -20,9 +19,9 @@ log = getLogger(__name__)
 def train(
     config: TrainerConfig,
     model: VLM,
-    train_dataloader: DataLoader[Dataset],
-    val_dataloader: DataLoader[Dataset] | None = None,
-    test_dataloader: DataLoader[Dataset] | None = None,
+    train_dataloader: DataLoader[Any],
+    val_dataloader: DataLoader[Any] | None = None,
+    test_dataloader: DataLoader[Any] | None = None,
 ) -> str:
     wandb_logger = _setup_wandb_logger(config, model)
 
@@ -36,9 +35,9 @@ def train(
 
     trainer.fit(
         model=model,
+        ckpt_path=ckpt_path,
         train_dataloaders=train_dataloader,
         val_dataloaders=val_dataloader,
-        ckpt_path=ckpt_path,
     )
 
     if test_dataloader is not None:
@@ -101,7 +100,7 @@ def _setup_callbacks(config: TrainerConfig, has_val_dataloader: bool) -> list[An
 
 
 def _setup_trainer(config: TrainerConfig, callbacks: list[Any], logger: WandbLogger) -> pl.Trainer:
-    trainer_kwargs = {
+    trainer_kwargs: dict[str, Any] = {
         "default_root_dir": config.default_root_dir,
         "callbacks": callbacks,
         "logger": logger,

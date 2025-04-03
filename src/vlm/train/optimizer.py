@@ -13,7 +13,8 @@ log = logging.getLogger(__name__)
 
 
 def get_optimizer(
-    trainer_config: TrainerConfig, param_groups: dict[str, dict[str, list[Parameter]]]
+    trainer_config: TrainerConfig,
+    param_groups: dict[str, dict[str, list[Parameter]]],
 ) -> OptimizerLRScheduler:
     optimizer_grouped_parameters = _build_optimizer_params(trainer_config, param_groups)
 
@@ -34,7 +35,8 @@ def get_optimizer(
 
 
 def _build_optimizer_params(
-    config: TrainerConfig, param_groups: dict[str, dict[str, list[Parameter]]]
+    config: TrainerConfig,
+    param_groups: dict[str, dict[str, list[Parameter]]],
 ) -> list[dict[str, Any]]:
     optimizer_params: list[dict[str, Any]] = []
 

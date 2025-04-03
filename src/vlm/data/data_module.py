@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from transformers import BaseImageProcessor, PreTrainedTokenizer
 
 from ..config.config_schema import DatasetConfig
-from ..models.model import VLM
+from ..models import VLM
 from ..utils.chat_template import get_chat_template
 
 # Disable tokenizers parallelism warning
@@ -23,30 +23,31 @@ class DataModule:
     def __init__(
         self,
         dataset_config: DatasetConfig,
+        num_training_samples: int | None,
         model: VLM,
         batch_size: int,
         chat_template: str,
     ):
-        self.dataset_config: DatasetConfig = dataset_config
         self.model: VLM = model
+        self.dataset_config: DatasetConfig = dataset_config
         self.batch_size: int = batch_size
         self.chat_template: str = get_chat_template(chat_template)
         self._raw_dataset: DatasetDict | None = None
         self._processed_datasets: dict[str, Dataset] = {}
+        self.num_training_samples: int | None = num_training_samples
+        self.num_samples: dict[str, int] = {}
 
         # model components
-        self.tokenizer: PreTrainedTokenizer = self.model.language_model.tokenizer
-        self.image_preprocessor: BaseImageProcessor = self.model.visual_encoder.preprocessor
-        self.image_token_id: int = cast(int, self.model.language_model.token_config.image_token_id)
-        self.image_token_size: int = self.model.visual_encoder.token_size
+        self.tokenizer: PreTrainedTokenizer = model.language_model.tokenizer
+        self.image_preprocessor: BaseImageProcessor = model.visual_encoder.preprocessor
+        self.image_token_id: int = cast(int, model.language_model.token_config.image_token_id)
+        self.image_token_size: int = model.visual_encoder.token_size
 
         self.transform: Callable[
-            [dict[str, Image.Image | str], bool], dict[str, torch.Tensor | list[torch.Tensor]]
+            [dict[str, Image.Image | str], bool], dict[str, torch.Tensor | Image.Image]
         ] = self._build_transform()
 
         self._load_raw_dataset()
-
-        self.num_samples: dict[str, int] = {}
 
     def _load_raw_dataset(self):
         try:
@@ -56,6 +57,10 @@ class DataModule:
                 self._raw_dataset = cast(
                     DatasetDict, load_dataset(self.dataset_config.hf_name, trust_remote_code=True)
                 )
+                if self.num_training_samples is not None:
+                    self._raw_dataset["train"] = self._raw_dataset["train"].select(
+                        range(min(self.num_training_samples, len(self._raw_dataset["train"])))
+                    )
             else:
                 log.warning(f"Dataset type {dataset_type} not supported")
                 raise ValueError(f"Dataset type {dataset_type} not supported")
@@ -97,40 +102,28 @@ class DataModule:
 
     def _build_transform(
         self,
-    ) -> Callable[
-        [dict[str, Image.Image | str], bool], dict[str, torch.Tensor | list[torch.Tensor]]
-    ]:
-        def transform(
-            item: dict[str, Image.Image | str], do_generation: bool = False
-        ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
-            image_tensor = self._process_image(item)
+    ) -> Callable[[dict[str, Image.Image | str], bool], dict[str, torch.Tensor | Image.Image]]:
+        return self._transform
 
-            text_str = self._extract_text(item)
+    def _transform(self, item: dict[str, Any], do_generation: bool = False) -> dict[str, Any]:
+        text_str = self._extract_text(item)
 
-            text = json.loads(text_str.replace("\n", "\\n"))
-            text_and_label = self._text_transform(text, do_generation)
+        text = json.loads(text_str.replace("\n", "\\n"))
+        text_and_label = self._text_transform(text, do_generation)
 
-            return {
-                "image": cast(torch.Tensor, image_tensor),
-                "text": text_and_label[0],
-                "label": text_and_label[1],
-            }
+        item["text"] = text_and_label[0]
+        item["label"] = text_and_label[1]
+        return item
 
-        return transform
+    # def _process_image(self, item: dict[str, Any]) -> Image.Image:
+    #     if "image" not in item:
+    #         error_msg = f"Cannot find image in item {item}"
+    #         log.error(error_msg)
+    #         raise ValueError(error_msg)
 
-    def _process_image(self, item: dict[str, Any]) -> torch.Tensor | None:
-        if "image" not in item:
-            error_msg = f"Cannot find image in item {item}"
-            log.error(error_msg)
-            raise ValueError(error_msg)
-
-        image = item["image"]
-        if isinstance(image, torch.Tensor):
-            return image
-        elif isinstance(image, Image.Image):
-            original_image = image.convert("RGB")
-            input_image = self.image_preprocessor(original_image, return_tensors="pt")
-            return input_image["pixel_values"].squeeze(0)
+    #     image = item["image"]
+    #     original_image = image.convert("RGB")
+    #     return original_image
 
     def _extract_text(self, item: dict[str, Any]) -> str:
         if "text" in item:
@@ -253,7 +246,7 @@ class DataModule:
 
         return expanded_labels
 
-    def collate_fn(self, batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+    def collate_fn(self, batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
         """Custom collate function for batching data together."""
 
         # Get maximum lengths for padding
@@ -285,7 +278,11 @@ class DataModule:
             # Add to lists
             input_ids.append(padded_input_ids)
             labels.append(padded_labels)
-            images.append(torch.tensor(item["image"]))
+            with torch.no_grad():
+                img_tensor = self.image_preprocessor(
+                    item["image"].convert("RGB"), return_tensors="pt", device="cpu"
+                )["pixel_values"].squeeze(0)
+            images.append(img_tensor)
 
         # Stack all tensors
         return {
