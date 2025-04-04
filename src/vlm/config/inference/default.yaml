@@ -1,2 +1,2 @@
-checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-03/08-06-48/checkpoints/last.ckpt
+checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-04/05-01-50/checkpoints/model.pt
 num_inference_samples: 5

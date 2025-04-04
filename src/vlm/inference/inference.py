@@ -1,6 +1,5 @@
 import logging
-from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytorch_lightning as pl
 
@@ -11,9 +10,18 @@ from ..models.model import VLM
 log: logging.Logger = logging.getLogger(name=__name__)
 
 
-def inference(config: InferenceConfig, data_config: DatasetConfig) -> None:  # pyright: ignore
+class PredictDataModule(pl.LightningDataModule):
+    def __init__(self, data_module: DataModule):
+        super().__init__()
+        self.data_module: DataModule = data_module
+
+    @override
+    def predict_dataloader(self):
+        return self.data_module.predict_dataloader
+
+
+def inference(config: InferenceConfig, model: VLM, data_config: DatasetConfig) -> None:  # pyright: ignore
     log.info(f"[bold green]Loading model from checkpoint:[/bold green] {config.checkpoint_path}")
-    model: VLM = VLM.load_from_checkpoint(Path(config.checkpoint_path), map_location="cuda")
     trainer: pl.Trainer = pl.Trainer()
     data_module: DataModule = DataModule(
         data_config,
@@ -22,8 +30,10 @@ def inference(config: InferenceConfig, data_config: DatasetConfig) -> None:  # p
         1,
         config.chat_template,
     )
+    model.initialize_components()
+
+    # predict_data = PredictDataModule(data_module)
     results: list[Any] = trainer.predict(  # pyright: ignore
-        model=model, dataloaders=data_module.train_dataloader
+        model=model, dataloaders=data_module.predict_dataloader, ckpt_path=config.checkpoint_path
     )
-    for result in results:
-        print(result)
+    print(results)

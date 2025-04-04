@@ -210,48 +210,57 @@ class VLM(pl.LightningModule):
     def predict_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> str:
         images = batch["images"]
         texts = batch["texts"]
+        print(texts)
+        output = self.language_model.language_model.generate(
+            input_ids=texts,
+            max_new_tokens=20,
+            do_sample=False,
+        )
+        log.info(output)
 
         vision_features = self._process_vision_features(images)
 
         connector_output = self._connect_features(vision_features, texts)
         multimodal_features, attention_mask = connector_output
-
+        print(multimodal_features.shape)
+        print(attention_mask.shape)
+        print(torch.count_nonzero(attention_mask))
         predictions = self._generate_predictions(multimodal_features, attention_mask)
-
+        log.info(predictions)
         return predictions
 
     def _generate_predictions(
         self, multimodal_features: torch.Tensor, attention_mask: torch.Tensor
     ) -> str:
+        log.info(multimodal_features)
+        log.info(attention_mask)
         output = self.language_model.language_model.generate(
             inputs_embeds=multimodal_features,
             attention_mask=attention_mask,
             max_new_tokens=20,
             do_sample=False,
         )
+        log.info(output)
 
-        return self.language_model.tokenizer.decode(output, skip_special_tokens=True)
+        return self.language_model.tokenizer.decode(output[0], skip_special_tokens=True)
 
     def _calculate_loss(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         return get_loss(self.trainer_config, outputs, labels)
 
     @override
     def configure_optimizers(self) -> OptimizerLRScheduler:
+        log.info("configure_optimizers")
         no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight", "ln_"]
         param_groups: dict[str, dict[str, list[Parameter]]] = {}
 
-        if self.trainer_config.unfreeze.train_visual_encoder:
-            param_groups["visual_encoder"] = self._collect_param_groups(
-                self.visual_encoder, no_decay
-            )
+        visual_encoder_params = self._collect_param_groups(self.visual_encoder, no_decay)
+        param_groups["visual_encoder"] = visual_encoder_params
 
-        if self.trainer_config.unfreeze.train_language_model:
-            param_groups["language_model"] = self._collect_param_groups(
-                self.language_model, no_decay
-            )
+        language_model_params = self._collect_param_groups(self.language_model, no_decay)
+        param_groups["language_model"] = language_model_params
 
-        if self.trainer_config.unfreeze.train_connector:
-            param_groups["connector"] = self._collect_param_groups(self.connector, no_decay)
+        connector_params = self._collect_param_groups(self.connector, no_decay)
+        param_groups["connector"] = connector_params
 
         return get_optimizer(self.trainer_config, param_groups)
 
@@ -272,7 +281,7 @@ class VLM(pl.LightningModule):
 
         if decay_params or no_decay_params:
             return {"decay": decay_params, "no_decay": no_decay_params}
-        return {}
+        return {"decay": [], "no_decay": []}
 
     def freeze_visual_encoder(self, freeze: bool = True) -> None:
         for param in self.visual_encoder.parameters():

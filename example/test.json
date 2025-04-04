@@ -1,0 +1,56 @@
+[
+    {
+        "image": "/pasteur2/u/yuhuiz/yiming/small-vlm/example/image.jpg",
+        "text": [
+            {
+                "from": "user",
+                "value": "Describe the image in detail. <image>"
+            }
+        ]
+    },
+    {
+        "image": "/pasteur2/u/yuhuiz/yiming/small-vlm/example/image1.jpg",
+        "text": [
+            {
+                "from": "user",
+                "value": "Describe the image in detail. <image>"
+            }
+        ]
+    },
+    {
+        "image": "/pasteur2/u/yuhuiz/yiming/small-vlm/example/image.jpg",
+        "text": [
+            {
+                "from": "user",
+                "value": "Describe the image in detail. <image>"
+            }
+        ]
+    },
+    {
+        "image": "/pasteur2/u/yuhuiz/yiming/small-vlm/example/image1.jpg",
+        "text": [
+            {
+                "from": "user",
+                "value": "Describe the image in detail. <image>"
+            }
+        ]
+    },
+    {
+        "image": "/pasteur2/u/yuhuiz/yiming/small-vlm/example/image.jpg",
+        "text": [
+            {
+                "from": "user",
+                "value": "Describe the image in detail. <image>"
+            }
+        ]
+    },
+    {
+        "image": "/pasteur2/u/yuhuiz/yiming/small-vlm/example/image1.jpg",
+        "text": [
+            {
+                "from": "user",
+                "value": "Describe the image in detail. <image>"
+            }
+        ]
+    }
+]

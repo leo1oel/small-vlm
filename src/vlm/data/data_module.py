@@ -83,7 +83,10 @@ class DataModule:
             log.warning(f"Failed to load raw dataset: {str(e)}")
             self._raw_dataset = None
 
-    def get_dataset(self, split: Literal["train", "val", "test"]) -> Dataset | None:
+    def get_dataset(self, split: Literal["train", "val", "test", "predict"]) -> Dataset | None:
+        if split == "predict":
+            split = "train"
+
         if split in self._processed_datasets:
             log.info(f"Using cached processed dataset for split: {split}")
             return self._processed_datasets[split]
@@ -113,6 +116,8 @@ class DataModule:
 
         except Exception as e:
             log.error(f"Failed to process dataset for split {split}: {str(e)}")
+            if split == "train":
+                raise e
             return None
 
     def _build_transform(
@@ -121,9 +126,11 @@ class DataModule:
         return self._transform
 
     def _transform(self, item: dict[str, Any], do_generation: bool = False) -> dict[str, Any]:
-        text_str = self._extract_text(item)
-
-        text = json.loads(text_str.replace("\n", "\\n"))
+        original_text = self._extract_text(item)
+        if isinstance(original_text, str):
+            text = json.loads(original_text.replace("\n", "\\n"))
+        else:
+            text = original_text
         text_and_label = self._text_transform(text, do_generation)
 
         item["text"] = text_and_label[0]
@@ -140,7 +147,7 @@ class DataModule:
     #     original_image = image.convert("RGB")
     #     return original_image
 
-    def _extract_text(self, item: dict[str, Any]) -> str:
+    def _extract_text(self, item: dict[str, Any]) -> str | list[dict[str, str]]:
         if "text" in item:
             return item["text"]
         elif "conversations" in item:
@@ -206,7 +213,7 @@ class DataModule:
         full_text: str = cast(
             str,
             self.tokenizer.apply_chat_template(
-                conversation, tokenize=False, add_generation_prompt=False
+                conversation, tokenize=False, add_generation_prompt=True
             ),
         )
 
@@ -306,7 +313,9 @@ class DataModule:
             "labels": torch.stack(labels),
         }
 
-    def get_dataloader(self, split: Literal["train", "val", "test"]) -> DataLoader[Dataset] | None:
+    def get_dataloader(
+        self, split: Literal["train", "val", "test", "predict"]
+    ) -> DataLoader[Dataset] | None:
         dataset = self.get_dataset(split)
         if not dataset:
             return None
@@ -332,3 +341,7 @@ class DataModule:
     @property
     def test_dataloader(self) -> DataLoader[Dataset] | None:
         return self.get_dataloader("test")
+
+    @property
+    def predict_dataloader(self) -> DataLoader[Dataset] | None:
+        return self.get_dataloader("predict")

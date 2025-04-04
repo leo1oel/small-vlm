@@ -95,7 +95,8 @@ def vlm(cfg: AppConfig) -> None:
         train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
     else:
         log.info("Inference mode")
-        inference(cfg.inference, cfg.dataset)
+        model = load_model(cfg.model, cfg.trainer)
+        inference(cfg.inference, model, cfg.dataset)
 
 
 def validate_config(cfg: AppConfig) -> None:

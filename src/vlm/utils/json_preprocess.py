@@ -3,17 +3,23 @@ from pathlib import Path
 
 import polars as pl
 
-df = pl.read_json(
-    "/pasteur2/u/yuhuiz/yiming/LLaVA/playground/data/LLaVA-Pretrain/blip_laion_cc_sbu_558k.json"
-)
 
-image_root = "/pasteur2/u/yuhuiz/yiming/LLaVA/playground/data/LLaVA-Pretrain/images"
+def preprocess_json(input_path: str, output_path: str):
+    df = pl.read_json(input_path)
 
-df = df.with_columns(
-    pl.col("image").map_elements(lambda p: str(Path(image_root) / p), return_dtype=pl.Utf8)
-)
+    image_root = "/pasteur2/u/yuhuiz/yiming/LLaVA/playground/data/LLaVA-Pretrain/images"
 
-output_path = "/pasteur2/u/yuhuiz/yiming/LLaVA/playground/data/LLaVA-Pretrain/images/metadata.jsonl"
-os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    df = df.with_columns(
+        pl.col("image").map_elements(lambda p: str(Path(image_root) / p), return_dtype=pl.Utf8)
+    )
 
-df.write_ndjson(output_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    df.write_ndjson(output_path)
+
+
+if __name__ == "__main__":
+    preprocess_json(
+        "/pasteur2/u/yuhuiz/yiming/LLaVA/playground/data/LLaVA-Pretrain/blip_laion_cc_sbu_558k.json",
+        "/pasteur2/u/yuhuiz/yiming/LLaVA/playground/data/LLaVA-Pretrain/images/metadata.jsonl",
+    )

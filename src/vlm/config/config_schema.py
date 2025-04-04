@@ -49,7 +49,7 @@ class DatasetConfig:
     hf_name: str | None = None
     json_path: str | None = None
     type: str = MISSING
-    num_proc: int = 8
+    num_proc: int | None = 8
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True

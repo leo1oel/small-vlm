@@ -4,8 +4,16 @@ from typing import Any
 
 import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import (
+    EarlyStopping,
+    LearningRateMonitor,
+    ModelCheckpoint,
+    RichModelSummary,
+    RichProgressBar,
+)
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.strategies import FSDPStrategy
+from torch import nn
 from torch.utils.data import DataLoader
 
 from ..config import TrainerConfig
@@ -23,13 +31,13 @@ def train(
     val_dataloader: DataLoader[Any] | None = None,
     test_dataloader: DataLoader[Any] | None = None,
 ) -> str:
+    _setup_trainable_params(model, config)
+
     wandb_logger = _setup_wandb_logger(config, model)
 
     callbacks = _setup_callbacks(config, val_dataloader is not None)
 
     trainer = _setup_trainer(config, callbacks, wandb_logger)
-
-    _setup_trainable_params(model, config)
 
     ckpt_path = _find_checkpoint_path(config)
 
@@ -87,6 +95,9 @@ def _setup_callbacks(config: TrainerConfig, has_val_dataloader: bool) -> list[An
     )
     callbacks.append(lr_monitor)
 
+    callbacks.append(RichProgressBar())
+    callbacks.append(RichModelSummary())
+
     if config.early_stopping:
         early_stopping = EarlyStopping(
             monitor=config.monitor_metric,
@@ -111,10 +122,21 @@ def _setup_trainer(config: TrainerConfig, callbacks: list[Any], logger: WandbLog
         "accumulate_grad_batches": config.accumulate_grad_batches,
         "accelerator": config.accelerator,
         "devices": config.devices,
-        "strategy": config.strategy,
         "precision": config.precision,
         "deterministic": True,
     }
+
+    if config.strategy == "fsdp":
+        trainer_kwargs["strategy"] = FSDPStrategy(
+            # Enable activation checkpointing on these layers
+            activation_checkpointing_policy={
+                nn.TransformerEncoderLayer,
+                nn.TransformerDecoderLayer,
+                nn.MultiheadAttention,
+            },
+        )
+    else:
+        trainer_kwargs["strategy"] = config.strategy
 
     if config.debug:
         debug_kwargs = {

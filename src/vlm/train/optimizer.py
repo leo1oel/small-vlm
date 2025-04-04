@@ -39,43 +39,34 @@ def _build_optimizer_params(
 ) -> list[dict[str, Any]]:
     optimizer_params: list[dict[str, Any]] = []
 
-    if _should_include_module(param_groups, "visual_encoder", config.unfreeze.train_visual_encoder):
-        optimizer_params.extend(
-            _get_module_param_groups(
-                module_name="visual_encoder",
-                param_groups=param_groups,
-                weight_decay=config.weight_decay.visual_encoder_weight_decay,
-                learning_rate=config.learning_rate.visual_encoder_learning_rate,
-            )
+    optimizer_params.extend(
+        _get_module_param_groups(
+            module_name="visual_encoder",
+            param_groups=param_groups,
+            weight_decay=config.weight_decay.visual_encoder_weight_decay,
+            learning_rate=config.learning_rate.visual_encoder_learning_rate,
         )
+    )
 
-    if _should_include_module(param_groups, "language_model", config.unfreeze.train_language_model):
-        optimizer_params.extend(
-            _get_module_param_groups(
-                module_name="language_model",
-                param_groups=param_groups,
-                weight_decay=config.weight_decay.language_model_weight_decay,
-                learning_rate=config.learning_rate.language_model_learning_rate,
-            )
+    optimizer_params.extend(
+        _get_module_param_groups(
+            module_name="language_model",
+            param_groups=param_groups,
+            weight_decay=config.weight_decay.language_model_weight_decay,
+            learning_rate=config.learning_rate.language_model_learning_rate,
         )
+    )
 
-    if _should_include_module(param_groups, "connector", config.unfreeze.train_connector):
-        optimizer_params.extend(
-            _get_module_param_groups(
-                module_name="connector",
-                param_groups=param_groups,
-                weight_decay=config.weight_decay.connector_weight_decay,
-                learning_rate=config.learning_rate.connector_learning_rate,
-            )
+    optimizer_params.extend(
+        _get_module_param_groups(
+            module_name="connector",
+            param_groups=param_groups,
+            weight_decay=config.weight_decay.connector_weight_decay,
+            learning_rate=config.learning_rate.connector_learning_rate,
         )
+    )
 
     return optimizer_params
-
-
-def _should_include_module(
-    param_groups: dict[str, dict[str, list[Parameter]]], module_name: str, train_module: bool
-) -> bool:
-    return module_name in param_groups and train_module
 
 
 def _get_module_param_groups(
