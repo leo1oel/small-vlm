@@ -10,8 +10,9 @@ from ..models.model import VLM
 log: logging.Logger = logging.getLogger(name=__name__)
 
 
-def inference(config: InferenceConfig, model: VLM, data_config: DatasetConfig) -> None:  # pyright: ignore
+def inference(config: InferenceConfig, data_config: DatasetConfig) -> None:  # pyright: ignore
     log.info(f"[bold green]Loading model from checkpoint:[/bold green] {config.checkpoint_path}")
+    model = VLM.load_from_checkpoint(config.checkpoint_path)
     trainer: pl.Trainer = pl.Trainer(devices=1)
     data_module: DataModule = DataModule(
         data_config,
@@ -21,9 +22,7 @@ def inference(config: InferenceConfig, model: VLM, data_config: DatasetConfig) -
         config.chat_template,
         do_generation=True,
     )
-    model.initialize_components()
-
     results: list[Any] = trainer.predict(  # pyright: ignore
-        model=model, dataloaders=data_module.predict_dataloader, ckpt_path=config.checkpoint_path
+        model=model, dataloaders=data_module.predict_dataloader
     )
     print(results)

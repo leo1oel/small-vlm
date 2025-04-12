@@ -2,7 +2,7 @@ experiment_name: vlm_training
 max_epochs: 1
 save_every_n_epochs: null
 save_every_n_train_steps: null
-log_every_n_steps: 5
+log_every_n_steps: 4
 accumulate_grad_batches: 4
 # choose from [64, 32, 16, 'transformer-engine', 'transformer-engine-float16', '16-true', '16-mixed', 'bf16-true', 'bf16-mixed', '32-true', '64-true', '64', '32', '16', 'bf16']
 precision: bf16-mixed

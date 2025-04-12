@@ -151,6 +151,8 @@ class VLM(pl.LightningModule):
         log.debug(f"multimodal_features: {multimodal_features.shape}")
         log.debug(f"attention_mask: {attention_mask.shape}")
 
+        # torch.save(multimodal_features, "multimodal_features.pt")
+        # torch.save(attention_mask, "attention_mask.pt")
         outputs = self.language_model(
             inputs_embeds=multimodal_features, attention_mask=attention_mask
         )
@@ -202,16 +204,12 @@ class VLM(pl.LightningModule):
         log.debug(f"texts: {texts.shape}")
         log.debug(f"labels: {labels.shape}")
         # Save tensors to disk
-        torch.save(texts, "texts.pt")
-        torch.save(labels, "labels.pt")
+        # torch.save(texts, "texts.pt")
+        # torch.save(labels, "labels.pt")
 
         outputs = self(images, texts)
+        # torch.save(outputs, "outputs.pt")
         loss = self._calculate_loss(outputs, labels)
-        # if loss < 0.05:
-        #     torch.save(outputs, "outputs.pt")
-        #     torch.save(labels, "labels.pt")
-        #     torch.save(texts, "texts.pt")
-        #     exit()
 
         self.log(
             log_name,

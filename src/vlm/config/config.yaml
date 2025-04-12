@@ -1,17 +1,19 @@
 defaults:
   - cfg
   - mode: train
-  - model: small-vlm
+  - model: llava-7b
   - trainer: pretrain
   - inference: default
   - dataset: llava-pretrain
   - override hydra/job_logging: rich
   - _self_
 
-trainer:
-  num_training_samples: 10000
-  batch_size: 8
-  accumulate_grad_batches: 1
+# trainer:
+#   num_training_samples: 10000
+#   devices: 1
+#   strategy: auto
+#   batch_size: 8
+#   accumulate_grad_batches: 1
 
 hydra:
   job:
