@@ -1,4 +1,4 @@
 name: test
 json_path: /pasteur2/u/yuhuiz/yiming/small-vlm/example/test.json
 type: json
-num_proc: null
+num_proc: 1

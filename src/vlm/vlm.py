@@ -47,9 +47,11 @@ def print_model(cfg: ModelConfig) -> None:
     )
 
 
-def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
+def load_model(
+    model_cfg: ModelConfig, trainer_cfg: TrainerConfig, lazy_loading: bool = False
+) -> VLM:
     print_model(model_cfg)
-    model: VLM = VLM(model_cfg, trainer_cfg)
+    model: VLM = VLM(model_cfg, trainer_cfg, lazy_loading)
     return model
 
 
@@ -57,7 +59,7 @@ def vlm(cfg: AppConfig) -> None:
     if cfg.mode.is_training:
         log.info("Training mode")
         # only load necessary components for dataset processing
-        model: VLM = load_model(cfg.model, cfg.trainer)
+        model: VLM = load_model(cfg.model, cfg.trainer, lazy_loading=True)
         data_module = DataModule(
             cfg.dataset,
             cfg.trainer.num_training_samples,

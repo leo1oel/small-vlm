@@ -27,6 +27,7 @@ class VLM(pl.LightningModule):
         self,
         model_config: ModelConfig,
         trainer_config: TrainerConfig,
+        lazy_loading: bool = False,
     ) -> None:
         super().__init__()
         # process config
@@ -35,6 +36,8 @@ class VLM(pl.LightningModule):
 
         # initialize components
         self._initialize_components()
+        if not lazy_loading:
+            self.initialize_components()
 
     def _process_config(self, config: Any) -> Any:
         if isinstance(config, dict):
@@ -130,9 +133,17 @@ class VLM(pl.LightningModule):
 
     @override
     def forward(
-        self, images: torch.Tensor | list[torch.Tensor], texts: torch.Tensor
+        self,
+        images: torch.Tensor | list[torch.Tensor] | None = None,
+        texts: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        vision_features = self._process_vision_features(images)
+        if images is None and texts is None:
+            raise ValueError("Either images or texts must be provided")
+
+        if images is not None:
+            vision_features = self._process_vision_features(images)
+        else:
+            vision_features = None
 
         connector_output = self._connect_features(vision_features, texts)
         multimodal_features, attention_mask = connector_output
@@ -159,7 +170,7 @@ class VLM(pl.LightningModule):
             return (self.visual_encoder(images),)
 
     def _connect_features(
-        self, vision_features: tuple[torch.Tensor, ...], texts: torch.Tensor
+        self, vision_features: tuple[torch.Tensor, ...] | None, texts: torch.Tensor | None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         llm = self.language_model
         return self.connector(
@@ -190,9 +201,17 @@ class VLM(pl.LightningModule):
 
         log.debug(f"texts: {texts.shape}")
         log.debug(f"labels: {labels.shape}")
+        # Save tensors to disk
+        torch.save(texts, "texts.pt")
+        torch.save(labels, "labels.pt")
 
         outputs = self(images, texts)
         loss = self._calculate_loss(outputs, labels)
+        # if loss < 0.05:
+        #     torch.save(outputs, "outputs.pt")
+        #     torch.save(labels, "labels.pt")
+        #     torch.save(texts, "texts.pt")
+        #     exit()
 
         self.log(
             log_name,
@@ -210,37 +229,23 @@ class VLM(pl.LightningModule):
     def predict_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> str:
         images = batch["images"]
         texts = batch["texts"]
-        print(texts)
-        output = self.language_model.language_model.generate(
-            input_ids=texts,
-            max_new_tokens=20,
-            do_sample=False,
-        )
-        log.info(output)
-
         vision_features = self._process_vision_features(images)
 
         connector_output = self._connect_features(vision_features, texts)
         multimodal_features, attention_mask = connector_output
-        print(multimodal_features.shape)
-        print(attention_mask.shape)
-        print(torch.count_nonzero(attention_mask))
         predictions = self._generate_predictions(multimodal_features, attention_mask)
-        log.info(predictions)
         return predictions
 
     def _generate_predictions(
         self, multimodal_features: torch.Tensor, attention_mask: torch.Tensor
     ) -> str:
-        log.info(multimodal_features)
-        log.info(attention_mask)
         output = self.language_model.language_model.generate(
             inputs_embeds=multimodal_features,
             attention_mask=attention_mask,
-            max_new_tokens=20,
+            num_beams=3,
+            max_new_tokens=5,
             do_sample=False,
         )
-        log.info(output)
 
         return self.language_model.tokenizer.decode(output[0], skip_special_tokens=True)
 
@@ -290,10 +295,8 @@ class VLM(pl.LightningModule):
     def freeze_language_model(self, freeze: bool = True, except_layer_norm: bool = True) -> None:
         for name, param in self.language_model.named_parameters():
             if except_layer_norm and (
-                "layernorm" in name.lower()
-                or "layer_norm" in name.lower()
-                or "ln_" in name.lower()
-                or "embedding" in name.lower()
+                "layernorm" in name.lower() or "layer_norm" in name.lower() or "ln_" in name.lower()
+                # or "embedding" in name.lower()
             ):
                 param.requires_grad = True
             else:

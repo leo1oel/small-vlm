@@ -28,15 +28,18 @@ class DataModule:
         model: VLM,
         batch_size: int,
         chat_template: str,
+        do_generation: bool = False,
     ):
         self.model: VLM = model
         self.dataset_config: DatasetConfig = dataset_config
         self.batch_size: int = batch_size
+        self.chat_template_name: str = chat_template
         self.chat_template: str = get_chat_template(chat_template)
         self._raw_dataset: DatasetDict | None = None
         self._processed_datasets: dict[str, Dataset] = {}
         self.num_training_samples: int | None = num_training_samples
         self.num_samples: dict[str, int] = {}
+        self.do_generation: bool = do_generation
 
         # model components
         self.tokenizer: PreTrainedTokenizer = model.language_model.tokenizer
@@ -45,7 +48,7 @@ class DataModule:
         self.image_token_size: int = model.visual_encoder.token_size
 
         self.transform: Callable[
-            [dict[str, Image.Image | str], bool], dict[str, torch.Tensor | Image.Image]
+            [dict[str, Image.Image | str]], dict[str, torch.Tensor | Image.Image]
         ] = self._build_transform()
 
         self._load_raw_dataset()
@@ -122,30 +125,20 @@ class DataModule:
 
     def _build_transform(
         self,
-    ) -> Callable[[dict[str, Image.Image | str], bool], dict[str, torch.Tensor | Image.Image]]:
+    ) -> Callable[[dict[str, Image.Image | str]], dict[str, torch.Tensor | Image.Image]]:
         return self._transform
 
-    def _transform(self, item: dict[str, Any], do_generation: bool = False) -> dict[str, Any]:
+    def _transform(self, item: dict[str, Any]) -> dict[str, Any]:
         original_text = self._extract_text(item)
         if isinstance(original_text, str):
             text = json.loads(original_text.replace("\n", "\\n"))
         else:
             text = original_text
-        text_and_label = self._text_transform(text, do_generation)
+        text_and_label = self._text_transform(text)
 
         item["text"] = text_and_label[0]
         item["label"] = text_and_label[1]
         return item
-
-    # def _process_image(self, item: dict[str, Any]) -> Image.Image:
-    #     if "image" not in item:
-    #         error_msg = f"Cannot find image in item {item}"
-    #         log.error(error_msg)
-    #         raise ValueError(error_msg)
-
-    #     image = item["image"]
-    #     original_image = image.convert("RGB")
-    #     return original_image
 
     def _extract_text(self, item: dict[str, Any]) -> str | list[dict[str, str]]:
         if "text" in item:
@@ -157,32 +150,55 @@ class DataModule:
             log.error(error_msg)
             raise ValueError(error_msg)
 
-    def _text_transform(
-        self, text: list[dict[str, str]], do_generation: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def _text_transform(self, text: list[dict[str, str]]) -> tuple[torch.Tensor, torch.Tensor]:
         conversation = self._prepare_conversation(text)
 
-        input_ids = self._apply_chat_template(conversation, do_generation)
+        input_ids = self._apply_chat_template(conversation)
 
-        labels = self._prepare_labels(input_ids, conversation)
+        labels = self._prepare_labels(input_ids)
 
         expanded_labels = self._handle_image_tokens(input_ids, labels)
         return (input_ids, torch.tensor(expanded_labels))
 
     def _prepare_conversation(self, text: list[dict[str, str]]) -> list[dict[str, str]]:
+        # Check if the data is already in the correct format
+        if all(("role" in item and "content" in item) for item in text):
+            return text
+        # Otherwise, convert from the expected format with "from" and "value" fields
         return [
             {"role": "user" if item["from"] == "human" else "assistant", "content": item["value"]}
             for item in text
         ]
 
-    def _apply_chat_template(
-        self, conversation: list[dict[str, str]], do_generation: bool
-    ) -> torch.Tensor:
+    def _apply_chat_template(self, conversation: list[dict[str, str]]) -> torch.Tensor:
+        if self.chat_template_name == "llava_plain":
+            assistant_msg = None
+            for msg in conversation:
+                if msg["role"] == "assistant" or (msg.get("from") == "gpt"):
+                    assistant_msg = msg.get("content", msg.get("value", ""))
+                    break
+            if not assistant_msg:
+                raise ValueError("No assistant message found in conversation")
+
+            assistant_ids = self.tokenizer(  # pyright: ignore
+                assistant_msg,
+                return_tensors="pt",
+                padding=False,
+                truncation=True,
+            )["input_ids"][0]
+
+            input_ids = torch.cat(
+                [
+                    torch.tensor([self.image_token_id]),
+                    assistant_ids,  # pyright: ignore
+                ]
+            )
+            return input_ids
         self.tokenizer.chat_template = self.chat_template
         input_ids = self.tokenizer.apply_chat_template(
             conversation,
             tokenize=True,
-            add_generation_prompt=do_generation,
+            add_generation_prompt=self.do_generation,
             return_tensors="pt",
             padding=False,
             truncation=True,
@@ -190,72 +206,42 @@ class DataModule:
 
         return cast(torch.Tensor, input_ids)
 
-    # def preparelabels(self, input_ids: torch.Tensor) -> torch.Tensor:
-    #     labels = torch.full_like(input_ids, -100)
-    #     labels[:-1] = input_ids[1:].clone()
-    #     assistant_ranges = self._find_assistant_ranges(input_ids)
-    #     for i in range(len(labels)):
-    #         is_in_assistant_range = any(start <= i <= end for start, end in assistant_ranges)
-    #         if not is_in_assistant_range:
-    #             labels[i] = -100
-    #     return labels
-
-    def _prepare_labels(
-        self, input_ids: torch.Tensor, conversation: list[dict[str, str]]
-    ) -> torch.Tensor:
+    def _prepare_labels(self, input_ids: torch.Tensor) -> torch.Tensor:
+        if self.chat_template_name == "llava_plain":
+            labels = torch.full_like(input_ids, -100)
+            if len(input_ids) > 1:
+                labels[1:-1] = input_ids[2:].clone()
+            return labels
         labels = torch.full_like(input_ids, -100)
+        # Shift labels to the right by one
         labels[:-1] = input_ids[1:].clone()
-
-        assistant_msgs = [msg for msg in conversation if msg["role"] == "assistant"]
-        if not assistant_msgs:
-            return torch.full_like(input_ids, -100)
-
-        full_text: str = cast(
-            str,
-            self.tokenizer.apply_chat_template(
-                conversation, tokenize=False, add_generation_prompt=True
-            ),
-        )
-
-        for msg in assistant_msgs:
-            assistant_text = msg["content"]
-            start_char = full_text.find(assistant_text)
-            if start_char != -1:
-                prefix = full_text[:start_char]
-                start_token = len(self.tokenizer.encode(prefix, add_special_tokens=False))
-                end_token = (
-                    start_token
-                    + len(self.tokenizer.encode(assistant_text, add_special_tokens=False))
-                    - 1
-                )
-
-                for _ in range(start_token, min(end_token + 1, len(labels))):
-                    pass
-
-                for i in range(len(labels)):
-                    if not (start_token <= i <= end_token):
-                        labels[i] = -100
-
+        # Find the ranges of the assistant messages
+        assistant_ranges = self._find_assistant_ranges(input_ids)
+        # Set the labels to -100 for the tokens that are not in the assistant ranges
+        for i in range(len(labels)):
+            is_in_assistant_range = any(start <= i <= end for start, end in assistant_ranges)
+            if not is_in_assistant_range:
+                labels[i] = -100
         return labels
 
-    # def _find_assistant_ranges(self, input_ids: torch.Tensor) -> list[tuple[int, int]]:
-    #     assistant_ranges: list[tuple[int, int]] = []
-    #     in_assistant = False
-    #     start_idx = None
+    def _find_assistant_ranges(self, input_ids: torch.Tensor) -> list[tuple[int, int]]:
+        assistant_ranges: list[tuple[int, int]] = []
+        in_assistant = False
+        start_idx = None
 
-    #     for i, token_id in enumerate(input_ids):
-    #         token = self.tokenizer.decode([token_id])
+        for i, token_id in enumerate(input_ids):
+            token = self.tokenizer.decode([token_id])
 
-    #         if "<|assistant|>" in token:
-    #             in_assistant = True
-    #             start_idx = i
-    #         elif "<|end|>" in token and in_assistant:
-    #             if start_idx is not None:
-    #                 assistant_ranges.append((start_idx, i - 1))
-    #             in_assistant = False
-    #             start_idx = None
+            if "<|assistant|>" in token:
+                in_assistant = True
+                start_idx = i
+            elif "<|end|>" in token and in_assistant:
+                if start_idx is not None:
+                    assistant_ranges.append((start_idx, i - 1))
+                in_assistant = False
+                start_idx = None
 
-    #     return assistant_ranges
+        return assistant_ranges
 
     def _handle_image_tokens(self, input_ids: torch.Tensor, labels: torch.Tensor) -> list[int]:
         expanded_labels: list[int] = []

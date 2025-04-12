@@ -214,22 +214,38 @@ class Connector(nn.Module, ABC):
     @override
     def forward(
         self,
-        visual_features: tuple[torch.Tensor, ...],
-        texts: torch.Tensor,
+        visual_features: tuple[torch.Tensor, ...] | None,
+        texts: torch.Tensor | None,
         embeddings: nn.Module,
         image_token_id: int,
         pad_token_id: int,
         mask_format: str = "2d",
     ) -> ForwardOutput:
-        batch_size, _ = texts.shape
-        device: torch.device = texts.device
+        if texts is None:
+            batch_size, _ = cast(tuple[torch.Tensor, ...], visual_features)[0].shape
+            device: torch.device = cast(tuple[torch.Tensor, ...], visual_features)[0].device
+        else:
+            batch_size, _ = texts.shape
+            device = texts.device
 
         # Create padding mask and determine mask complexity
         padding_mask = (texts != pad_token_id).bool()  # [batch_size, seq_len]
         need_complex_mask = mask_format in ["4d", "3d"]
 
         # Process visual features
-        projected_visual = self._process_visual_features(visual_features, batch_size).features
+        if texts is None:
+            projected_visual = self._process_visual_features(
+                cast(tuple[torch.Tensor, ...], visual_features), batch_size
+            ).features
+
+            return ForwardOutput(
+                torch.cat(projected_visual, dim=0),
+                torch.zeros(batch_size, 0, device=device, dtype=torch.bool),
+            )
+
+        projected_visual = self._process_visual_features(
+            cast(tuple[torch.Tensor, ...], visual_features), batch_size
+        ).features
 
         # Get text embeddings
         text_embeddings = embeddings(texts)  # [batch_size, seq_len, text_dim]

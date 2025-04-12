@@ -190,3 +190,6 @@ outputs/
 # basedpyright
 .basedpyright/
 pyrightconfig.json
+
+# debug
+debug.ipynb

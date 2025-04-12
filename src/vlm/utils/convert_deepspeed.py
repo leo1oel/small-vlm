@@ -15,8 +15,8 @@ def convert_checkpoint():
 
     try:
         result = convert_zero_checkpoint_to_fp32_state_dict(
-            checkpoint_dir="/pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-04/05-01-50/checkpoints/last.ckpt",
-            output_file="/pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-04/05-01-50/checkpoints/model.pt",
+            checkpoint_dir="/pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-12/00-33-13/checkpoints/last.ckpt",
+            output_file="/pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-12/00-33-13/checkpoints/model.pt",
         )
         print("Successfully converted!")
         return result

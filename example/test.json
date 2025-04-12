@@ -4,7 +4,7 @@
         "text": [
             {
                 "from": "user",
-                "value": "Describe the image in detail. <image>"
+                "value": "<image> What is in the image? A. a cat. B. a dog. C. a car. D. a fish. Answer in A, B, C, D."
             }
         ]
     },
@@ -13,7 +13,7 @@
         "text": [
             {
                 "from": "user",
-                "value": "Describe the image in detail. <image>"
+                "value": "<image> What is in the image? A. a girl. B. a car. C. a cat. D. a house. Answer in A, B, C, D."
             }
         ]
     },
@@ -22,7 +22,7 @@
         "text": [
             {
                 "from": "user",
-                "value": "Describe the image in detail. <image>"
+                "value": "<image> What color is the car? A. red. B. blue. C. green. D. white. Answer in A, B, C, D."
             }
         ]
     },
@@ -31,25 +31,7 @@
         "text": [
             {
                 "from": "user",
-                "value": "Describe the image in detail. <image>"
-            }
-        ]
-    },
-    {
-        "image": "/pasteur2/u/yuhuiz/yiming/small-vlm/example/image.jpg",
-        "text": [
-            {
-                "from": "user",
-                "value": "Describe the image in detail. <image>"
-            }
-        ]
-    },
-    {
-        "image": "/pasteur2/u/yuhuiz/yiming/small-vlm/example/image1.jpg",
-        "text": [
-            {
-                "from": "user",
-                "value": "Describe the image in detail. <image>"
+                "value": "<image> What color is the car? A. white. B. blue. C. green. D. red. Answer in A, B, C, D."
             }
         ]
     }
