@@ -2,16 +2,20 @@ defaults:
   - cfg
   - mode: train
   - model: small-vlm
-  - trainer: pretrain
+  - trainer: finetune
   - inference: default
-  - dataset: llava-pretrain
+  - dataset: llava-finetune
   - override hydra/job_logging: rich
   - _self_
 
+trainer:
+  # num_training_samples: 10000
+  checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-13/06-31-48/checkpoints/last.ckpt
+  batch_size: 2
 
 hydra:
   job:
     chdir: true
   job_logging:
     root:
-      level: DEBUG
+      level: INFO

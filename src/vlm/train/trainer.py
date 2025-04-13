@@ -1,9 +1,10 @@
 from logging import getLogger
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytorch_lightning as pl
 import torch
+from deepspeed.utils.zero_to_fp32 import load_state_dict_from_zero_checkpoint  # pyright: ignore
 from pytorch_lightning.callbacks import (
     EarlyStopping,
     LearningRateMonitor,
@@ -12,7 +13,6 @@ from pytorch_lightning.callbacks import (
     RichProgressBar,
 )
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.strategies import FSDPStrategy
 from torch import nn
 from torch.utils.data import DataLoader
 
@@ -41,12 +41,22 @@ def train(
 
     ckpt_path = _find_checkpoint_path(config)
 
-    trainer.fit(
-        model=model,
-        ckpt_path=ckpt_path,
-        train_dataloaders=train_dataloader,
-        val_dataloaders=val_dataloader,
-    )
+    if ckpt_path is not None and not config.load_optimizer_states:
+        model = load_state_dict_from_zero_checkpoint(model, ckpt_path)
+
+    if ckpt_path is not None and config.load_optimizer_states:
+        trainer.fit(
+            model=model,
+            ckpt_path=ckpt_path,
+            train_dataloaders=train_dataloader,
+            val_dataloaders=val_dataloader,
+        )
+    else:
+        trainer.fit(
+            model=model,
+            train_dataloaders=train_dataloader,
+            val_dataloaders=val_dataloader,
+        )
 
     if test_dataloader is not None:
         trainer.test(model=model, dataloaders=test_dataloader)
@@ -127,6 +137,8 @@ def _setup_trainer(config: TrainerConfig, callbacks: list[Any], logger: WandbLog
     }
 
     if config.strategy == "fsdp":
+        from pytorch_lightning.strategies import FSDPStrategy
+
         trainer_kwargs["strategy"] = FSDPStrategy(
             # Enable activation checkpointing on these layers
             activation_checkpointing_policy={
@@ -174,7 +186,7 @@ def _find_checkpoint_path(config: TrainerConfig) -> str | None:
 
 
 def _log_best_model_info(checkpoint_callback: ModelCheckpoint) -> str:
-    best_model_path: Any = checkpoint_callback.best_model_path
+    best_model_path: str = cast(str, checkpoint_callback.best_model_path)
     log.info(f"Best model checkpoint: {best_model_path}")
 
     best_score = checkpoint_callback.best_model_score

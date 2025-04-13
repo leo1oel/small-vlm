@@ -3,14 +3,12 @@ from typing import Any, cast, override
 
 import torch
 import torch.nn as nn
-from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    PretrainedConfig,
-    PreTrainedModel,
-    PreTrainedTokenizer,
-)
+from transformers.configuration_utils import PretrainedConfig
+from transformers.modeling_utils import PreTrainedModel
+from transformers.models.auto.configuration_auto import AutoConfig
+from transformers.models.auto.modeling_auto import AutoModelForCausalLM
+from transformers.models.auto.tokenization_auto import AutoTokenizer
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from ...config.config_schema import LLMConfig
 from .base import LanguageModel

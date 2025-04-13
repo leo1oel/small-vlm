@@ -9,7 +9,8 @@ from datasets import Dataset, DatasetDict, load_dataset  # pyright: ignore
 from datasets import Image as HFImage
 from PIL import Image
 from torch.utils.data import DataLoader
-from transformers import BaseImageProcessor, PreTrainedTokenizer
+from transformers.image_processing_utils import BaseImageProcessor
+from transformers.tokenization_utils import PreTrainedTokenizer
 
 from ..config.config_schema import DatasetConfig
 from ..models import VLM
@@ -76,6 +77,7 @@ class DataModule:
                     ).cast_column("image", HFImage()),
                 )
                 if self.num_training_samples is not None:
+                    log.info(f"Selecting {self.num_training_samples} training samples")
                     self._raw_dataset["train"] = self._raw_dataset["train"].select(
                         range(min(self.num_training_samples, len(self._raw_dataset["train"])))
                     )
@@ -83,7 +85,7 @@ class DataModule:
                 log.warning(f"Dataset type {dataset_type} not supported")
                 raise ValueError(f"Dataset type {dataset_type} not supported")
         except Exception as e:
-            log.warning(f"Failed to load raw dataset: {str(e)}")
+            log.warning(f"Failed to load raw dataset: {str(e)}", exc_info=True)
             self._raw_dataset = None
 
     def get_dataset(self, split: Literal["train", "val", "test", "predict"]) -> Dataset | None:
@@ -171,7 +173,7 @@ class DataModule:
         ]
 
     def _apply_chat_template(self, conversation: list[dict[str, str]]) -> torch.Tensor:
-        if self.chat_template_name == "llava_plain":
+        if self.chat_template_name == "plain":
             assistant_msg = None
             for msg in conversation:
                 if msg["role"] == "assistant" or (msg.get("from") == "gpt"):
@@ -194,6 +196,7 @@ class DataModule:
                 ]
             )
             return input_ids
+
         self.tokenizer.chat_template = self.chat_template
         input_ids = self.tokenizer.apply_chat_template(
             conversation,
@@ -207,11 +210,12 @@ class DataModule:
         return cast(torch.Tensor, input_ids)
 
     def _prepare_labels(self, input_ids: torch.Tensor) -> torch.Tensor:
-        if self.chat_template_name == "llava_plain":
+        if self.chat_template_name == "plain":
             labels = torch.full_like(input_ids, -100)
             if len(input_ids) > 1:
                 labels[1:-1] = input_ids[2:].clone()
             return labels
+
         labels = torch.full_like(input_ids, -100)
         # Shift labels to the right by one
         labels[:-1] = input_ids[1:].clone()

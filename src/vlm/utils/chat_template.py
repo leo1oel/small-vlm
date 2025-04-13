@@ -1,13 +1,30 @@
 CHAT_TEMPLATES = {
-    "llava_plain": """
-    {%- for message in messages -%}
-    {{ message['content'] }}{{ '\n' }}
-    {%- endfor -%}
-    {%- if add_generation_prompt -%}
-    {{ '\n' }}
-    {%- endif -%}
+    "plain": """
+        {%- for message in messages -%}
+        {{ message['content'] }}{{ '\n' }}
+        {%- endfor -%}
+        {%- if add_generation_prompt -%}
+        {{ '\n' }}
+        {%- endif -%}
+    """,
+    "chat": """
+        {%- if messages[0]['role'] == 'system' -%}
+        <|system|>{{ messages[0]['content'] }}<|end|>
+        {%- endif -%}
+        {%- for message in messages -%}
+        {%- if message['role'] == 'user' -%}
+        <|user|>{{ message['content'] }}<|end|>
+        {%- elif message['role'] == 'assistant' -%}
+        <|assistant|>{{ message['content'] }}<|end|>
+        {%- endif -%}
+        {%- endfor -%}
+        <|endoftext|>
+        {%- if add_generation_prompt -%}
+        <|assistant|>
+        {%- endif -%}
     """,
 }
+
 import logging
 
 log = logging.getLogger(__name__)

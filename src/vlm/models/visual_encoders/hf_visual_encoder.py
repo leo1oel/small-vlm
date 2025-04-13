@@ -2,14 +2,12 @@ import logging
 from typing import cast, override
 
 import torch
-from transformers import (
-    AutoConfig,
-    AutoImageProcessor,
-    AutoModel,
-    BaseImageProcessor,
-    PretrainedConfig,
-    PreTrainedModel,
-)
+from transformers.configuration_utils import PretrainedConfig
+from transformers.image_processing_utils import BaseImageProcessor
+from transformers.modeling_utils import PreTrainedModel
+from transformers.models.auto.configuration_auto import AutoConfig
+from transformers.models.auto.image_processing_auto import AutoImageProcessor
+from transformers.models.auto.modeling_auto import AutoModel
 
 from ...config.config_schema import VisualEncoderConfig
 from .base import VisualEncoder

@@ -78,8 +78,7 @@ class MLPConnector(Connector):
 
         for layer in linear_layers:
             nn.init.xavier_uniform_(layer.weight)
-            if layer.bias is not None:
-                nn.init.zeros_(layer.bias)
+            nn.init.zeros_(layer.bias)
 
     @override
     def projection(self, visual_features: torch.Tensor) -> torch.Tensor:

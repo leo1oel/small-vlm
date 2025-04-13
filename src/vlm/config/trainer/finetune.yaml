@@ -10,15 +10,16 @@ precision: bf16-mixed
 # devices can be int or str, but currently don't support list since OmegaConf doesn't support Union[list]
 strategy: deepspeed_stage_2
 devices: auto
-resume_from_checkpoint: false
+resume_from_checkpoint: true
+load_optimizer_states: false
 checkpoint_path: null
 batch_size: 8
-chat_template: "plain"
+chat_template: "chat"
 num_training_samples: null
 
 defaults:
-  - unfreeze: pretrain
-  - learning_rate: default
+  - unfreeze: finetune
+  - learning_rate: llava-finetune
   - weight_decay: default
   - optimizer: adamw
   - scheduler: default

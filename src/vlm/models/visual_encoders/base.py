@@ -5,7 +5,9 @@ from typing import cast, override
 
 import torch
 import torch.nn as nn
-from transformers import BaseImageProcessor, PretrainedConfig, PreTrainedModel
+from transformers.configuration_utils import PretrainedConfig
+from transformers.image_processing_utils import BaseImageProcessor
+from transformers.modeling_utils import PreTrainedModel
 
 from ...config.config_schema import VisualEncoderConfig
 
