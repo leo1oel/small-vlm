@@ -1,10 +1,13 @@
 CHAT_TEMPLATES = {
     "plain": """
         {%- for message in messages -%}
-        {{ message['content'] }}{{ '\n' }}
+        {%- if message['role'] == 'user' -%}
+        <image>
+        {%- elif message['role'] == 'assistant' -%}
+        {{ message['content'] }}
+        {%- endif -%}
         {%- endfor -%}
         {%- if add_generation_prompt -%}
-        {{ '\n' }}
         {%- endif -%}
     """,
     "chat": """

@@ -279,30 +279,6 @@ class DataModule(L.LightningDataModule):
         ]
 
     def _apply_chat_template(self, conversation: list[dict[str, str]]) -> torch.Tensor:
-        if self.chat_template_name == "plain":
-            assistant_msg = None
-            for msg in conversation:
-                if msg["role"] == "assistant" or (msg.get("from") == "gpt"):
-                    assistant_msg = msg.get("content", msg.get("value", ""))
-                    break
-            if not assistant_msg:
-                raise ValueError("No assistant message found in conversation")
-
-            assistant_ids = self.tokenizer(  # pyright: ignore
-                assistant_msg,
-                return_tensors="pt",
-                padding=False,
-                truncation=True,
-            )["input_ids"][0]
-
-            input_ids = torch.cat(
-                [
-                    torch.tensor([self.image_token_id]),
-                    assistant_ids,  # pyright: ignore
-                ]
-            )
-            return input_ids
-
         self.tokenizer.chat_template = self.chat_template
         input_ids = self.tokenizer.apply_chat_template(
             conversation,
