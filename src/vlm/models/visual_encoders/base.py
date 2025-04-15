@@ -141,6 +141,8 @@ class VisualEncoder(nn.Module, ABC):
             log.warning(f"{capitalized_key} not found in config for {self.hf_name}")
         elif model_value is not None and config_value is None:
             setattr(self, key, int(model_value))
+            if hasattr(self.config, key):
+                setattr(self.config, key, int(model_value))
             log.info(f"{capitalized_key} not found in config, using hf config: {model_value}")
         elif model_value is None and config_value is not None:
             log.warning(f"{capitalized_key} not found in hf config for {self.hf_name}")

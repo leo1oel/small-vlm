@@ -1,10 +1,10 @@
 import logging
 from typing import Any, override
 
-import pytorch_lightning as pl
+import lightning as L
 import torch
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from omegaconf import OmegaConf
-from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from torch.nn.parameter import Parameter
 
 from ..config import (
@@ -22,17 +22,19 @@ from .visual_encoders import VisualEncoder
 log: logging.Logger = logging.getLogger(name=__name__)
 
 
-class VLM(pl.LightningModule):
+class VLM(L.LightningModule):
     def __init__(
         self,
         model_config: ModelConfig,
         trainer_config: TrainerConfig,
         lazy_loading: bool = False,
+        debug: bool = False,
     ) -> None:
         super().__init__()
         # process config
         self.model_config: ModelConfig = self._process_config(model_config)
         self.trainer_config: TrainerConfig = self._process_config(trainer_config)
+        self.debug: bool = debug
 
         # initialize components
         self._initialize_components()
@@ -151,8 +153,10 @@ class VLM(pl.LightningModule):
         log.debug(f"multimodal_features: {multimodal_features.shape}")
         log.debug(f"attention_mask: {attention_mask.shape}")
 
-        # torch.save(multimodal_features, "multimodal_features.pt")
-        # torch.save(attention_mask, "attention_mask.pt")
+        if self.debug:
+            torch.save(multimodal_features, "multimodal_features.pt")
+            torch.save(attention_mask, "attention_mask.pt")
+
         outputs = self.language_model(
             inputs_embeds=multimodal_features, attention_mask=attention_mask
         )
@@ -186,15 +190,15 @@ class VLM(pl.LightningModule):
 
     @override
     def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "train_loss")
+        return self._shared_step(batch, "train/loss")
 
     @override
     def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "val_loss")
+        return self._shared_step(batch, "val/loss")
 
     @override
     def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "test_loss")
+        return self._shared_step(batch, "test/loss")
 
     def _shared_step(self, batch: dict[str, torch.Tensor], log_name: str) -> torch.Tensor:
         images = batch["images"]
@@ -203,13 +207,17 @@ class VLM(pl.LightningModule):
 
         log.debug(f"texts: {texts.shape}")
         log.debug(f"labels: {labels.shape}")
-        # Save tensors to disk
-        # torch.save(texts, "texts.pt")
-        # torch.save(labels, "labels.pt")
 
         outputs = self(images, texts)
-        # torch.save(outputs, "outputs.pt")
+
         loss = self._calculate_loss(outputs, labels)
+
+        if self.debug:
+            torch.save(texts, "texts.pt")
+            torch.save(labels, "labels.pt")
+            torch.save(outputs, "outputs.pt")
+            log.info(f"loss: {loss}")
+            exit()
 
         self.log(
             log_name,
@@ -293,8 +301,11 @@ class VLM(pl.LightningModule):
     def freeze_language_model(self, freeze: bool = True, except_layer_norm: bool = True) -> None:
         for name, param in self.language_model.named_parameters():
             if except_layer_norm and (
-                "layernorm" in name.lower() or "layer_norm" in name.lower() or "ln_" in name.lower()
-                # or "embedding" in name.lower()
+                "layernorm" in name.lower()
+                or "layer_norm" in name.lower()
+                or "ln_" in name.lower()
+                or "embedding" in name.lower()
+                or "embed" in name.lower()
             ):
                 param.requires_grad = True
             else:

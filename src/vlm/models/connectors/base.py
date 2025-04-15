@@ -139,28 +139,22 @@ class Connector(nn.Module, ABC):
         valid_length = valid_embeddings.size(0)
         num_img_tokens = len(img_positions)
 
-        # 计算每个图像标记对应的视觉特征数量
         visual_per_token = visual_features.size(0) // num_img_tokens
 
-        # 创建融合序列
         fused_chunks: list[torch.Tensor] = []
         is_visual: list[bool] = []
 
-        # 追踪当前处理位置
         current_pos = 0
         visual_idx = 0
 
-        # 按原始顺序重建序列
         for img_pos in img_positions:
             img_pos = int(img_pos.item())
 
-            # 添加图像位置之前的文本（如果有）
             if img_pos > current_pos:
                 text_chunk = valid_embeddings[current_pos:img_pos]
                 fused_chunks.append(text_chunk)
                 is_visual.append(False)
 
-            # 添加图像特征
             visual_chunk = visual_features[
                 visual_idx * visual_per_token : (visual_idx + 1) * visual_per_token
             ]
@@ -168,20 +162,16 @@ class Connector(nn.Module, ABC):
             is_visual.append(True)
             visual_idx += 1
 
-            # 更新当前位置
             current_pos = img_pos + 1
 
-        # 添加最后剩余的文本（如果有）
         if current_pos < valid_length:
             text_chunk = valid_embeddings[current_pos:valid_length]
             fused_chunks.append(text_chunk)
             is_visual.append(False)
 
-        # 连接所有块
         fused_embeddings = torch.cat(fused_chunks, dim=0)
         fused_length = fused_embeddings.size(0)
 
-        # 创建注意力掩码（如果需要）
         mask: torch.Tensor | None = None
         if need_complex_mask:
             mask = self._create_fusion_mask(fused_chunks, is_visual, device)

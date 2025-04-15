@@ -2,8 +2,10 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from typing import Any, Literal, cast
+from pathlib import Path
+from typing import Any, Literal, cast, override
 
+import lightning as L
 import torch
 from datasets import Dataset, DatasetDict, load_dataset  # pyright: ignore
 from datasets import Image as HFImage
@@ -21,7 +23,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 log = logging.getLogger(__name__)
 
 
-class DataModule:
+class DataModule(L.LightningDataModule):
     def __init__(
         self,
         dataset_config: DatasetConfig,
@@ -30,29 +32,38 @@ class DataModule:
         batch_size: int,
         chat_template: str,
         do_generation: bool = False,
+        processed_data_dir: str = "../../../processed_data",
     ):
+        super().__init__()
         self.model: VLM = model
         self.dataset_config: DatasetConfig = dataset_config
         self.batch_size: int = batch_size
-        self.chat_template_name: str = chat_template
-        self.chat_template: str = get_chat_template(chat_template)
         self._raw_dataset: DatasetDict | None = None
         self._processed_datasets: dict[str, Dataset] = {}
         self.num_training_samples: int | None = num_training_samples
         self.num_samples: dict[str, int] = {}
         self.do_generation: bool = do_generation
+        self.processed_data_dir: Path = Path(processed_data_dir)
 
         # model components
         self.tokenizer: PreTrainedTokenizer = model.language_model.tokenizer
         self.image_preprocessor: BaseImageProcessor = model.visual_encoder.preprocessor
         self.image_token_id: int = cast(int, model.language_model.token_config.image_token_id)
         self.image_token_size: int = model.visual_encoder.token_size
+        self.eos_token: str = cast(str, self.tokenizer.eos_token)
+        self.eos_token_id: int = cast(int, self.tokenizer.eos_token_id)
+        self.system_token: str = model.language_model.token_config.system_token
+        self.user_token: str = model.language_model.token_config.user_token
+        self.assistant_token: str = model.language_model.token_config.assistant_token
+
+        self.chat_template_name: str = chat_template
+        self.chat_template: str = get_chat_template(
+            chat_template, self.eos_token, self.system_token, self.user_token, self.assistant_token
+        )
 
         self.transform: Callable[
             [dict[str, Image.Image | str]], dict[str, torch.Tensor | Image.Image]
         ] = self._build_transform()
-
-        self._load_raw_dataset()
 
     def _load_raw_dataset(self):
         try:
@@ -88,42 +99,137 @@ class DataModule:
             log.warning(f"Failed to load raw dataset: {str(e)}", exc_info=True)
             self._raw_dataset = None
 
-    def get_dataset(self, split: Literal["train", "val", "test", "predict"]) -> Dataset | None:
-        if split == "predict":
-            split = "train"
-
-        if split in self._processed_datasets:
-            log.info(f"Using cached processed dataset for split: {split}")
-            return self._processed_datasets[split]
+    @override
+    def prepare_data(self) -> None:
+        """
+        Downloads/loads the raw dataset and processes (maps) it.
+        This method is called only once per node (on rank 0).
+        """
+        if self._raw_dataset is None:
+            log.info("Loading raw dataset in prepare_data...")
+            self._load_raw_dataset()
 
         if self._raw_dataset is None:
-            log.error("Raw dataset is not loaded")
-            return None
+            log.error("Raw dataset failed to load. Cannot prepare data.")
+            return
 
-        if split not in self._raw_dataset:
-            log.error(f"Split {split} not found in dataset")
-            return None
+        base_processed_data_path = self.processed_data_dir / self.dataset_config.name
+        absolute_processed_data_path = base_processed_data_path.resolve()
+        base_processed_data_path.mkdir(parents=True, exist_ok=True)
+        log.info(f"Ensured processed data directory exists: {absolute_processed_data_path}")
 
-        try:
-            log.info(f"Processing dataset for split: {split}")
-            num_proc = getattr(self.dataset_config, "num_proc", None)
-            log.info(f"Using {num_proc} processes for mapping")
+        for split in self._raw_dataset.keys():  # pyright: ignore
+            processed_split_path = base_processed_data_path / cast(str, split)
+            absolute_split_path = processed_split_path.resolve()
+            if processed_split_path.exists():
+                log.info(
+                    f"Processed data for split '{split}' already exists at {absolute_split_path}. Skipping map."
+                )
+                continue
 
-            processed_split = self._raw_dataset[split].map(
-                self.transform,
-                num_proc=num_proc,
-                load_from_cache_file=True,
+            log.info(f"Processing raw dataset for split: {split} in prepare_data...")
+            try:
+                num_proc = getattr(self.dataset_config, "num_proc", None)
+                log.info(f"Using {num_proc} processes for mapping split '{split}'")
+
+                processed_split = self._raw_dataset[split].map(
+                    self.transform,
+                    num_proc=num_proc,
+                    load_from_cache_file=True,
+                    desc=f"Processing {split} split",
+                )
+                log.info(f"Saving processed split '{split}' to {absolute_split_path}")
+                processed_split.save_to_disk(processed_split_path)
+
+            except Exception as e:
+                log.warning(
+                    f"Failed to process dataset for split {split} in prepare_data: {str(e)}"
+                )
+                if split == "train":
+                    raise e
+
+    @override
+    def setup(self, stage: str | None = None) -> None:
+        """
+        Loads the processed dataset from disk.
+        This method is called on every GPU process.
+        """
+        if not self._processed_datasets:
+            base_processed_data_path = self.processed_data_dir / self.dataset_config.name
+            absolute_processed_data_path = base_processed_data_path.resolve()
+            log.info(
+                f"Loading processed datasets from {absolute_processed_data_path} in setup (stage: {stage})..."
             )
+            splits_to_load = []
+            if stage == "fit" or stage is None:
+                splits_to_load.extend(["train", "val"])
+            if stage == "validate" or stage is None:
+                splits_to_load.append("val")
+            if stage == "test" or stage is None:
+                splits_to_load.append("test")
+            if stage == "predict" or stage is None:
+                predict_split_path = base_processed_data_path / "predict"
+                train_split_path = base_processed_data_path / "train"
+                if predict_split_path.exists():
+                    splits_to_load.append("predict")
+                elif train_split_path.exists():  # Use Path.exists()
+                    splits_to_load.append("train")  # Fallback to train if predict doesn't exist
 
-            self._processed_datasets[split] = processed_split
-            self.num_samples[split] = len(processed_split)
-            return processed_split
+            splits_to_load: list[Any] = list(set(splits_to_load))
 
-        except Exception as e:
-            log.error(f"Failed to process dataset for split {split}: {str(e)}")
-            if split == "train":
-                raise e
-            return None
+            for split in splits_to_load:
+                processed_split_path = base_processed_data_path / split
+                absolute_split_path = processed_split_path.resolve()
+                if not processed_split_path.exists():
+                    log.warning(
+                        f"Processed data for split '{split}' not found at {absolute_split_path}. Skipping."
+                    )
+                    continue
+                try:
+                    log.info(
+                        f"Loading processed dataset for split: {split} from {absolute_split_path}"
+                    )
+                    # load_from_disk accepts Path objects or strings
+                    processed_split = Dataset.load_from_disk(processed_split_path)
+                    self._processed_datasets[split] = processed_split
+                    self.num_samples[split] = len(processed_split)
+                    log.info(f"Loaded {self.num_samples[split]} samples for split '{split}'.")
+                except Exception as e:
+                    log.warning(
+                        f"Failed to load processed dataset for split {split} from {absolute_split_path}: {str(e)}"
+                    )
+                    if split == "train" and stage == "fit":
+                        raise e
+
+    def get_dataset(self, split: Literal["train", "val", "test", "predict"]) -> Dataset | None:
+        # Construct base path using Path
+        base_processed_data_path = self.processed_data_dir / self.dataset_config.name
+
+        if split == "predict":
+            actual_split = "predict" if "predict" in self._processed_datasets else "train"
+            log.info(f"Predict requested, using '{actual_split}' split.")
+            ds = self._processed_datasets.get(actual_split)
+        else:
+            ds = self._processed_datasets.get(split)
+
+        if ds is None:
+            log.warning(f"Dataset for split '{split}' not found or loaded.")
+            log.warning(f"Attempting direct load for split '{split}' (may indicate setup issue)")
+            processed_split_path = base_processed_data_path / split
+            absolute_split_path = processed_split_path.resolve()
+            if processed_split_path.exists():
+                try:
+                    ds = Dataset.load_from_disk(processed_split_path)
+                    self._processed_datasets[split] = ds
+                    self.num_samples[split] = len(ds)
+                except Exception as e:
+                    log.warning(f"Direct load failed for split '{split}': {e}")
+                    return None
+            else:
+                log.warning(f"Processed data path not found for direct load: {absolute_split_path}")
+                return None
+
+        return ds
 
     def _build_transform(
         self,
@@ -236,10 +342,10 @@ class DataModule:
         for i, token_id in enumerate(input_ids):
             token = self.tokenizer.decode([token_id])
 
-            if "<|assistant|>" in token:
+            if self.assistant_token in token:
                 in_assistant = True
                 start_idx = i
-            elif "<|end|>" in token and in_assistant:
+            elif self.eos_token in token and in_assistant:
                 if start_idx is not None:
                     assistant_ranges.append((start_idx, i - 1))
                 in_assistant = False
@@ -305,10 +411,10 @@ class DataModule:
 
     def get_dataloader(
         self, split: Literal["train", "val", "test", "predict"]
-    ) -> DataLoader[Dataset] | None:
+    ) -> DataLoader[Dataset] | list[DataLoader[Dataset]]:
         dataset = self.get_dataset(split)
         if not dataset:
-            return None
+            return []
 
         return DataLoader(
             dataset,  # pyright: ignore
@@ -320,18 +426,18 @@ class DataModule:
             persistent_workers=self.dataset_config.persistent_workers,
         )
 
-    @property
-    def train_dataloader(self) -> DataLoader[Dataset] | None:
+    @override
+    def train_dataloader(self) -> DataLoader[Dataset] | list[DataLoader[Dataset]]:
         return self.get_dataloader("train")
 
-    @property
-    def val_dataloader(self) -> DataLoader[Dataset] | None:
+    @override
+    def val_dataloader(self) -> DataLoader[Dataset] | list[DataLoader[Dataset]]:
         return self.get_dataloader("val")
 
-    @property
-    def test_dataloader(self) -> DataLoader[Dataset] | None:
+    @override
+    def test_dataloader(self) -> DataLoader[Dataset] | list[DataLoader[Dataset]]:
         return self.get_dataloader("test")
 
-    @property
-    def predict_dataloader(self) -> DataLoader[Dataset] | None:
+    @override
+    def predict_dataloader(self) -> DataLoader[Dataset] | list[DataLoader[Dataset]]:
         return self.get_dataloader("predict")

@@ -18,7 +18,6 @@ CHAT_TEMPLATES = {
         <|assistant|>{{ message['content'] }}<|end|>
         {%- endif -%}
         {%- endfor -%}
-        <|endoftext|>
         {%- if add_generation_prompt -%}
         <|assistant|>
         {%- endif -%}
@@ -30,8 +29,18 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def get_chat_template(template_name: str) -> str:
+def get_chat_template(
+    template_name: str, eos_token: str, system_token: str, user_token: str, assistant_token: str
+) -> str:
     if template_name not in CHAT_TEMPLATES:
         log.error(f"Chat template '{template_name}' not found")
         raise ValueError(f"Chat template '{template_name}' not found")
-    return CHAT_TEMPLATES[template_name]
+
+    template_string = CHAT_TEMPLATES[template_name]
+
+    if template_name == "chat":
+        template_string = template_string.replace("<|end|>", eos_token)
+        template_string = template_string.replace("<|system|>", system_token)
+        template_string = template_string.replace("<|user|>", user_token)
+        template_string = template_string.replace("<|assistant|>", assistant_token)
+    return template_string

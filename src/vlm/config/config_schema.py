@@ -26,8 +26,6 @@ class LLMConfig:
     max_seq_length: int | None = None
     image_token: str = "<image>"
     pad_token: str = "<pad>"
-    end_token: str = "<|end|>"
-    endoftext_token: str = "<|endoftext|>"
     system_token: str = "<|system|>"
     user_token: str = "<|user|>"
     assistant_token: str = "<|assistant|>"

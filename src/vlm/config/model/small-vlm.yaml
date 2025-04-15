@@ -1,5 +1,5 @@
 defaults:
-  - visual_encoder: clip-vit-base-patch32
+  - visual_encoder: clip-vit-base-patch16
   - llm: phi-4-mini-instruct
   - connector: mlp-2-gelu
 

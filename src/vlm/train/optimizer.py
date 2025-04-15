@@ -2,9 +2,9 @@ import logging
 from typing import Any, cast
 
 import torch
-from pytorch_lightning.utilities.types import OptimizerLRScheduler
+from deepspeed.ops.adam import FusedAdam
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch.nn.parameter import Parameter
-from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from ..config import TrainerConfig
@@ -89,8 +89,8 @@ def _get_module_param_groups(
     ]
 
 
-def _create_optimizer(config: TrainerConfig, optimizer_params: list[dict[str, Any]]) -> AdamW:
-    return AdamW(
+def _create_optimizer(config: TrainerConfig, optimizer_params: list[dict[str, Any]]) -> FusedAdam:
+    return FusedAdam(
         optimizer_params,
         lr=config.learning_rate.default_lr,
         betas=(config.optimizer.adam_beta1, config.optimizer.adam_beta2),
@@ -98,7 +98,7 @@ def _create_optimizer(config: TrainerConfig, optimizer_params: list[dict[str, An
     )
 
 
-def _create_scheduler(config: TrainerConfig, optimizer: AdamW) -> SequentialLR:
+def _create_scheduler(config: TrainerConfig, optimizer: FusedAdam) -> SequentialLR:
     total_steps = _calculate_total_steps(config)
 
     warmup_steps = int(total_steps * config.scheduler.warmup_ratio)

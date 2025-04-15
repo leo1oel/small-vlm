@@ -20,15 +20,11 @@ class TokenConfig:
 
     image_token: str = "<image>"
     pad_token: str = "<pad>"
-    end_token: str = "<|end|>"
-    endoftext_token: str = "<|endoftext|>"
     system_token: str = "<|system|>"
     user_token: str = "<|user|>"
     assistant_token: str = "<|assistant|>"
     image_token_id: int | None = None
     pad_token_id: int | None = None
-    end_token_id: int | None = None
-    endoftext_token_id: int | None = None
     system_token_id: int | None = None
     user_token_id: int | None = None
     assistant_token_id: int | None = None
@@ -60,8 +56,6 @@ class LanguageModel(nn.Module, ABC):
         self.token_config: TokenConfig = TokenConfig(
             image_token=getattr(self.config, "image_token", "<image>"),
             pad_token=getattr(self.config, "pad_token", "<pad>"),
-            end_token=getattr(self.config, "end_token", "<|end|>"),
-            endoftext_token=getattr(self.config, "endoftext_token", "<|endoftext|>"),
             system_token=getattr(self.config, "system_token", "<|system|>"),
             user_token=getattr(self.config, "user_token", "<|user|>"),
             assistant_token=getattr(self.config, "assistant_token", "<|assistant|>"),
@@ -87,10 +81,8 @@ class LanguageModel(nn.Module, ABC):
     def _add_special_tokens(self) -> None:
         """Adds special tokens to the tokenizer if they don't exist."""
         special_tokens_to_add = [
-            (self.token_config.pad_token, "pad_token_id", "pad_token"),
             (self.token_config.image_token, "image_token_id", "additional_special_tokens"),
-            (self.token_config.end_token, "end_token_id", "additional_special_tokens"),
-            (self.token_config.endoftext_token, "endoftext_token_id", "additional_special_tokens"),
+            (self.token_config.pad_token, "pad_token_id", "pad_token"),
             (self.token_config.system_token, "system_token_id", "additional_special_tokens"),
             (self.token_config.user_token, "user_token_id", "additional_special_tokens"),
             (self.token_config.assistant_token, "assistant_token_id", "additional_special_tokens"),
@@ -219,6 +211,8 @@ class LanguageModel(nn.Module, ABC):
             log.warning(f"{capitalized_key} not found in config for {self.name}")
         elif model_value is not None and config_value is None:
             setattr(self, key, int(model_value))
+            if hasattr(self.config, key):
+                setattr(self.config, key, int(model_value))
             log.info(f"{capitalized_key} not found in config, using hf config: {model_value}")
         elif model_value is None and config_value is not None:
             log.warning(f"{capitalized_key} not found in hf config for {self.name}")

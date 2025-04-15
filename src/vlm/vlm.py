@@ -2,8 +2,8 @@ import logging
 from pathlib import Path
 
 import hydra
+from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
-from pytorch_lightning import seed_everything
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
 from .data import DataModule
@@ -58,46 +58,56 @@ def load_model(
 def vlm(cfg: AppConfig) -> None:
     if cfg.mode.is_training:
         log.info("Training mode")
-        # only load necessary components for dataset processing
+        # Load model components needed for DataModule first
+        # Lazy loading might still be useful if model initialization is heavy
         model: VLM = load_model(cfg.model, cfg.trainer, lazy_loading=True)
+
+        # Initialize DataModule
         data_module = DataModule(
             cfg.dataset,
-            cfg.trainer.num_training_samples,
+            cfg.trainer.num_training_samples,  # Pass initial value (can be None)
             model,
             cfg.trainer.batch_size,
             cfg.trainer.chat_template,
+            # Make sure processed_data_dir is configured if needed, or uses default
+            # processed_data_dir=cfg.data.processed_dir # Example if you add it to config
         )
-        # Get dataloaders
-        train_dataloader = data_module.train_dataloader
-        val_dataloader = data_module.val_dataloader
-        test_dataloader = data_module.test_dataloader
 
-        # Check if training data is available
-        if train_dataloader is None:
-            log.error("Training data load failed")
-            raise ValueError("Training data load failed")
+        data_module.prepare_data()
+        data_module.setup(stage="fit")
 
-        log.info(f"Training data loaded successfully: {len(train_dataloader)} batches")
+        # Check if training data was loaded successfully during setup
+        if "train" not in data_module.num_samples or data_module.num_samples["train"] == 0:
+            log.error("Training data failed to load or is empty after setup.")
+            raise ValueError("Training data load failed or is empty.")
+
+        # Update num_training_samples if it was initially None
         if cfg.trainer.num_training_samples is None:
-            cfg.trainer.num_training_samples = data_module.num_samples["train"]
+            if "train" in data_module.num_samples:
+                cfg.trainer.num_training_samples = data_module.num_samples["train"]
+                log.info(
+                    f"Updated cfg.trainer.num_training_samples to {cfg.trainer.num_training_samples}"
+                )
+            else:
+                # This case should ideally be caught by the check above, but added for safety
+                log.error("Cannot update num_training_samples because train split was not loaded.")
+                raise ValueError("Failed to determine number of training samples.")
 
-        # Log validation and test data status
-        if val_dataloader:
-            log.info(f"Validation data loaded successfully: {len(val_dataloader)} batches")
+        # Log validation data status (optional, as Trainer will handle loading)
+        if "val" in data_module.num_samples:
+            log.info(
+                f"Validation data loaded successfully during setup: {data_module.num_samples['val']} samples"
+            )
         else:
-            log.warning("Validation data load failed")
-
-        if test_dataloader:
-            log.info(f"Test data loaded successfully: {len(test_dataloader)} batches")
-        else:
-            log.warning("Test data load failed")
+            log.warning("Validation data not found or failed to load during setup.")
 
         # initialize all components
         model.initialize_components()
-        train(cfg.trainer, model, train_dataloader, val_dataloader, test_dataloader)
+        train(cfg.trainer, model, data_module)
     else:
         log.info("Inference mode")
-        inference(cfg.inference, cfg.dataset)
+        model = load_model(cfg.model, cfg.trainer, lazy_loading=False)
+        inference(cfg.inference, model, cfg.dataset)
 
 
 def validate_config(cfg: AppConfig) -> None:

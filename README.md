@@ -1,10 +1,14 @@
 # small-vlm
 
-👉\[\[\[**This is the initial readme for your
-[simple-modern-uv](https://github.com/jlevy/simple-modern-uv) template.** Fill it in and
-delete this message!
-Below are general setup instructions that you may remove or keep and adapt for your
-project.\]\]\]
+![Architecture](assets/architecture.png)
+
+A small vision-language model (VLM) implementation in PyTorch. The model consists of three main components:
+
+- **Visual Encoder**: Extracts visual features from images using vision transformers
+- **Language Model**: Processes text and generates responses using LLMs
+- **Connector**: Connects visual and language features for multimodal understanding
+
+You can switch different visual encoders, language models and connectors by changing the config.
 
 * * *
 

@@ -193,3 +193,6 @@ pyrightconfig.json
 
 # debug
 debug.ipynb
+
+# processed datasets
+processed_data/
