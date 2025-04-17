@@ -7,12 +7,13 @@ from typing import Any, Literal, cast, override
 
 import lightning as L
 import torch
-from datasets import Dataset, DatasetDict, load_dataset, load_from_disk  # pyright: ignore
-from datasets import Image as HFImage
 from PIL import Image
 from torch.utils.data import DataLoader
 from transformers.image_processing_utils import BaseImageProcessor
 from transformers.tokenization_utils import PreTrainedTokenizer
+
+from datasets import Dataset, DatasetDict, load_dataset, load_from_disk  # pyright: ignore
+from datasets import Image as HFImage
 
 from ..config.config_schema import DatasetConfig
 from ..models import VLM
