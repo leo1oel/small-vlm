@@ -1,0 +1,4 @@
+name: vmcbench
+path: /pasteur2/u/yuhuiz/yiming/small-vlm/example/vmcbench
+type: disk
+num_proc: 1

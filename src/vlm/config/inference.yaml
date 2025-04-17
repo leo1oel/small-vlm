@@ -1,0 +1,19 @@
+defaults:
+  - cfg
+  - mode: inference
+  - model: llava-7b
+  - trainer: finetune
+  - inference: default
+  - dataset: vmcbench
+  - override hydra/job_logging: rich
+  - _self_
+
+inference:
+  checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-16/04-48-10/checkpoints/epoch=0-step=6000.ckpt
+
+hydra:
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: INFO

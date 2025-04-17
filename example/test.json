@@ -22,7 +22,7 @@
         "text": [
             {
                 "from": "user",
-                "value": "<image> What color is the car? A. red. B. blue. C. green. D. white. Answer in A, B, C, D."
+                "value": "<image> Please describe the image."
             }
         ]
     },
@@ -31,7 +31,7 @@
         "text": [
             {
                 "from": "user",
-                "value": "<image> What color is the car? A. white. B. blue. C. green. D. red. Answer in A, B, C, D."
+                "value": "<image> Please describe the image."
             }
         ]
     }

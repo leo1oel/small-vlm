@@ -196,3 +196,6 @@ debug.ipynb
 
 # processed datasets
 processed_data/
+
+# datasets
+datasets/

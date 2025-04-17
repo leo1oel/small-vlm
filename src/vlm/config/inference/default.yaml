@@ -1,2 +1,3 @@
-checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-04/08-25-08/checkpoints/model.pt
-num_inference_samples: 4
+checkpoint_path: .
+num_inference_samples: null
+chat_template: "chat"

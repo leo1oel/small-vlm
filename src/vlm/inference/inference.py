@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 import lightning as L
+import polars as pl
 from deepspeed.utils.zero_to_fp32 import load_state_dict_from_zero_checkpoint  # pyright: ignore
 
 from ..config.config_schema import DatasetConfig, InferenceConfig
@@ -12,9 +13,9 @@ log: logging.Logger = logging.getLogger(name=__name__)
 
 
 def inference(config: InferenceConfig, model: VLM, data_config: DatasetConfig) -> None:  # pyright: ignore
-    log.info(f"[bold green]Loading model from checkpoint:[/bold green] {config.checkpoint_path}")
-    model = load_state_dict_from_zero_checkpoint(model, config.checkpoint_path)
-    trainer: L.Trainer = L.Trainer()
+    log.info(f"Loading model from checkpoint: {config.checkpoint_path}")
+    model = load_state_dict_from_zero_checkpoint(model, config.checkpoint_path, tag="checkpoint")
+    trainer: L.Trainer = L.Trainer(devices=1)
     data_module: DataModule = DataModule(
         data_config,
         config.num_inference_samples,
@@ -24,6 +25,9 @@ def inference(config: InferenceConfig, model: VLM, data_config: DatasetConfig) -
         do_generation=True,
     )
     results: list[Any] = trainer.predict(  # pyright: ignore
-        model=model, dataloaders=data_module.predict_dataloader
+        model=model, datamodule=data_module
     )
-    print(results)
+    log.info(f"Inference result example: {results[0]}")
+    df = pl.DataFrame({"content": results})
+    df.write_ndjson("inference_results.jsonl")
+    log.info("Inference results saved to: inference_results.jsonl")

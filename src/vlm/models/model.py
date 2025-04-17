@@ -190,15 +190,15 @@ class VLM(L.LightningModule):
 
     @override
     def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "train/loss")
+        return self._shared_step(batch, "train_loss")
 
     @override
     def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "val/loss")
+        return self._shared_step(batch, "val_loss")
 
     @override
     def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "test/loss")
+        return self._shared_step(batch, "test_loss")
 
     def _shared_step(self, batch: dict[str, torch.Tensor], log_name: str) -> torch.Tensor:
         images = batch["images"]
@@ -249,10 +249,9 @@ class VLM(L.LightningModule):
             inputs_embeds=multimodal_features,
             attention_mask=attention_mask,
             num_beams=3,
-            max_new_tokens=5,
+            max_new_tokens=10,
             do_sample=False,
         )
-
         return self.language_model.tokenizer.decode(output[0], skip_special_tokens=True)
 
     def _calculate_loss(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:

@@ -7,7 +7,7 @@ from typing import Any, Literal, cast, override
 
 import lightning as L
 import torch
-from datasets import Dataset, DatasetDict, load_dataset  # pyright: ignore
+from datasets import Dataset, DatasetDict, load_dataset, load_from_disk  # pyright: ignore
 from datasets import Image as HFImage
 from PIL import Image
 from torch.utils.data import DataLoader
@@ -72,7 +72,7 @@ class DataModule(L.LightningDataModule):
                 log.info(f"Loading HuggingFace dataset: {self.dataset_config.name}")
                 self._raw_dataset = cast(
                     DatasetDict,
-                    load_dataset(cast(str, self.dataset_config.hf_name), trust_remote_code=True),
+                    load_dataset(self.dataset_config.path, trust_remote_code=True),
                 )
                 if self.num_training_samples is not None:
                     self._raw_dataset["train"] = self._raw_dataset["train"].select(
@@ -84,11 +84,28 @@ class DataModule(L.LightningDataModule):
                     DatasetDict,
                     load_dataset(
                         "json",
-                        data_files=self.dataset_config.json_path,
+                        data_files=self.dataset_config.path,
                     ).cast_column("image", HFImage()),
                 )
                 if self.num_training_samples is not None:
                     log.info(f"Selecting {self.num_training_samples} training samples")
+                    self._raw_dataset["train"] = self._raw_dataset["train"].select(
+                        range(min(self.num_training_samples, len(self._raw_dataset["train"])))
+                    )
+            elif dataset_type == "disk":
+                log.info(f"Loading disk dataset: {self.dataset_config.name}")
+                # Load the single dataset from disk
+                loaded_dataset = cast(
+                    Dataset,
+                    load_from_disk(self.dataset_config.path),
+                )
+                # Wrap it in a DatasetDict, assuming it's the 'train' split
+                self._raw_dataset = DatasetDict({"train": loaded_dataset})
+                # Apply num_training_samples logic if specified
+                if self.num_training_samples is not None:
+                    log.info(
+                        f"Selecting {self.num_training_samples} training samples from disk dataset"
+                    )
                     self._raw_dataset["train"] = self._raw_dataset["train"].select(
                         range(min(self.num_training_samples, len(self._raw_dataset["train"])))
                     )
@@ -251,6 +268,10 @@ class DataModule(L.LightningDataModule):
     def _extract_text(self, item: dict[str, Any]) -> str | list[dict[str, str]]:
         if "text" in item:
             return item["text"]
+        elif "texts" in item:
+            return item["texts"]
+        elif "conversation" in item:
+            return item["conversation"]
         elif "conversations" in item:
             return item["conversations"]
         else:
@@ -417,3 +438,25 @@ class DataModule(L.LightningDataModule):
     @override
     def predict_dataloader(self) -> DataLoader[Dataset] | list[DataLoader[Dataset]]:
         return self.get_dataloader("predict")
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        state = {}
+        state["torch_rng_state"] = torch.get_rng_state()
+        train_loader = self.train_dataloader()
+        if isinstance(train_loader, DataLoader) and hasattr(train_loader.sampler, "epoch"):  # pyright: ignore
+            state["epoch"] = train_loader.sampler.epoch  # pyright: ignore
+        return state  # pyright: ignore
+
+    @override
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        if "torch_rng_state" in state_dict:
+            torch.set_rng_state(state_dict["torch_rng_state"])
+
+        train_loader = self.train_dataloader()
+        if (
+            isinstance(train_loader, DataLoader)
+            and hasattr(train_loader.sampler, "epoch")  # pyright: ignore
+            and "epoch" in state_dict
+        ):
+            train_loader.sampler.epoch = state_dict["epoch"]  # pyright: ignore

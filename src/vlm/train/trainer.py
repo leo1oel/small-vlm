@@ -42,7 +42,7 @@ def train(
     ckpt_path = _find_checkpoint_path(config)
 
     if ckpt_path is not None and not config.load_optimizer_states:
-        model = load_state_dict_from_zero_checkpoint(model, ckpt_path)
+        model = load_state_dict_from_zero_checkpoint(model, ckpt_path, tag="checkpoint")
 
     if ckpt_path is not None and config.load_optimizer_states:
         trainer.fit(
