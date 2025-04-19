@@ -2,9 +2,9 @@ CHAT_TEMPLATES = {
     "plain": """
         {%- for message in messages -%}
         {%- if message['role'] == 'user' -%}
-        <image>
+        <|assistant|><image>
         {%- elif message['role'] == 'assistant' -%}
-        {{ message['content'] }}
+        {{ message['content'] }}\n
         {%- endif -%}
         {%- endfor -%}
         {%- if add_generation_prompt -%}
@@ -33,7 +33,11 @@ log = logging.getLogger(__name__)
 
 
 def get_chat_template(
-    template_name: str, eos_token: str, system_token: str, user_token: str, assistant_token: str
+    template_name: str,
+    eos_token: str,
+    system_token: str | None,
+    user_token: str | None,
+    assistant_token: str,
 ) -> str:
     if template_name not in CHAT_TEMPLATES:
         log.error(f"Chat template '{template_name}' not found")
@@ -43,7 +47,9 @@ def get_chat_template(
 
     if template_name == "chat":
         template_string = template_string.replace("<|end|>", eos_token)
-        template_string = template_string.replace("<|system|>", system_token)
-        template_string = template_string.replace("<|user|>", user_token)
+        if system_token is not None:
+            template_string = template_string.replace("<|system|>", system_token)
+        if user_token is not None:
+            template_string = template_string.replace("<|user|>", user_token)
         template_string = template_string.replace("<|assistant|>", assistant_token)
     return template_string

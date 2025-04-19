@@ -1,5 +1,5 @@
 name: vicuna-7b-v1.5
 hf_name: lmsys/vicuna-7b-v1.5
-system_token: ""
-user_token: ""
+system_token: null
+user_token: null
 assistant_token: <s>

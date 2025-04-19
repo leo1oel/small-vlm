@@ -15,6 +15,7 @@ from lightning.pytorch.callbacks import (
     RichProgressBar,
 )
 from lightning.pytorch.loggers import WandbLogger
+from nvitop.callbacks.lightning import GpuStatsLogger
 from torch import nn
 
 from ..config import TrainerConfig
@@ -106,6 +107,7 @@ def _setup_callbacks(config: TrainerConfig, has_val_dataloader: bool) -> list[An
     callbacks.append(RichProgressBar())
     callbacks.append(RichModelSummary())
     callbacks.append(DeviceStatsMonitor())
+    callbacks.append(GpuStatsLogger())
 
     if config.early_stopping:
         early_stopping = EarlyStopping(

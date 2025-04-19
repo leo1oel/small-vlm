@@ -1,7 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import cast, override
+from typing import Any, cast, override
 
 import torch
 import torch.nn as nn
@@ -19,15 +19,16 @@ class TokenConfig:
     """Special token configuration"""
 
     image_token: str = "<image>"
-    pad_token: str = "<pad>"
-    system_token: str = "<|system|>"
-    user_token: str = "<|user|>"
+    image_patch_token: str = "<image_patch>"
+    image_start_token: str = "<image_start>"
+    image_end_token: str = "<image_end>"
+    system_token: str | None = None
+    user_token: str | None = None
     assistant_token: str = "<|assistant|>"
     image_token_id: int | None = None
-    pad_token_id: int | None = None
-    system_token_id: int | None = None
-    user_token_id: int | None = None
-    assistant_token_id: int | None = None
+    image_patch_token_id: int | None = None
+    image_start_token_id: int | None = None
+    image_end_token_id: int | None = None
 
 
 @dataclass
@@ -55,9 +56,11 @@ class LanguageModel(nn.Module, ABC):
         # token config
         self.token_config: TokenConfig = TokenConfig(
             image_token=getattr(self.config, "image_token", "<image>"),
-            pad_token=getattr(self.config, "pad_token", "<pad>"),
-            system_token=getattr(self.config, "system_token", "<|system|>"),
-            user_token=getattr(self.config, "user_token", "<|user|>"),
+            image_patch_token=getattr(self.config, "image_patch_token", "<image_patch>"),
+            image_start_token=getattr(self.config, "image_start_token", "<image_start>"),
+            image_end_token=getattr(self.config, "image_end_token", "<image_end>"),
+            system_token=getattr(self.config, "system_token", None),
+            user_token=getattr(self.config, "user_token", None),
             assistant_token=getattr(self.config, "assistant_token", "<|assistant|>"),
         )
 
@@ -80,43 +83,42 @@ class LanguageModel(nn.Module, ABC):
 
     def _add_special_tokens(self) -> None:
         """Adds special tokens to the tokenizer if they don't exist."""
-        special_tokens_to_add = [
-            (self.token_config.image_token, "image_token_id", "additional_special_tokens"),
-            (self.token_config.pad_token, "pad_token_id", "pad_token"),
-            (self.token_config.system_token, "system_token_id", "additional_special_tokens"),
-            (self.token_config.user_token, "user_token_id", "additional_special_tokens"),
-            (self.token_config.assistant_token, "assistant_token_id", "additional_special_tokens"),
-        ]
+        # Create a mapping of tokens to their attribute names
 
-        for token, token_id_attr, token_type in special_tokens_to_add:
-            self._add_or_get_special_token(
-                token=token,
-                token_id_attr=token_id_attr,
-                token_type=token_type,
-            )
+        token_mapping = {
+            self.token_config.image_token: "image_token_id",
+            self.token_config.system_token: "system_token_id",
+            self.token_config.user_token: "user_token_id",
+            self.token_config.assistant_token: "assistant_token_id",
+        }
+        if self.config.use_image_patch_token:
+            token_mapping[self.token_config.image_patch_token] = "image_patch_token_id"
+        if self.config.use_start_end_tokens:
+            token_mapping[self.token_config.image_start_token] = "image_start_token_id"
+            token_mapping[self.token_config.image_end_token] = "image_end_token_id"
 
-    def _add_or_get_special_token(self, token: str, token_id_attr: str, token_type: str) -> None:
-        """Checks if a special token exists, adds it if not, and sets the token ID."""
-        token_id = self.tokenizer.convert_tokens_to_ids(token)
-        if token_id != self.tokenizer.unk_token_id:
-            log.info(f"Token '{token}' exists in tokenizer, ID: {token_id}")
-            setattr(self.token_config, token_id_attr, cast(int, token_id))
-        else:
-            log.info(f"Token '{token}' does not exist in tokenizer, adding it")
-            new_token_id = self._add_special_token(token=token, token_type=token_type)
-            setattr(self.token_config, token_id_attr, new_token_id)
+        # Identify which tokens need to be added
+        tokens_to_add: list[Any] = []
+        for token in token_mapping:
+            if token is None:
+                continue
+            if self.tokenizer.convert_tokens_to_ids(token) == self.tokenizer.unk_token_id:
+                tokens_to_add.append(token)
+                log.info(f"Token '{token}' does not exist in tokenizer, will be added")
+            else:
+                token_id = self.tokenizer.convert_tokens_to_ids(token)
+                log.info(f"Token '{token}' exists in tokenizer, ID: {token_id}")
+                setattr(self.token_config, token_mapping[token], cast(int, token_id))
 
-    def _add_special_token(self, token: str, token_type: str) -> int:
-        log.info(f"Adding {token_type}: {token}")
+        # Add all new tokens at once if any
+        if tokens_to_add:
+            log.info(f"Adding tokens: {tokens_to_add}")
+            self.tokenizer.add_tokens(tokens_to_add, special_tokens=True)
 
-        if token_type == "pad_token":
-            self.tokenizer.add_special_tokens({"pad_token": token})
-        else:
-            # Use a list for additional_special_tokens as per transformers documentation
-            self.tokenizer.add_special_tokens({token_type: [token]})  # pyright: ignore
-
-        token_id: int = cast(int, self.tokenizer.convert_tokens_to_ids(token))
-        return token_id
+            # Now set the IDs for newly added tokens
+            for token in tokens_to_add:
+                token_id = cast(int, self.tokenizer.convert_tokens_to_ids(token))
+                setattr(self.token_config, token_mapping[token], token_id)
 
     @property
     def tokenizer(self) -> PreTrainedTokenizer:
@@ -164,7 +166,7 @@ class LanguageModel(nn.Module, ABC):
 
     @property
     def pad_token_id(self) -> int:
-        return cast(int, self.token_config.pad_token_id)
+        return cast(int, self.tokenizer.pad_token_id)
 
     @abstractmethod
     def _build_embedding_layer(self) -> nn.Module:

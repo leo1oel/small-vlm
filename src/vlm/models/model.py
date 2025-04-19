@@ -28,7 +28,7 @@ class VLM(L.LightningModule):
         model_config: ModelConfig,
         trainer_config: TrainerConfig,
         lazy_loading: bool = False,
-        debug: bool = False,
+        debug: bool = True,
     ) -> None:
         super().__init__()
         # process config
@@ -297,18 +297,18 @@ class VLM(L.LightningModule):
         for param in self.visual_encoder.parameters():
             param.requires_grad = not freeze
 
-    def freeze_language_model(self, freeze: bool = True, except_layer_norm: bool = True) -> None:
+    def freeze_language_model(self, freeze: bool = True, except_layer_norm: bool = False) -> None:
         for name, param in self.language_model.named_parameters():
             if except_layer_norm and (
-                "layernorm" in name.lower()
-                or "layer_norm" in name.lower()
-                or "ln_" in name.lower()
-                or "embedding" in name.lower()
-                or "embed" in name.lower()
+                "layernorm" in name.lower() or "layer_norm" in name.lower() or "ln_" in name.lower()
             ):
                 param.requires_grad = True
             else:
                 param.requires_grad = not freeze
+
+        if self.model_config.llm.use_start_end_tokens:
+            for param in self.language_model.embeddings.parameters():
+                param.requires_grad = True
 
     def freeze_connector(self, freeze: bool = True) -> None:
         for param in self.connector.parameters():

@@ -19,6 +19,7 @@ log: logging.Logger = logging.getLogger(name=__name__)
 class HFLLMLanguageModel(LanguageModel):
     def __init__(self, config: LLMConfig) -> None:
         super().__init__(config)
+        self.attn_implementation: str = config.attn_implementation
 
     @override
     def _build_embedding_layer(self) -> nn.Module:
@@ -32,7 +33,6 @@ class HFLLMLanguageModel(LanguageModel):
                 self.hf_name,
                 trust_remote_code=True,
                 use_fast=True,
-                device="cuda" if torch.cuda.is_available() else "cpu",
             ),
         )
 
@@ -40,7 +40,12 @@ class HFLLMLanguageModel(LanguageModel):
     def _build_language_model(self) -> PreTrainedModel:
         return cast(
             PreTrainedModel,
-            AutoModelForCausalLM.from_pretrained(self.hf_name, trust_remote_code=True),
+            AutoModelForCausalLM.from_pretrained(
+                self.hf_name,
+                low_cpu_mem_usage=True,
+                trust_remote_code=True,
+                attn_implementation=self.attn_implementation,
+            ),
         )
 
     @override

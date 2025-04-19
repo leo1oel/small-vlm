@@ -15,7 +15,10 @@ class LinearConnector(Connector):
 
     @override
     def _build_projection_layer(self) -> nn.Module:
-        return nn.Linear(self.image_hidden_size, self.text_hidden_size)
+        return nn.Linear(
+            self.image_hidden_size,
+            self.text_hidden_size,
+        )
 
     @override
     def _initialize_layers(self) -> None:

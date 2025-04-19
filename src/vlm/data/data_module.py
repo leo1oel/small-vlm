@@ -11,6 +11,7 @@ from PIL import Image
 from torch.utils.data import DataLoader
 from transformers.image_processing_utils import BaseImageProcessor
 from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers.trainer_pt_utils import DistributedLengthGroupedSampler
 
 from datasets import Dataset, DatasetDict, load_dataset, load_from_disk  # pyright: ignore
 from datasets import Image as HFImage
@@ -53,8 +54,8 @@ class DataModule(L.LightningDataModule):
         self.image_token_size: int = model.visual_encoder.token_size
         self.eos_token: str = cast(str, self.tokenizer.eos_token)
         self.eos_token_id: int = cast(int, self.tokenizer.eos_token_id)
-        self.system_token: str = model.language_model.token_config.system_token
-        self.user_token: str = model.language_model.token_config.user_token
+        self.system_token: str | None = model.language_model.token_config.system_token
+        self.user_token: str | None = model.language_model.token_config.user_token
         self.assistant_token: str = model.language_model.token_config.assistant_token
 
         self.chat_template_name: str = chat_template
@@ -317,7 +318,7 @@ class DataModule(L.LightningDataModule):
         if self.chat_template_name == "plain":
             labels = torch.full_like(input_ids, -100)
             if len(input_ids) > 1:
-                labels[1:-1] = input_ids[2:].clone()
+                labels[2:-1] = input_ids[3:].clone()
             return labels
 
         labels = torch.full_like(input_ids, -100)
@@ -396,7 +397,7 @@ class DataModule(L.LightningDataModule):
             labels.append(padded_labels)
             with torch.no_grad():
                 img_tensor = self.image_preprocessor(
-                    item["image"].convert("RGB"), return_tensors="pt", device="cpu"
+                    item["image"].convert("RGB"), return_tensors="pt"
                 )["pixel_values"].squeeze(0)
             images.append(img_tensor)
 
@@ -414,10 +415,24 @@ class DataModule(L.LightningDataModule):
         if not dataset:
             return []
 
+        if split == "train":
+            lengths = [len(item["text"]) for item in dataset]  # pyright: ignore
+            sampler = DistributedLengthGroupedSampler(
+                batch_size=self.batch_size,
+                lengths=lengths,
+                num_replicas=torch.distributed.get_world_size()
+                if torch.distributed.is_initialized()
+                else 1,
+                rank=torch.distributed.get_rank() if torch.distributed.is_initialized() else 0,
+                seed=42,
+            )
+        else:
+            sampler = None
+
         return DataLoader(
             dataset,  # pyright: ignore
             batch_size=self.batch_size,
-            shuffle=(split == "train"),  # Only shuffle training data
+            sampler=sampler,
             collate_fn=self.collate_fn,
             num_workers=self.dataset_config.num_workers,
             pin_memory=self.dataset_config.pin_memory,

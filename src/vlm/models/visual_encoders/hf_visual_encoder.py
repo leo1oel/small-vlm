@@ -23,18 +23,17 @@ class HFVisualEncoder(VisualEncoder):
     def _build_preprocessor(self) -> BaseImageProcessor:
         return cast(
             BaseImageProcessor,
-            AutoImageProcessor.from_pretrained(
-                self.hf_name,
-                trust_remote_code=True,
-                use_fast=True,
-                device="cuda" if torch.cuda.is_available() else "cpu",
-            ),
+            AutoImageProcessor.from_pretrained(self.hf_name, trust_remote_code=True, use_fast=True),
         )
 
     @override
     def _build_visual_encoder(self) -> PreTrainedModel:
         visual_encoder: PreTrainedModel = cast(
-            PreTrainedModel, AutoModel.from_pretrained(self.hf_name, trust_remote_code=True)
+            PreTrainedModel,
+            AutoModel.from_pretrained(
+                self.hf_name,
+                trust_remote_code=True,
+            ),
         )
         if getattr(visual_encoder, "vision_model", None):
             visual_encoder = visual_encoder.vision_model  # pyright: ignore

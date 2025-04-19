@@ -25,10 +25,15 @@ class LLMConfig:
     vocab_size: int | None = None
     max_seq_length: int | None = None
     image_token: str = "<image>"
-    pad_token: str = "<pad>"
-    system_token: str = "<|system|>"
-    user_token: str = "<|user|>"
-    assistant_token: str = "<|assistant|>"
+    use_start_end_tokens: bool = False
+    use_image_patch_token: bool = False
+    image_start_token: str = "<image_start>"
+    image_end_token: str = "<image_end>"
+    image_patch_token: str = "<image_patch>"
+    system_token: str | None = None
+    user_token: str | None = None
+    assistant_token: str = MISSING
+    attn_implementation: str = "flash_attention_2"
 
 
 @dataclass
