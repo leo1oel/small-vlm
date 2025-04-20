@@ -4,7 +4,7 @@ CHAT_TEMPLATES = {
         {%- if message['role'] == 'user' -%}
         <|assistant|><image>
         {%- elif message['role'] == 'assistant' -%}
-        {{ message['content'] }}\n
+        {{ message['content'] }}<|end|>
         {%- endif -%}
         {%- endfor -%}
         {%- if add_generation_prompt -%}
@@ -45,11 +45,14 @@ def get_chat_template(
 
     template_string = CHAT_TEMPLATES[template_name]
 
-    if template_name == "chat":
-        template_string = template_string.replace("<|end|>", eos_token)
-        if system_token is not None:
-            template_string = template_string.replace("<|system|>", system_token)
-        if user_token is not None:
-            template_string = template_string.replace("<|user|>", user_token)
-        template_string = template_string.replace("<|assistant|>", assistant_token)
+    template_string = template_string.replace("<|end|>", eos_token)
+    if system_token is not None:
+        template_string = template_string.replace("<|system|>", system_token)
+    else:
+        template_string = template_string.replace("<|system|>", "")
+    if user_token is not None:
+        template_string = template_string.replace("<|user|>", user_token)
+    else:
+        template_string = template_string.replace("<|user|>", "")
+    template_string = template_string.replace("<|assistant|>", assistant_token)
     return template_string

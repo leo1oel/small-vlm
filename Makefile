@@ -10,6 +10,7 @@ default: install lint test
 
 install:
 	uv sync --all-extras --dev
+	uv pip install flash-attn --no-build-isolation
 
 lint:
 	uv run python devtools/lint.py
@@ -19,6 +20,7 @@ test:
 
 upgrade:
 	uv sync --upgrade
+	uv pip install flash-attn --no-build-isolation
 
 build:
 	uv build

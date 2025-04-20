@@ -21,6 +21,8 @@ from .visual_encoders import VisualEncoder
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
+DEBUG = False
+
 
 class VLM(L.LightningModule):
     def __init__(
@@ -28,7 +30,7 @@ class VLM(L.LightningModule):
         model_config: ModelConfig,
         trainer_config: TrainerConfig,
         lazy_loading: bool = False,
-        debug: bool = True,
+        debug: bool = DEBUG,
     ) -> None:
         super().__init__()
         # process config

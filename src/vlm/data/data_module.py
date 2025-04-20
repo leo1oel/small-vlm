@@ -7,14 +7,13 @@ from typing import Any, Literal, cast, override
 
 import lightning as L
 import torch
+from datasets import Dataset, DatasetDict, load_dataset, load_from_disk  # pyright: ignore
+from datasets import Image as HFImage
 from PIL import Image
 from torch.utils.data import DataLoader
 from transformers.image_processing_utils import BaseImageProcessor
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.trainer_pt_utils import DistributedLengthGroupedSampler
-
-from datasets import Dataset, DatasetDict, load_dataset, load_from_disk  # pyright: ignore
-from datasets import Image as HFImage
 
 from ..config.config_schema import DatasetConfig
 from ..models import VLM
@@ -359,12 +358,14 @@ class DataModule(L.LightningDataModule):
             expanded_labels.append(cast(int, labels[i].item()))
 
             if token_id == self.image_token_id:
-                expanded_labels.extend([-100] * (self.image_token_size - 1))
+                expanded_labels.extend([-100] * (self.image_token_size - 2))
+                expanded_labels.append(cast(int, input_ids[i + 1].item()))
 
         return expanded_labels
 
     def collate_fn(self, batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
         """Custom collate function for batching data together."""
+        # torch.save(batch, "batch.pt")
 
         # Get maximum lengths for padding
         max_text_length = max(len(item["text"]) for item in batch)
@@ -401,6 +402,7 @@ class DataModule(L.LightningDataModule):
                 )["pixel_values"].squeeze(0)
             images.append(img_tensor)
 
+        # torch.save(input_ids, "texts_collate.pt")
         # Stack all tensors
         return {
             "images": torch.stack(images),

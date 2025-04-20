@@ -10,7 +10,13 @@ A small vision-language model (VLM) implementation in PyTorch. The model consist
 
 You can switch different visual encoders, language models and connectors by changing the config.
 
-* * *
+If you want to use flash-attention-2 for training, run
+
+```
+uv pip install flash-attn --no-build-isolation
+```
+
+---
 
 ## Project Docs
 
@@ -20,7 +26,7 @@ For development workflows, see [development.md](development.md).
 
 For instructions on publishing to PyPI, see [publishing.md](publishing.md).
 
-* * *
+---
 
-*This project was built from
-[simple-modern-uv](https://github.com/jlevy/simple-modern-uv).*
+_This project was built from
+[simple-modern-uv](https://github.com/jlevy/simple-modern-uv)._
