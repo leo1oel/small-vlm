@@ -60,6 +60,7 @@ class DatasetConfig:
     num_workers: int = 4
     pin_memory: bool = True
     persistent_workers: bool = True
+    use_length_grouping: bool = False
 
 
 @dataclass

@@ -398,7 +398,7 @@ class DataModule(L.LightningDataModule):
             labels.append(padded_labels)
             with torch.no_grad():
                 img_tensor = self.image_preprocessor(
-                    item["image"].convert("RGB"), return_tensors="pt"
+                    item["image"].convert("RGB"), return_tensors="pt", device="cpu"
                 )["pixel_values"].squeeze(0)
             images.append(img_tensor)
 
@@ -416,25 +416,31 @@ class DataModule(L.LightningDataModule):
         dataset = self.get_dataset(split)
         if not dataset:
             return []
-
         if split == "train":
-            lengths = [len(item["text"]) for item in dataset]  # pyright: ignore
-            sampler = DistributedLengthGroupedSampler(
-                batch_size=self.batch_size,
-                lengths=lengths,
-                num_replicas=torch.distributed.get_world_size()
-                if torch.distributed.is_initialized()
-                else 1,
-                rank=torch.distributed.get_rank() if torch.distributed.is_initialized() else 0,
-                seed=42,
-            )
+            if self.dataset_config.use_length_grouping:
+                lengths = [len(item["text"]) for item in dataset]  # pyright: ignore
+                sampler = DistributedLengthGroupedSampler(
+                    batch_size=self.batch_size,
+                    lengths=lengths,
+                    num_replicas=torch.distributed.get_world_size()
+                    if torch.distributed.is_initialized()
+                    else 1,
+                    rank=torch.distributed.get_rank() if torch.distributed.is_initialized() else 0,
+                    seed=42,
+                )
+                shuffle = False
+            else:
+                sampler = None
+                shuffle = True
         else:
             sampler = None
+            shuffle = False
 
         return DataLoader(
             dataset,  # pyright: ignore
             batch_size=self.batch_size,
             sampler=sampler,
+            shuffle=shuffle,
             collate_fn=self.collate_fn,
             num_workers=self.dataset_config.num_workers,
             pin_memory=self.dataset_config.pin_memory,

@@ -23,7 +23,12 @@ class HFVisualEncoder(VisualEncoder):
     def _build_preprocessor(self) -> BaseImageProcessor:
         return cast(
             BaseImageProcessor,
-            AutoImageProcessor.from_pretrained(self.hf_name, trust_remote_code=True, use_fast=True),
+            AutoImageProcessor.from_pretrained(
+                self.hf_name,
+                trust_remote_code=True,
+                use_fast=True,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+            ),
         )
 
     @override
