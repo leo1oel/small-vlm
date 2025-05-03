@@ -27,7 +27,6 @@ class HFVisualEncoder(VisualEncoder):
                 self.hf_name,
                 trust_remote_code=True,
                 use_fast=True,
-                device="cuda" if torch.cuda.is_available() else "cpu",
             ),
         )
 

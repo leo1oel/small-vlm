@@ -9,12 +9,12 @@ defaults:
   - _self_
 
 trainer:
-  # num_training_samples: 100
+  num_training_samples: 100
   # batch_size: 12
-  checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-14/03-03-03/checkpoints/last.ckpt
+  # checkpoint_path: /pasteur/u/yiming/small-vlm/outputs/2025-04-19/21-23-11/checkpoints/last.ckpt
   # checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-15/22-08-52/checkpoints/last.ckpt
   # load_optimizer_states: true
-  save_every_n_train_steps: 500
+  # save_every_n_train_steps: 500
   # devices: 1
   # strategy: auto
   batch_size: 2
