@@ -1,3 +1,6 @@
 name: llava-pretrain
 path: theblackcat102/llava-pretrain
-type: huggingface
+type: json
+lazy_preprocess: True
+is_multimodal: True
+image_folder: /pasteur2/u/yuhuiz/yiming/LLaVA/playground/data/LLaVA-Pretrain/images

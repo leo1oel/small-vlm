@@ -2,8 +2,8 @@ import logging
 import re
 from typing import Any, override
 
-import torch
 import torch.nn as nn
+from torch import Tensor
 
 from ...config.config_schema import ConnectorConfig
 from .base import Connector
@@ -81,5 +81,5 @@ class MLPConnector(Connector):
             nn.init.zeros_(layer.bias)
 
     @override
-    def projection(self, visual_features: torch.Tensor) -> torch.Tensor:
+    def projection(self, visual_features: Tensor) -> Tensor:
         return self.projection_layer(visual_features)

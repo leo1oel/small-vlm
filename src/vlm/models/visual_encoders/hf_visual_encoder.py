@@ -1,7 +1,7 @@
 import logging
 from typing import cast, override
 
-import torch
+from torch import Tensor
 from transformers.configuration_utils import PretrainedConfig
 from transformers.image_processing_utils import BaseImageProcessor
 from transformers.modeling_utils import PreTrainedModel
@@ -51,9 +51,22 @@ class HFVisualEncoder(VisualEncoder):
         )
 
     @override
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
-        outputs = self.visual_encoder(images, output_hidden_states=True)
-        hidden_states: torch.Tensor = outputs.hidden_states[self.output_layer]
-        if not self.config.use_cls_token:
-            return hidden_states[:, 1:].contiguous()
-        return hidden_states
+    def forward(self, images: Tensor | list[Tensor]) -> Tensor | list[Tensor]:
+        if type(images) is list:
+            image_features: list[Tensor] | Tensor = []
+            for image in images:
+                outputs = self.visual_encoder(image.unsqueeze(0), output_hidden_states=True)
+                hidden_states: Tensor = outputs.hidden_states[self.output_layer]
+                if not self.config.use_cls_token:
+                    image_features.append(hidden_states[:, 1:].contiguous())
+                else:
+                    image_features.append(hidden_states.contiguous())
+        else:
+            outputs = self.visual_encoder(images, output_hidden_states=True)
+            hidden_states = outputs.hidden_states[self.output_layer]
+            if not self.config.use_cls_token:
+                image_features = hidden_states[:, 1:].contiguous()
+            else:
+                image_features = hidden_states.contiguous()
+
+        return image_features

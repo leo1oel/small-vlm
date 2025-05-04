@@ -1,75 +1,88 @@
 import logging
-from typing import Any, cast
+from typing import Any
 
-import torch
-from deepspeed.ops.adam import FusedAdam
-from lightning.pytorch.utilities.types import OptimizerLRScheduler
+import torch.nn as nn
 from torch.nn.parameter import Parameter
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from transformers import PreTrainedModel
+from transformers.utils import ALL_LAYERNORM_LAYERS, get_parameter_names
 
-from ..config import TrainerConfig
+from .training_arguments import TrainingArguments
 
 log = logging.getLogger(__name__)
 
 
-def get_optimizer(
-    trainer_config: TrainerConfig,
-    param_groups: dict[str, dict[str, list[Parameter]]],
-) -> OptimizerLRScheduler:
-    optimizer_grouped_parameters = _build_optimizer_params(trainer_config, param_groups)
+def configure_optimizers(model: PreTrainedModel | nn.Module, trainer_config: TrainingArguments):
+    log.info("configure_optimizers")
+    decay_parameters = get_parameter_names(model, ALL_LAYERNORM_LAYERS)
+    decay_parameters = [name for name in decay_parameters if "bias" not in name]
 
-    optimizer = _create_optimizer(trainer_config, optimizer_grouped_parameters)
+    param_groups: dict[str, dict[str, list[Parameter]]] = {}
 
-    scheduler = _create_scheduler(trainer_config, optimizer)
+    visual_encoder_params = collect_param_groups(model.visual_encoder, decay_parameters)
+    param_groups["visual_encoder"] = visual_encoder_params
 
-    return {
-        "optimizer": optimizer,
-        "lr_scheduler": {
-            "scheduler": scheduler,
-            "interval": "step",
-            "frequency": 1,
-            "name": "learning_rate",
-        },
-    }
+    language_model_params = collect_param_groups(model.language_model, decay_parameters)
+    param_groups["language_model"] = language_model_params
+
+    connector_params = collect_param_groups(model.connector, decay_parameters)
+    param_groups["connector"] = connector_params
+
+    return build_optimizer_params(trainer_config, param_groups)
 
 
-def _build_optimizer_params(
-    config: TrainerConfig,
+def collect_param_groups(
+    module: PreTrainedModel | nn.Module, decay_parameters: list[str]
+) -> dict[str, list[Parameter]]:
+    decay_params = [
+        p for n, p in module.named_parameters() if p.requires_grad and n in decay_parameters
+    ]
+
+    no_decay_params = [
+        p for n, p in module.named_parameters() if p.requires_grad and n not in decay_parameters
+    ]
+
+    if decay_params or no_decay_params:
+        return {"decay": decay_params, "no_decay": no_decay_params}
+    return {"decay": [], "no_decay": []}
+
+
+def build_optimizer_params(
+    trainer_config: TrainingArguments,
     param_groups: dict[str, dict[str, list[Parameter]]],
 ) -> list[dict[str, Any]]:
     optimizer_params: list[dict[str, Any]] = []
 
     optimizer_params.extend(
-        _get_module_param_groups(
+        get_module_param_groups(
             module_name="visual_encoder",
             param_groups=param_groups,
-            weight_decay=config.weight_decay.visual_encoder_weight_decay,
-            learning_rate=config.learning_rate.visual_encoder_learning_rate,
+            weight_decay=trainer_config.visual_encoder_wd,
+            learning_rate=trainer_config.visual_encoder_lr,
         )
     )
 
     optimizer_params.extend(
-        _get_module_param_groups(
+        get_module_param_groups(
             module_name="language_model",
             param_groups=param_groups,
-            weight_decay=config.weight_decay.language_model_weight_decay,
-            learning_rate=config.learning_rate.language_model_learning_rate,
+            weight_decay=trainer_config.language_model_wd,
+            learning_rate=trainer_config.language_model_lr,
         )
     )
 
     optimizer_params.extend(
-        _get_module_param_groups(
+        get_module_param_groups(
             module_name="connector",
             param_groups=param_groups,
-            weight_decay=config.weight_decay.connector_weight_decay,
-            learning_rate=config.learning_rate.connector_learning_rate,
+            weight_decay=trainer_config.connector_wd,
+            learning_rate=trainer_config.connector_lr,
         )
     )
 
     return optimizer_params
 
 
-def _get_module_param_groups(
+def get_module_param_groups(
     module_name: str,
     param_groups: dict[str, dict[str, list[Parameter]]],
     weight_decay: float,
@@ -87,61 +100,3 @@ def _get_module_param_groups(
             "lr": learning_rate,
         },
     ]
-
-
-def _create_optimizer(config: TrainerConfig, optimizer_params: list[dict[str, Any]]) -> FusedAdam:
-    return FusedAdam(
-        optimizer_params,
-        lr=config.learning_rate.default_lr,
-        betas=(config.optimizer.adam_beta1, config.optimizer.adam_beta2),
-        eps=config.optimizer.adam_epsilon,
-    )
-
-
-def _create_scheduler(config: TrainerConfig, optimizer: FusedAdam) -> SequentialLR:
-    total_steps = _calculate_total_steps(config)
-
-    warmup_steps = int(total_steps * config.scheduler.warmup_ratio)
-
-    warmup_scheduler = LinearLR(
-        optimizer,
-        start_factor=config.scheduler.warmup_start_factor,
-        end_factor=1.0,
-        total_iters=warmup_steps,
-    )
-
-    main_scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=total_steps - warmup_steps,
-        eta_min=config.scheduler.min_lr_ratio * config.learning_rate.default_lr,
-    )
-
-    return SequentialLR(
-        optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_steps]
-    )
-
-
-def _calculate_total_steps(config: TrainerConfig) -> int:
-    num_devices: int = 1
-    devices: int | str = config.devices
-    if devices == "auto" or devices == -1:
-        if torch.cuda.is_available():
-            num_devices = torch.cuda.device_count()
-    elif isinstance(devices, int):
-        num_devices = devices
-    else:
-        log.error(f"Invalid devices: {devices}")
-        raise ValueError(f"Invalid devices: {devices}")
-
-    samples_per_step: int = config.batch_size * config.accumulate_grad_batches * num_devices
-
-    total_samples = cast(int, config.num_training_samples) * config.max_epochs
-
-    total_steps = total_samples // samples_per_step
-
-    if total_samples % samples_per_step != 0:
-        total_steps += 1
-
-    log.info(f"Total steps: {total_steps} for {total_samples} total samples")
-
-    return total_steps

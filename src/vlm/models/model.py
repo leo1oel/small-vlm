@@ -1,11 +1,18 @@
 import logging
+from collections.abc import Callable
 from typing import Any, override
 
-import lightning as L
 import torch
-from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from omegaconf import OmegaConf
-from torch.nn.parameter import Parameter
+from torch import FloatTensor, LongTensor, Tensor
+from transformers import (
+    AutoConfig,
+    GenerationConfig,
+    LogitsProcessorList,
+    PreTrainedModel,
+    StoppingCriteriaList,
+    Streamer,
+)
 
 from ..config import (
     ConnectorConfig,
@@ -14,17 +21,19 @@ from ..config import (
     TrainerConfig,
     VisualEncoderConfig,
 )
-from ..train import get_loss, get_optimizer
-from .connectors import Connector
+from ..utils.mm_utils import get_anyres_image_grid_shape
+from .connectors import Connector, connector_map
 from .language_models import LanguageModel
 from .visual_encoders import VisualEncoder
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
 DEBUG = False
+IGNORE_INDEX = -100
+IMAGE_TOKEN_INDEX = -200
 
 
-class VLM(L.LightningModule):
+class VLM(PreTrainedModel):
     def __init__(
         self,
         model_config: ModelConfig,
@@ -32,16 +41,15 @@ class VLM(L.LightningModule):
         lazy_loading: bool = False,
         debug: bool = DEBUG,
     ) -> None:
-        super().__init__()
+        super().__init__(config=AutoConfig.from_pretrained(model_config.llm.hf_name))
         # process config
         self.model_config: ModelConfig = self._process_config(model_config)
         self.trainer_config: TrainerConfig = self._process_config(trainer_config)
         self.debug: bool = debug
 
         # initialize components
-        self._initialize_components()
-        if not lazy_loading:
-            self.initialize_components()
+        self.initialize_components()
+        self.set_trainable_params(self.trainer_config.unfreeze)
 
     def _process_config(self, config: Any) -> Any:
         if isinstance(config, dict):
@@ -50,37 +58,9 @@ class VLM(L.LightningModule):
 
     # initialize all components
     def initialize_components(self) -> None:
-        self.visual_encoder.initialize_components()
-        self.language_model.initialize_components()
-        self._connector = self._build_connector()
-        # setup example input
-        self._setup_example_input(self.visual_encoder.img_size)
-
-        self._save_hyperparameters()
-
-    # only initialize components needed for dataset processing
-    def _initialize_components(self) -> None:
         self._visual_encoder: VisualEncoder = self._build_visual_encoder()
         self._language_model: LanguageModel = self._build_language_model()
-        self._connector: Connector
-
-    def _setup_example_input(self, img_size: int) -> None:
-        self.example_input_array: tuple[torch.Tensor | list[torch.Tensor], torch.Tensor] = (
-            [torch.randn(1, 3, img_size, img_size), torch.randn(2, 3, img_size, img_size)],
-            self.language_model.tokenizer(
-                ["test <|image|>.", "test <|image|> multiple images <|image|>."],
-                padding=True,
-                return_tensors="pt",
-            ).input_ids,
-        )
-
-    def _save_hyperparameters(self) -> None:
-        self.save_hyperparameters(
-            {
-                "model_config": OmegaConf.to_container(self.model_config, resolve=True),
-                "trainer_config": OmegaConf.to_container(self.trainer_config, resolve=True),
-            }
-        )
+        self._connector: Connector = self._build_connector()
 
     @property
     def visual_encoder(self) -> VisualEncoder:
@@ -118,182 +98,98 @@ class VLM(L.LightningModule):
 
     def _build_connector(self) -> Connector:
         connector_config: ConnectorConfig = self.model_config.connector
-        if connector_config.type == "linear":
-            from .connectors import LinearConnector
-
-            return LinearConnector(
-                connector_config, self.visual_encoder.hidden_size, self.language_model.hidden_size
-            )
-        elif connector_config.type == "mlp":
-            from .connectors import MLPConnector
-
-            return MLPConnector(
-                connector_config, self.visual_encoder.hidden_size, self.language_model.hidden_size
-            )
-        else:
-            error_msg = f"Unknown connector type: {connector_config.type}"
-            log.error(error_msg)
-            raise ValueError(error_msg)
+        connector_class = connector_map.get(connector_config.type)
+        if not connector_class:
+            raise ValueError(f"Unsupported connector type: {connector_config.type}")
+        return connector_class(
+            connector_config, self.visual_encoder.hidden_size, self.language_model.hidden_size
+        )
 
     @override
     def forward(
         self,
-        images: torch.Tensor | list[torch.Tensor] | None = None,
-        texts: torch.Tensor | None = None,
+        input_ids: Tensor | None = None,
+        inputs_embeds: Tensor | None = None,
+        attention_mask: Tensor | None = None,
+        position_ids: LongTensor | None = None,
+        past_key_values: list[FloatTensor] | None = None,
+        labels: LongTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        images: FloatTensor | None = None,
+        image_sizes: list[list[int]] | None = None,
+        return_dict: bool | None = None,
     ) -> torch.Tensor:
-        if images is None and texts is None:
-            raise ValueError("Either images or texts must be provided")
+        if inputs_embeds is None:
+            (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = (
+                self.prepare_inputs_labels_for_multimodal(
+                    input_ids,
+                    position_ids,
+                    attention_mask,
+                    past_key_values,
+                    labels,
+                    images,
+                    image_sizes,
+                )
+            )
+        return self.language_model(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            labels=labels,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+    @override
+    def generate(
+        self,
+        inputs: Tensor | None = None,
+        generation_config: GenerationConfig | None = None,
+        logits_processor: LogitsProcessorList | None = None,
+        stopping_criteria: StoppingCriteriaList | None = None,
+        prefix_allowed_tokens_fn: Callable | None = None,
+        synced_gpus: bool | None = None,
+        assistant_model: PreTrainedModel | None = None,
+        streamer: Streamer | None = None,
+        negative_prompt_ids: Tensor | None = None,
+        negative_prompt_attention_mask: Tensor | None = None,
+        use_model_defaults: bool | None = None,
+        images: FloatTensor | None = None,
+        image_sizes: list[list[int]] | None = None,
+        **kwargs,
+    ) -> Any:
+        position_ids = kwargs.pop("position_ids", None)
+        attention_mask = kwargs.pop("attention_mask", None)
+        if "inputs_embeds" in kwargs:
+            raise NotImplementedError("`inputs_embeds` is not supported")
 
         if images is not None:
-            vision_features = self._process_vision_features(images)
+            (inputs, position_ids, attention_mask, _, inputs_embeds, _) = (
+                self.prepare_inputs_labels_for_multimodal(
+                    inputs,
+                    position_ids,
+                    attention_mask,
+                    None,
+                    None,
+                    images,
+                    image_sizes=image_sizes,
+                )
+            )
         else:
-            vision_features = None
+            inputs_embeds = self.language_model.embeddings(inputs)
 
-        connector_output = self._connect_features(vision_features, texts)
-        multimodal_features, attention_mask = connector_output
-
-        log.debug(f"multimodal_features: {multimodal_features.shape}")
-        log.debug(f"attention_mask: {attention_mask.shape}")
-
-        if self.debug:
-            torch.save(multimodal_features, "multimodal_features.pt")
-            torch.save(attention_mask, "attention_mask.pt")
-
-        outputs = self.language_model(
-            inputs_embeds=multimodal_features, attention_mask=attention_mask
-        )
-        log.debug(f"outputs: {outputs.shape}")
-
-        return outputs
-
-    def _process_vision_features(
-        self, images: torch.Tensor | list[torch.Tensor]
-    ) -> tuple[torch.Tensor, ...]:
-        if isinstance(images, list):
-            image_counts = [tensor.shape[0] for tensor in images]
-            all_images = torch.cat(images, dim=0)  # [total_images, C, H, W]
-            all_features = self.visual_encoder(all_images)
-            return torch.split(all_features, image_counts, dim=0)
-        else:
-            return (self.visual_encoder(images),)
-
-    def _connect_features(
-        self, vision_features: tuple[torch.Tensor, ...] | None, texts: torch.Tensor | None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        llm = self.language_model
-        return self.connector(
-            vision_features,
-            texts,
-            llm.embeddings,
-            llm.image_token_id,
-            llm.pad_token_id,
-            self.model_config.connector.mask_format,
-        )
-
-    @override
-    def training_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "train_loss")
-
-    @override
-    def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "val_loss")
-
-    @override
-    def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "test_loss")
-
-    def _shared_step(self, batch: dict[str, torch.Tensor], log_name: str) -> torch.Tensor:
-        images = batch["images"]
-        texts = batch["texts"]
-        labels = batch["labels"]
-
-        log.debug(f"texts: {texts.shape}")
-        log.debug(f"labels: {labels.shape}")
-
-        outputs = self(images, texts)
-
-        loss = self._calculate_loss(outputs, labels)
-
-        if self.debug:
-            torch.save(texts, "texts.pt")
-            torch.save(labels, "labels.pt")
-            torch.save(outputs, "outputs.pt")
-            log.info(f"loss: {loss}")
-            exit()
-
-        self.log(
-            log_name,
-            loss,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-            sync_dist=True,
-        )
-
-        return loss
-
-    @override
-    def predict_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> str:
-        images = batch["images"]
-        texts = batch["texts"]
-        vision_features = self._process_vision_features(images)
-
-        connector_output = self._connect_features(vision_features, texts)
-        multimodal_features, attention_mask = connector_output
-        predictions = self._generate_predictions(multimodal_features, attention_mask)
-        return predictions
-
-    def _generate_predictions(
-        self, multimodal_features: torch.Tensor, attention_mask: torch.Tensor
-    ) -> str:
-        output = self.language_model.language_model.generate(
-            inputs_embeds=multimodal_features,
+        return self.language_model.generate(
+            position_ids=position_ids,
             attention_mask=attention_mask,
-            num_beams=3,
-            max_new_tokens=10,
-            do_sample=False,
+            inputs_embeds=inputs_embeds,
+            **kwargs,
         )
-        return self.language_model.tokenizer.decode(output[0], skip_special_tokens=True)
-
-    def _calculate_loss(self, outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        return get_loss(self.trainer_config, outputs, labels)
-
-    @override
-    def configure_optimizers(self) -> OptimizerLRScheduler:
-        log.info("configure_optimizers")
-        no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight", "ln_"]
-        param_groups: dict[str, dict[str, list[Parameter]]] = {}
-
-        visual_encoder_params = self._collect_param_groups(self.visual_encoder, no_decay)
-        param_groups["visual_encoder"] = visual_encoder_params
-
-        language_model_params = self._collect_param_groups(self.language_model, no_decay)
-        param_groups["language_model"] = language_model_params
-
-        connector_params = self._collect_param_groups(self.connector, no_decay)
-        param_groups["connector"] = connector_params
-
-        return get_optimizer(self.trainer_config, param_groups)
-
-    def _collect_param_groups(
-        self, module: torch.nn.Module, no_decay: list[str]
-    ) -> dict[str, list[Parameter]]:
-        decay_params = [
-            p
-            for n, p in module.named_parameters()
-            if p.requires_grad and not any(no_decay_name in n for no_decay_name in no_decay)
-        ]
-
-        no_decay_params = [
-            p
-            for n, p in module.named_parameters()
-            if p.requires_grad and any(no_decay_name in n for no_decay_name in no_decay)
-        ]
-
-        if decay_params or no_decay_params:
-            return {"decay": decay_params, "no_decay": no_decay_params}
-        return {"decay": [], "no_decay": []}
 
     def freeze_visual_encoder(self, freeze: bool = True) -> None:
         for param in self.visual_encoder.parameters():
@@ -343,3 +239,323 @@ class VLM(L.LightningModule):
             total = sum(p.numel() for p in module.parameters())
             if total > 0:
                 log.info(f"  - {module_name}: {trainable:,} ({trainable / total:.2%} of {total:,})")
+
+    def encode_images(self, images):
+        image_features = self.visual_encoder(images)
+        image_features = self.connector(image_features)
+        return image_features
+
+    def unpad_image(tensor, original_size):
+        """
+        Unpads a PyTorch tensor of a padded and resized image.
+
+        Args:
+        tensor (torch.Tensor): The image tensor, assumed to be in CxHxW format.
+        original_size (tuple): The original size of PIL image (width, height).
+
+        Returns:
+        torch.Tensor: The unpadded image tensor.
+        """
+        original_width, original_height = original_size
+        current_height, current_width = tensor.shape[1:]
+
+        original_aspect_ratio = original_width / original_height
+        current_aspect_ratio = current_width / current_height
+
+        if original_aspect_ratio > current_aspect_ratio:
+            scale_factor = current_width / original_width
+            new_height = int(original_height * scale_factor)
+            padding = (current_height - new_height) // 2
+            unpadded_tensor = tensor[:, padding : current_height - padding, :]
+        else:
+            scale_factor = current_height / original_height
+            new_width = int(original_width * scale_factor)
+            padding = (current_width - new_width) // 2
+            unpadded_tensor = tensor[:, :, padding : current_width - padding]
+
+        return unpadded_tensor
+
+    def prepare_inputs_labels_for_multimodal(
+        self,
+        input_ids: Tensor | None = None,
+        position_ids: LongTensor | None = None,
+        attention_mask: Tensor | None = None,
+        past_key_values: list[FloatTensor] | None = None,
+        labels: LongTensor | None = None,
+        images: FloatTensor | None = None,
+        image_sizes: list[list[int]] | None = None,
+    ) -> tuple[
+        Tensor | None,
+        LongTensor | None,
+        Tensor | None,
+        list[FloatTensor] | None,
+        Tensor | None,
+        LongTensor | None,
+    ]:
+        visual_encoder = self.visual_encoder
+        if visual_encoder is None or images is None or input_ids.shape[1] == 1:
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels
+
+        if type(images) is list or images.ndim == 5:
+            if type(images) is list:
+                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
+            concat_images = torch.cat([image for image in images], dim=0)
+            image_features = self.encode_images(concat_images)
+            split_sizes = [image.shape[0] for image in images]
+            image_features = torch.split(image_features, split_sizes, dim=0)
+            mm_patch_merge_type = getattr(self.config, "mm_patch_merge_type", "flat")
+            image_aspect_ratio = getattr(self.config, "image_aspect_ratio", "square")
+            if mm_patch_merge_type == "flat":
+                image_features = [x.flatten(0, 1) for x in image_features]
+            elif mm_patch_merge_type.startswith("spatial"):
+                new_image_features = []
+                for image_idx, image_feature in enumerate(image_features):
+                    if image_feature.shape[0] > 1:
+                        base_image_feature = image_feature[0]
+                        image_feature = image_feature[1:]
+                        height = width = (
+                            self.visual_encoder.image_size // self.visual_encoder.patch_size
+                        )
+                        assert height * width == base_image_feature.shape[0]
+                        if image_aspect_ratio == "anyres":
+                            num_patch_width, num_patch_height = get_anyres_image_grid_shape(
+                                image_sizes[image_idx],
+                                self.config.image_grid_pinpoints,
+                                self.visual_encoder.image_size,
+                            )
+                            image_feature = image_feature.view(
+                                num_patch_height, num_patch_width, height, width, -1
+                            )
+                        else:
+                            raise NotImplementedError
+                        if "unpad" in mm_patch_merge_type:
+                            pass
+                            # image_feature = image_feature.permute(4, 0, 2, 1, 3).contiguous()
+                            # image_feature = image_feature.flatten(1, 2).flatten(2, 3)
+                            # image_feature = self.unpad_image(image_feature, image_sizes[image_idx])
+                            # image_feature = torch.cat(
+                            #     (
+                            #         image_feature,
+                            #         self.model.image_newline[:, None, None]
+                            #         .expand(*image_feature.shape[:-1], 1)
+                            #         .to(image_feature.device),
+                            #     ),
+                            #     dim=-1,
+                            # )
+                            # image_feature = image_feature.flatten(1, 2).transpose(0, 1)
+                        else:
+                            image_feature = image_feature.permute(0, 2, 1, 3, 4).contiguous()
+                            image_feature = image_feature.flatten(0, 3)
+                        image_feature = torch.cat((base_image_feature, image_feature), dim=0)
+                    else:
+                        image_feature = image_feature[0]
+                        # if "unpad" in mm_patch_merge_type:
+                        #     image_feature = torch.cat(
+                        #         (
+                        #             image_feature,
+                        #             self.model.image_newline[None].to(image_feature.device),
+                        #         ),
+                        #         dim=0,
+                        #     )
+                    new_image_features.append(image_feature)
+                image_features = new_image_features
+            else:
+                raise ValueError(
+                    f"Unexpected mm_patch_merge_type: {self.config.mm_patch_merge_type}"
+                )
+        else:
+            image_features = self.encode_images(images)
+
+        # TODO: image start / end is not implemented here to support pretraining.
+        if getattr(self.config, "tune_mm_mlp_adapter", False) and getattr(
+            self.config, "mm_use_im_start_end", False
+        ):
+            raise NotImplementedError
+
+        # Let's just add dummy tensors if they do not exist,
+        # it is a headache to deal with None all the time.
+        # But it is not ideal, and if you have a better idea,
+        # please open an issue / submit a PR, thanks.
+        _labels = labels
+        _position_ids = position_ids
+        _attention_mask = attention_mask
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
+        else:
+            attention_mask = attention_mask.bool()
+        if position_ids is None:
+            position_ids = torch.arange(
+                0, input_ids.shape[1], dtype=torch.long, device=input_ids.device
+            )
+        if labels is None:
+            labels = torch.full_like(input_ids, IGNORE_INDEX)
+
+        # remove the padding using attention_mask -- FIXME
+        _input_ids = input_ids
+        input_ids = [
+            cur_input_ids[cur_attention_mask]
+            for cur_input_ids, cur_attention_mask in zip(input_ids, attention_mask, strict=False)
+        ]
+        labels = [
+            cur_labels[cur_attention_mask]
+            for cur_labels, cur_attention_mask in zip(labels, attention_mask, strict=False)
+        ]
+
+        new_input_embeds = []
+        new_labels = []
+        cur_image_idx = 0
+        for batch_idx, cur_input_ids in enumerate(input_ids):
+            num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()
+            if num_images == 0:
+                cur_image_features = image_features[cur_image_idx]
+                cur_input_embeds_1 = self.language_model.embeddings(cur_input_ids)
+                cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
+                new_input_embeds.append(cur_input_embeds)
+                new_labels.append(labels[batch_idx])
+                cur_image_idx += 1
+                continue
+
+            image_token_indices = (
+                [-1]
+                + torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].tolist()
+                + [cur_input_ids.shape[0]]
+            )
+            cur_input_ids_noim = []
+            cur_labels = labels[batch_idx]
+            cur_labels_noim = []
+            for i in range(len(image_token_indices) - 1):
+                cur_input_ids_noim.append(
+                    cur_input_ids[image_token_indices[i] + 1 : image_token_indices[i + 1]]
+                )
+                cur_labels_noim.append(
+                    cur_labels[image_token_indices[i] + 1 : image_token_indices[i + 1]]
+                )
+            split_sizes = [x.shape[0] for x in cur_labels_noim]
+            cur_input_embeds = self.language_model.embeddings(torch.cat(cur_input_ids_noim))
+            cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
+            cur_new_input_embeds = []
+            cur_new_labels = []
+
+            for i in range(num_images + 1):
+                cur_new_input_embeds.append(cur_input_embeds_no_im[i])
+                cur_new_labels.append(cur_labels_noim[i])
+                if i < num_images:
+                    cur_image_features = image_features[cur_image_idx]
+                    cur_image_idx += 1
+                    cur_new_input_embeds.append(cur_image_features)
+                    cur_new_labels.append(
+                        torch.full(
+                            (cur_image_features.shape[0],),
+                            IGNORE_INDEX,
+                            device=cur_labels.device,
+                            dtype=cur_labels.dtype,
+                        )
+                    )
+
+            cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
+
+            cur_new_input_embeds = torch.cat(cur_new_input_embeds)
+            cur_new_labels = torch.cat(cur_new_labels)
+
+            new_input_embeds.append(cur_new_input_embeds)
+            new_labels.append(cur_new_labels)
+
+        # Truncate sequences to max length as image embeddings can make the sequence longer
+        tokenizer_model_max_length = getattr(self.config, "tokenizer_model_max_length", None)
+        if tokenizer_model_max_length is not None:
+            new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
+            new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
+
+        # Combine them
+        max_len = max(x.shape[0] for x in new_input_embeds)
+        batch_size = len(new_input_embeds)
+
+        new_input_embeds_padded = []
+        new_labels_padded = torch.full(
+            (batch_size, max_len),
+            IGNORE_INDEX,
+            dtype=new_labels[0].dtype,
+            device=new_labels[0].device,
+        )
+        attention_mask = torch.zeros(
+            (batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device
+        )
+        position_ids = torch.zeros(
+            (batch_size, max_len), dtype=position_ids.dtype, device=position_ids.device
+        )
+
+        for i, (cur_new_embed, cur_new_labels) in enumerate(
+            zip(new_input_embeds, new_labels, strict=False)
+        ):
+            cur_len = cur_new_embed.shape[0]
+            if getattr(self.config, "tokenizer_padding_side", "right") == "left":
+                new_input_embeds_padded.append(
+                    torch.cat(
+                        (
+                            torch.zeros(
+                                (max_len - cur_len, cur_new_embed.shape[1]),
+                                dtype=cur_new_embed.dtype,
+                                device=cur_new_embed.device,
+                            ),
+                            cur_new_embed,
+                        ),
+                        dim=0,
+                    )
+                )
+                if cur_len > 0:
+                    new_labels_padded[i, -cur_len:] = cur_new_labels
+                    attention_mask[i, -cur_len:] = True
+                    position_ids[i, -cur_len:] = torch.arange(
+                        0, cur_len, dtype=position_ids.dtype, device=position_ids.device
+                    )
+            else:
+                new_input_embeds_padded.append(
+                    torch.cat(
+                        (
+                            cur_new_embed,
+                            torch.zeros(
+                                (max_len - cur_len, cur_new_embed.shape[1]),
+                                dtype=cur_new_embed.dtype,
+                                device=cur_new_embed.device,
+                            ),
+                        ),
+                        dim=0,
+                    )
+                )
+                if cur_len > 0:
+                    new_labels_padded[i, :cur_len] = cur_new_labels
+                    attention_mask[i, :cur_len] = True
+                    position_ids[i, :cur_len] = torch.arange(
+                        0, cur_len, dtype=position_ids.dtype, device=position_ids.device
+                    )
+
+        new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
+
+        if _labels is None:
+            new_labels = None
+        else:
+            new_labels = new_labels_padded
+
+        if _attention_mask is None:
+            attention_mask = None
+        else:
+            attention_mask = attention_mask.to(dtype=_attention_mask.dtype)
+
+        if _position_ids is None:
+            position_ids = None
+
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
+
+    def prepare_inputs_for_generation(
+        self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs
+    ):
+        images = kwargs.pop("images", None)
+        image_sizes = kwargs.pop("image_sizes", None)
+        inputs = self.language_model.prepare_inputs_for_generation(
+            input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
+        )
+        if images is not None:
+            inputs["images"] = images
+        if image_sizes is not None:
+            inputs["image_sizes"] = image_sizes
+        return inputs

@@ -3,8 +3,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, cast, override
 
-import torch
 import torch.nn as nn
+from torch import FloatTensor, LongTensor, Tensor
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_utils import PreTrainedModel
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -64,22 +64,19 @@ class LanguageModel(nn.Module, ABC):
             assistant_token=getattr(self.config, "assistant_token", "<|assistant|>"),
         )
 
-        self._initialize_components()
+        self.initialize_components()
 
     # initialize all components
     def initialize_components(self) -> None:
-        self._language_model: PreTrainedModel = self._build_language_model()
-        self._embeddings: nn.Module = self._build_embedding_layer()
-        self.language_model.resize_token_embeddings(len(self.tokenizer))
-
-    # only initialize components needed for dataset processing
-    def _initialize_components(self) -> None:
         self._tokenizer: PreTrainedTokenizer = self._build_tokenizer()
         self._hf_config: PretrainedConfig = self._build_hf_config()
 
         self._add_special_tokens()
 
         self.verify_config()
+        self._language_model: PreTrainedModel = self._build_language_model()
+        self._embeddings: nn.Module = self._build_embedding_layer()
+        self.language_model.resize_token_embeddings(len(self.tokenizer))
 
     def _add_special_tokens(self) -> None:
         """Adds special tokens to the tokenizer if they don't exist."""
@@ -184,14 +181,44 @@ class LanguageModel(nn.Module, ABC):
     def _build_hf_config(self) -> PretrainedConfig:
         pass
 
-    @abstractmethod
     @override
     def forward(
         self,
-        input_ids: torch.Tensor | None = None,
-        inputs_embeds: torch.Tensor | None = None,
-        attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        input_ids: Tensor | None = None,
+        inputs_embeds: Tensor | None = None,
+        attention_mask: Tensor | None = None,
+        position_ids: LongTensor | None = None,
+        past_key_values: list[FloatTensor] | None = None,
+        labels: LongTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        images: FloatTensor | None = None,
+        image_sizes: list[list[int]] | None = None,
+        return_dict: bool | None = None,
+    ) -> Tensor:
+        return self.language_model(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            labels=labels,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+    @abstractmethod
+    @override
+    def generate(
+        self,
+        inputs: Tensor | None = None,
+        images: FloatTensor | None = None,
+        image_sizes: list[list[int]] | None = None,
+        **kwargs,
+    ) -> GenerateOutput | torch.LongTensor:
         pass
 
     def verify_config(self) -> None:

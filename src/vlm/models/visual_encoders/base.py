@@ -3,8 +3,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import cast, override
 
-import torch
 import torch.nn as nn
+from torch import Tensor
 from transformers.configuration_utils import PretrainedConfig
 from transformers.image_processing_utils import BaseImageProcessor
 from transformers.modeling_utils import PreTrainedModel
@@ -44,18 +44,16 @@ class VisualEncoder(nn.Module, ABC):
         self.use_cls_token: bool = getattr(self.config, "use_cls_token", False)
         log.info(f"Use cls token: {self.use_cls_token}")
 
-        self._initialize_components()
+        self.initialize_components()
 
     # initialize all components
     def initialize_components(self) -> None:
-        self._visual_encoder: PreTrainedModel = self._build_visual_encoder()
-
-    # only initialize components needed for dataset processing
-    def _initialize_components(self) -> None:
-        self._preprocessor: BaseImageProcessor = self._build_preprocessor()
         self._hf_config: PretrainedConfig = self._build_hf_config()
 
         self.verify_config()
+
+        self._visual_encoder: PreTrainedModel = self._build_visual_encoder()
+        self._preprocessor: BaseImageProcessor = self._build_preprocessor()
 
         # calculate token size
         self.token_size: int = (
@@ -112,7 +110,7 @@ class VisualEncoder(nn.Module, ABC):
 
     @abstractmethod
     @override
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
+    def forward(self, images: Tensor | list[Tensor]) -> Tensor | list[Tensor]:
         pass
 
     def verify_config(self) -> None:

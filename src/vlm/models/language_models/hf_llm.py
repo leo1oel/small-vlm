@@ -1,8 +1,8 @@
 import logging
 from typing import Any, cast, override
 
-import torch
 import torch.nn as nn
+from torch import FloatTensor, Tensor
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.auto.configuration_auto import AutoConfig
@@ -20,6 +20,7 @@ class HFLLMLanguageModel(LanguageModel):
     def __init__(self, config: LLMConfig) -> None:
         super().__init__(config)
         self.attn_implementation: str = config.attn_implementation
+        self.max_seq_length: int = config.max_seq_length
 
     @override
     def _build_embedding_layer(self) -> nn.Module:
@@ -32,6 +33,7 @@ class HFLLMLanguageModel(LanguageModel):
             AutoTokenizer.from_pretrained(
                 self.hf_name,
                 trust_remote_code=True,
+                model_max_length=self.max_seq_length,
                 use_fast=True,
             ),
         )
@@ -55,20 +57,36 @@ class HFLLMLanguageModel(LanguageModel):
         )
 
     @override
-    def forward(
+    def generate(
         self,
-        input_ids: torch.Tensor | None = None,
-        inputs_embeds: torch.Tensor | None = None,
-        attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if inputs_embeds is not None:
-            outputs: Any = self.language_model(
-                inputs_embeds=inputs_embeds, attention_mask=attention_mask
+        inputs: Tensor | None = None,
+        images: FloatTensor | None = None,
+        image_sizes: list[list[int]] | None = None,
+        **kwargs,
+    ) -> Any:
+        position_ids = kwargs.pop("position_ids", None)
+        attention_mask = kwargs.pop("attention_mask", None)
+        if "inputs_embeds" in kwargs:
+            raise NotImplementedError("`inputs_embeds` is not supported")
+
+        if images is not None:
+            (inputs, position_ids, attention_mask, _, inputs_embeds, _) = (
+                self.prepare_inputs_labels_for_multimodal(
+                    inputs,
+                    position_ids,
+                    attention_mask,
+                    None,
+                    None,
+                    images,
+                    image_sizes=image_sizes,
+                )
             )
-        elif input_ids is not None:
-            outputs = self.language_model(input_ids=input_ids, attention_mask=attention_mask)
         else:
-            error_msg = "Either input_ids or inputs_embeds must be provided"
-            log.error(error_msg)
-            raise ValueError(error_msg)
-        return outputs[0]
+            inputs_embeds = self.embeddings(inputs)
+
+        return self.language_model.generate(
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            **kwargs,
+        )
