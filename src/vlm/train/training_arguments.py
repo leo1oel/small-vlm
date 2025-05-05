@@ -234,7 +234,6 @@ class TrainingArguments(transformers.TrainingArguments):
     language_model_wd: float | None = None
     connector_wd: float | None = None
     visual_encoder_wd: float | None = None
-    model_max_length: int = 512
     version: str = "v0"
 
 
@@ -270,8 +269,8 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         language_model_wd=config.weight_decay.language_model_weight_decay,
         connector_wd=config.weight_decay.connector_weight_decay,
         visual_encoder_wd=config.weight_decay.visual_encoder_weight_decay,
-        model_max_length=config.model_max_length,
         version=config.version,
         gradient_checkpointing=config.gradient_checkpointing,
         run_name=config.run_name,
+        resume_from_checkpoint=config.resume_from_checkpoint,
     )

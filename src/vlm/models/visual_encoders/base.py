@@ -145,8 +145,7 @@ class VisualEncoder(nn.Module, ABC):
         elif model_value is not None and config_value is not None:
             if model_value != config_value:
                 error_msg = f"{capitalized_key} mismatch: hf config: {model_value} != config: {config_value}"
-                log.error(error_msg)
-                raise ValueError(error_msg)
+                log.warning(error_msg)
             else:
                 log.info(
                     f"{capitalized_key} verified: hf config: {model_value} == config: {config_value}"

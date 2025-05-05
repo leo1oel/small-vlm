@@ -91,11 +91,12 @@ class TrainerConfig:
     learning_rate: LearningRateConfig = field(default_factory=LearningRateConfig)
     weight_decay: WeightDecayConfig = field(default_factory=WeightDecayConfig)
     per_device_train_batch_size: int = 16
-    per_device_eval_batch_size: int = 16
+    per_device_eval_batch_size: int = 4
     bf16: bool = False
     fp16: bool = False
     tf32: bool = False
     ignore_index: int = -100
+    image_token_index: int = -200
     deepspeed: str | None = None
     num_train_epochs: int = 1
     save_strategy: str = "steps"
@@ -107,11 +108,11 @@ class TrainerConfig:
     gradient_accumulation_steps: int = 1
     report_to: str | None = None
     dataloader_num_workers: int = 0
-    model_max_length: int = 512
     version: str = "v0"
     group_by_modality_length: bool = False
     gradient_checkpointing: bool = False
     run_name: str = "small-vlm"
+    resume_from_checkpoint: str | None = None
 
 
 @dataclass

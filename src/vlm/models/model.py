@@ -24,10 +24,6 @@ from .visual_encoders import VisualEncoder
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
-DEBUG = False
-IGNORE_INDEX = -100
-IMAGE_TOKEN_INDEX = -200
-
 
 class VLM(PreTrainedModel, GenerationMixin):
     def __init__(
@@ -35,13 +31,11 @@ class VLM(PreTrainedModel, GenerationMixin):
         model_config: ModelConfig,
         trainer_config: TrainerConfig,
         lazy_loading: bool = False,
-        debug: bool = DEBUG,
     ) -> None:
         super().__init__(config=AutoConfig.from_pretrained(model_config.llm.hf_name))
         # process config
         self.model_config: ModelConfig = self._process_config(model_config)
         self.trainer_config: TrainerConfig = self._process_config(trainer_config)
-        self.debug: bool = debug
 
         # initialize components
         self.initialize_components()
@@ -247,7 +241,7 @@ class VLM(PreTrainedModel, GenerationMixin):
         image_features = self.connector(image_features)
         return image_features
 
-    def unpad_image(tensor, original_size):
+    def unpad_image(self, tensor, original_size):
         """
         Unpads a PyTorch tensor of a padded and resized image.
 

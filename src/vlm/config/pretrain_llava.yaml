@@ -4,7 +4,7 @@ defaults:
   - model: llava-7b
   - trainer: pretrain
   - inference: default
-  - dataset: llava-pretrain
+  - dataset: llava_pretrain
   - override hydra/job_logging: rich
   - _self_
 

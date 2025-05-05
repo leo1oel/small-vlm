@@ -1,8 +1,9 @@
 import logging
-import pathlib
-from typing import Any
+from typing import Any, override
 
+import torch
 import torch.nn as nn
+import transformers
 
 from ..data.data_arguments import DataArguments
 from ..data.dataset import make_supervised_data_module
@@ -12,6 +13,31 @@ from .training_arguments import TrainingArguments
 from .vlm_trainer import VLMTrainer
 
 log: logging.Logger = logging.getLogger(name=__name__)
+
+
+class LoggingCallback(transformers.TrainerCallback):
+    @override
+    def on_log(self, args, state, control, logs=None, **kwargs):  # pyright: ignore
+        if state.is_world_process_zero:
+            logs = logs or {}
+            msg = ", ".join(
+                f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in logs.items()
+            )
+            log.info(msg)
+
+
+def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
+    """Collects the state dict and dump to disk."""
+
+    if trainer.deepspeed:
+        torch.cuda.synchronize()
+        trainer.save_model(output_dir)
+        return
+
+    state_dict = trainer.model.state_dict()
+    cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
+    del state_dict
+    trainer._save(output_dir, state_dict=cpu_state_dict)  # pyright: ignore
 
 
 def train(model: VLM, training_args: TrainingArguments, data_args: DataArguments):
@@ -27,10 +53,13 @@ def train(model: VLM, training_args: TrainingArguments, data_args: DataArguments
     tokenizer = model.language_model.tokenizer
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
     trainer = VLMTrainer(model=model, processing_class=tokenizer, args=training_args, **data_module)
+    trainer.add_callback(LoggingCallback())
     log.info(f"Trainer: {trainer}")
 
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=True)
+    if training_args.resume_from_checkpoint:
+        log.info(f"Resuming from checkpoint: {training_args.output_dir}")
+        trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     else:
         trainer.train()
     trainer.save_state()
+    safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)

@@ -118,7 +118,7 @@ def preprocess_multimodal(sources: Sequence[str], data_args: DataArguments) -> d
                         DEFAULT_IMAGE_TOKEN, "<Image>" + DEFAULT_IMAGE_TOKEN + "</Image>"
                     )
             replace_token = DEFAULT_IMAGE_TOKEN
-            if data_args.mm_use_im_start_end:
+            if data_args.use_start_end_tokens:
                 replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
             sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
 
@@ -506,7 +506,7 @@ class LazySupervisedDataset(Dataset):
         if "image" in sources[0]:
             image_file = self.list_data_dict[i]["image"]
             image_folder = self.data_args.image_folder
-            processor = self.data_args.image_processor
+            processor = self.data_args.image_preprocessor
             image = Image.open(os.path.join(image_folder, image_file)).convert("RGB")
             if self.data_args.image_aspect_ratio == "pad":
 
