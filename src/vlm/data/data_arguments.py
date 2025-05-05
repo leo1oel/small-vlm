@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from ..config import DataConfig
+from ..config.config_schema import DatasetConfig
 
 
 @dataclass
@@ -12,9 +12,9 @@ class DataArguments:
     image_aspect_ratio: str = "square"
 
 
-def get_data_args(config: DataConfig) -> DataArguments:
+def get_data_args(config: DatasetConfig) -> DataArguments:
     return DataArguments(
-        data_path=config.data_path,
+        data_path=config.path,
         lazy_preprocess=config.lazy_preprocess,
         is_multimodal=config.is_multimodal,
         image_folder=config.image_folder,

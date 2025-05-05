@@ -5,9 +5,7 @@ from typing import Any, cast, override
 
 import torch.nn as nn
 from torch import FloatTensor, LongTensor, Tensor
-from transformers.configuration_utils import PretrainedConfig
-from transformers.modeling_utils import PreTrainedModel
-from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers import PretrainedConfig, PreTrainedModel, PreTrainedTokenizer
 
 from ...config.config_schema import LLMConfig
 
@@ -70,13 +68,11 @@ class LanguageModel(nn.Module, ABC):
     def initialize_components(self) -> None:
         self._tokenizer: PreTrainedTokenizer = self._build_tokenizer()
         self._hf_config: PretrainedConfig = self._build_hf_config()
-
-        self._add_special_tokens()
-
         self.verify_config()
+        self._add_special_tokens()
         self._language_model: PreTrainedModel = self._build_language_model()
-        self._embeddings: nn.Module = self._build_embedding_layer()
         self.language_model.resize_token_embeddings(len(self.tokenizer))
+        self._embeddings: nn.Module = self._build_embedding_layer()
 
     def _add_special_tokens(self) -> None:
         """Adds special tokens to the tokenizer if they don't exist."""
@@ -210,16 +206,16 @@ class LanguageModel(nn.Module, ABC):
             return_dict=return_dict,
         )
 
-    @abstractmethod
-    @override
-    def generate(
-        self,
-        inputs: Tensor | None = None,
-        images: FloatTensor | None = None,
-        image_sizes: list[list[int]] | None = None,
-        **kwargs,
-    ) -> GenerateOutput | torch.LongTensor:
-        pass
+    # @abstractmethod
+    # @override
+    # def generate(
+    #     self,
+    #     inputs: Tensor | None = None,
+    #     images: FloatTensor | None = None,
+    #     image_sizes: list[list[int]] | None = None,
+    #     **kwargs,
+    # ) -> GenerateOutput | torch.LongTensor:
+    #     pass
 
     def verify_config(self) -> None:
         config_pairs = [

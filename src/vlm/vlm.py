@@ -2,7 +2,6 @@ import logging
 from pathlib import Path
 
 import hydra
-from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
@@ -13,7 +12,6 @@ from .train.training_arguments import get_training_args
 
 log: logging.Logger = logging.getLogger(name=__name__)
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"
-seed_everything(42, workers=True)
 
 
 def print_model(cfg: ModelConfig) -> None:
@@ -58,9 +56,11 @@ def vlm(cfg: AppConfig) -> None:
         log.info("Training mode")
         training_args = get_training_args(cfg.trainer)
         log.info(f"Training arguments: {training_args}")
-        data_args = get_data_args(cfg.data)
-        log.info(f"Data arguments: {data_args}")
         model: VLM = load_model(cfg.model, cfg.trainer)
+        data_args = get_data_args(cfg.dataset)
+        data_args.image_processor = model.visual_encoder.preprocessor
+        data_args.mm_use_im_start_end = False
+        log.info(f"Data arguments: {data_args}")
         train(model, training_args, data_args)
 
 

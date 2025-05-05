@@ -7,7 +7,7 @@ import torch.nn as nn
 from ..data.data_arguments import DataArguments
 from ..data.dataset import make_supervised_data_module
 from ..models.model import VLM
-from ..utils.conversation import Conversation as conversation_lib
+from ..utils import conversation as conversation_lib
 from .training_arguments import TrainingArguments
 from .vlm_trainer import VLMTrainer
 
@@ -16,14 +16,11 @@ log: logging.Logger = logging.getLogger(name=__name__)
 
 def train(model: VLM, training_args: TrainingArguments, data_args: DataArguments):
     if training_args.gradient_checkpointing:
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
 
-            def make_inputs_require_grad(module: nn.Module, input: Any, output: Any) -> None:  # pyright: ignore
-                output.requires_grad_(True)
+        def make_inputs_require_grad(module: nn.Module, input: Any, output: Any) -> None:  # pyright: ignore
+            output.requires_grad_(True)
 
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+        model.language_model.embeddings.register_forward_hook(make_inputs_require_grad)
 
     conversation_lib.default_conversation = conversation_lib.conv_templates[training_args.version]
 

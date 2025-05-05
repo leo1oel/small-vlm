@@ -1,14 +1,15 @@
 import logging
-from typing import Any, cast, override
+from typing import cast, override
 
 import torch.nn as nn
-from torch import FloatTensor, Tensor
-from transformers.configuration_utils import PretrainedConfig
-from transformers.modeling_utils import PreTrainedModel
-from transformers.models.auto.configuration_auto import AutoConfig
-from transformers.models.auto.modeling_auto import AutoModelForCausalLM
-from transformers.models.auto.tokenization_auto import AutoTokenizer
-from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    PretrainedConfig,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+)
 
 from ...config.config_schema import LLMConfig
 from .base import LanguageModel
@@ -19,8 +20,6 @@ log: logging.Logger = logging.getLogger(name=__name__)
 class HFLLMLanguageModel(LanguageModel):
     def __init__(self, config: LLMConfig) -> None:
         super().__init__(config)
-        self.attn_implementation: str = config.attn_implementation
-        self.max_seq_length: int = config.max_seq_length
 
     @override
     def _build_embedding_layer(self) -> nn.Module:
@@ -33,7 +32,7 @@ class HFLLMLanguageModel(LanguageModel):
             AutoTokenizer.from_pretrained(
                 self.hf_name,
                 trust_remote_code=True,
-                model_max_length=self.max_seq_length,
+                model_max_length=self.config.max_seq_length,
                 use_fast=True,
             ),
         )
@@ -46,7 +45,7 @@ class HFLLMLanguageModel(LanguageModel):
                 self.hf_name,
                 low_cpu_mem_usage=True,
                 trust_remote_code=True,
-                attn_implementation=self.attn_implementation,
+                attn_implementation=self.config.attn_implementation,
             ),
         )
 
@@ -56,37 +55,37 @@ class HFLLMLanguageModel(LanguageModel):
             PretrainedConfig, AutoConfig.from_pretrained(self.hf_name, trust_remote_code=True)
         )
 
-    @override
-    def generate(
-        self,
-        inputs: Tensor | None = None,
-        images: FloatTensor | None = None,
-        image_sizes: list[list[int]] | None = None,
-        **kwargs,
-    ) -> Any:
-        position_ids = kwargs.pop("position_ids", None)
-        attention_mask = kwargs.pop("attention_mask", None)
-        if "inputs_embeds" in kwargs:
-            raise NotImplementedError("`inputs_embeds` is not supported")
+    # @override
+    # def generate(
+    #     self,
+    #     inputs: Tensor | None = None,
+    #     images: FloatTensor | None = None,
+    #     image_sizes: list[list[int]] | None = None,
+    #     **kwargs,
+    # ) -> Any:
+    #     position_ids = kwargs.pop("position_ids", None)
+    #     attention_mask = kwargs.pop("attention_mask", None)
+    #     if "inputs_embeds" in kwargs:
+    #         raise NotImplementedError("`inputs_embeds` is not supported")
 
-        if images is not None:
-            (inputs, position_ids, attention_mask, _, inputs_embeds, _) = (
-                self.prepare_inputs_labels_for_multimodal(
-                    inputs,
-                    position_ids,
-                    attention_mask,
-                    None,
-                    None,
-                    images,
-                    image_sizes=image_sizes,
-                )
-            )
-        else:
-            inputs_embeds = self.embeddings(inputs)
+    #     if images is not None:
+    #         (inputs, position_ids, attention_mask, _, inputs_embeds, _) = (
+    #             self.prepare_inputs_labels_for_multimodal(
+    #                 inputs,
+    #                 position_ids,
+    #                 attention_mask,
+    #                 None,
+    #                 None,
+    #                 images,
+    #                 image_sizes=image_sizes,
+    #             )
+    #         )
+    #     else:
+    #         inputs_embeds = self.embeddings(inputs)
 
-        return self.language_model.generate(
-            position_ids=position_ids,
-            attention_mask=attention_mask,
-            inputs_embeds=inputs_embeds,
-            **kwargs,
-        )
+    #     return self.language_model.generate(
+    #         position_ids=position_ids,
+    #         attention_mask=attention_mask,
+    #         inputs_embeds=inputs_embeds,
+    #         **kwargs,
+    #     )

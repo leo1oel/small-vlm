@@ -91,7 +91,7 @@ class MultiModalLengthGroupedSampler(Sampler):
         self,
         batch_size: int,
         world_size: int,
-        lengths: Optional[List[int]] = None,
+        lengths: list[int] | None = None,
         generator=None,
         group_by_modality: bool = False,
     ):

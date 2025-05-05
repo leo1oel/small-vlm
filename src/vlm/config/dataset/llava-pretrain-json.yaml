@@ -1,3 +1,0 @@
-name: llava-pretrain-json
-path: /pasteur2/u/yuhuiz/yiming/LLaVA/playground/data/LLaVA-Pretrain/images/metadata.jsonl
-type: json

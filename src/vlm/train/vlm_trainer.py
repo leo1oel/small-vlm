@@ -1,8 +1,7 @@
 from typing import Any, override
 
 import torch
-from transformers import Trainer
-from transformers.trainer_utils import has_length
+from transformers.trainer import Trainer, has_length
 
 from ..data import MultiModalLengthGroupedSampler
 from .optimizer import configure_optimizers

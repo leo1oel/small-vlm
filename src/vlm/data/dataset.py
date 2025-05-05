@@ -9,7 +9,7 @@ import transformers
 from PIL import Image
 from torch.utils.data import Dataset
 
-from ..utils.conversation import Conversation as conversation_lib
+from ..utils import conversation as conversation_lib
 from .data_arguments import DataArguments
 
 IGNORE_INDEX = -100

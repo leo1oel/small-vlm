@@ -81,6 +81,7 @@ class WeightDecayConfig:
     visual_encoder_weight_decay: float = 0.0
     language_model_weight_decay: float = 0.0
     connector_weight_decay: float = 0.0
+    default_wd: float = 0.0
 
 
 @dataclass
@@ -109,6 +110,8 @@ class TrainerConfig:
     model_max_length: int = 512
     version: str = "v0"
     group_by_modality_length: bool = False
+    gradient_checkpointing: bool = False
+    run_name: str = "small-vlm"
 
 
 @dataclass

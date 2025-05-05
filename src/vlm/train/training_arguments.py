@@ -240,14 +240,15 @@ class TrainingArguments(transformers.TrainingArguments):
 
 def get_training_args(config: TrainerConfig) -> TrainingArguments:
     return TrainingArguments(
+        remove_unused_columns=False,
         output_dir=config.output_dir,
         num_train_epochs=config.num_train_epochs,
         deepspeed=config.deepspeed,
         save_strategy=config.save_strategy,
         save_steps=config.save_steps,
         save_total_limit=config.save_total_limit,
-        learning_rate=config.learning_rate,
-        weight_decay=config.weight_decay,
+        learning_rate=config.learning_rate.default_lr,
+        weight_decay=config.weight_decay.default_wd,
         warmup_ratio=config.warmup_ratio,
         lr_scheduler_type=config.lr_scheduler_type,
         logging_steps=config.logging_steps,
@@ -272,4 +273,5 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         model_max_length=config.model_max_length,
         version=config.version,
         gradient_checkpointing=config.gradient_checkpointing,
+        run_name=config.run_name,
     )

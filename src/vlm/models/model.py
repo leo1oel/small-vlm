@@ -1,5 +1,4 @@
 import logging
-from collections.abc import Callable
 from typing import Any, override
 
 import torch
@@ -7,11 +6,8 @@ from omegaconf import OmegaConf
 from torch import FloatTensor, LongTensor, Tensor
 from transformers import (
     AutoConfig,
-    GenerationConfig,
-    LogitsProcessorList,
+    GenerationMixin,
     PreTrainedModel,
-    StoppingCriteriaList,
-    Streamer,
 )
 
 from ..config import (
@@ -33,7 +29,7 @@ IGNORE_INDEX = -100
 IMAGE_TOKEN_INDEX = -200
 
 
-class VLM(PreTrainedModel):
+class VLM(PreTrainedModel, GenerationMixin):
     def __init__(
         self,
         model_config: ModelConfig,
@@ -73,6 +69,11 @@ class VLM(PreTrainedModel):
     @property
     def connector(self) -> Connector:
         return self._connector
+
+    @property
+    @override
+    def supports_gradient_checkpointing(self):
+        return self.language_model.language_model.supports_gradient_checkpointing
 
     def _build_visual_encoder(self) -> VisualEncoder:
         encoder_config: VisualEncoderConfig = self.model_config.visual_encoder
@@ -146,64 +147,65 @@ class VLM(PreTrainedModel):
             return_dict=return_dict,
         )
 
-    @override
-    def generate(
-        self,
-        inputs: Tensor | None = None,
-        generation_config: GenerationConfig | None = None,
-        logits_processor: LogitsProcessorList | None = None,
-        stopping_criteria: StoppingCriteriaList | None = None,
-        prefix_allowed_tokens_fn: Callable | None = None,
-        synced_gpus: bool | None = None,
-        assistant_model: PreTrainedModel | None = None,
-        streamer: Streamer | None = None,
-        negative_prompt_ids: Tensor | None = None,
-        negative_prompt_attention_mask: Tensor | None = None,
-        use_model_defaults: bool | None = None,
-        images: FloatTensor | None = None,
-        image_sizes: list[list[int]] | None = None,
-        **kwargs,
-    ) -> Any:
-        position_ids = kwargs.pop("position_ids", None)
-        attention_mask = kwargs.pop("attention_mask", None)
-        if "inputs_embeds" in kwargs:
-            raise NotImplementedError("`inputs_embeds` is not supported")
+    # @override
+    # def generate(
+    #     self,
+    #     inputs: Tensor | None = None,
+    #     generation_config: GenerationConfig | None = None,
+    #     logits_processor: LogitsProcessorList | None = None,
+    #     stopping_criteria: StoppingCriteriaList | None = None,
+    #     prefix_allowed_tokens_fn: Callable | None = None,
+    #     synced_gpus: bool | None = None,
+    #     assistant_model: PreTrainedModel | None = None,
+    #     streamer: Streamer | None = None,
+    #     negative_prompt_ids: Tensor | None = None,
+    #     negative_prompt_attention_mask: Tensor | None = None,
+    #     use_model_defaults: bool | None = None,
+    #     images: FloatTensor | None = None,
+    #     image_sizes: list[list[int]] | None = None,
+    #     **kwargs,
+    # ) -> Any:
+    #     position_ids = kwargs.pop("position_ids", None)
+    #     attention_mask = kwargs.pop("attention_mask", None)
+    #     if "inputs_embeds" in kwargs:
+    #         raise NotImplementedError("`inputs_embeds` is not supported")
 
-        if images is not None:
-            (inputs, position_ids, attention_mask, _, inputs_embeds, _) = (
-                self.prepare_inputs_labels_for_multimodal(
-                    inputs,
-                    position_ids,
-                    attention_mask,
-                    None,
-                    None,
-                    images,
-                    image_sizes=image_sizes,
-                )
-            )
-        else:
-            inputs_embeds = self.language_model.embeddings(inputs)
+    #     if images is not None:
+    #         (inputs, position_ids, attention_mask, _, inputs_embeds, _) = (
+    #             self.prepare_inputs_labels_for_multimodal(
+    #                 inputs,
+    #                 position_ids,
+    #                 attention_mask,
+    #                 None,
+    #                 None,
+    #                 images,
+    #                 image_sizes=image_sizes,
+    #             )
+    #         )
+    #     else:
+    #         inputs_embeds = self.language_model.embeddings(inputs)
 
-        return self.language_model.generate(
-            position_ids=position_ids,
-            attention_mask=attention_mask,
-            inputs_embeds=inputs_embeds,
-            **kwargs,
-        )
+    #     return self.language_model.generate(
+    #         position_ids=position_ids,
+    #         attention_mask=attention_mask,
+    #         inputs_embeds=inputs_embeds,
+    #         **kwargs,
+    #     )
 
     def freeze_visual_encoder(self, freeze: bool = True) -> None:
-        for param in self.visual_encoder.parameters():
+        for param in self.visual_encoder.visual_encoder.parameters():
             param.requires_grad = not freeze
 
     def freeze_language_model(self, freeze: bool = True, except_layer_norm: bool = False) -> None:
-        for name, param in self.language_model.named_parameters():
+        for name, param in self.language_model.language_model.named_parameters():
             if except_layer_norm and (
                 "layernorm" in name.lower() or "layer_norm" in name.lower() or "ln_" in name.lower()
             ):
                 param.requires_grad = True
             else:
                 param.requires_grad = not freeze
-
+        for param in self.language_model.embeddings.parameters():
+            param.requires_grad = False
         if self.model_config.llm.use_start_end_tokens:
             for param in self.language_model.embeddings.parameters():
                 param.requires_grad = True
@@ -213,14 +215,14 @@ class VLM(PreTrainedModel):
             param.requires_grad = not freeze
 
     def set_trainable_params(self, config: dict[str, bool]) -> None:
-        if "visual_encoder" in config:
-            self.freeze_visual_encoder(not config["visual_encoder"])
+        if "train_visual_encoder" in config:
+            self.freeze_visual_encoder(not config["train_visual_encoder"])
 
-        if "language_model" in config:
-            self.freeze_language_model(not config["language_model"])
+        if "train_language_model" in config:
+            self.freeze_language_model(not config["train_language_model"])
 
-        if "connector" in config:
-            self.freeze_connector(not config["connector"])
+        if "train_connector" in config:
+            self.freeze_connector(not config["train_connector"])
 
         self._log_trainable_params()
 
