@@ -1,3 +1,4 @@
+import ast
 import logging
 from typing import Any, override
 
@@ -17,12 +18,73 @@ from ..config import (
     TrainerConfig,
     VisualEncoderConfig,
 )
-from ..utils.mm_utils import get_anyres_image_grid_shape
 from .connectors import Connector, connector_map
 from .language_models import LanguageModel
 from .visual_encoders import VisualEncoder
 
 log: logging.Logger = logging.getLogger(name=__name__)
+
+
+def select_best_resolution(
+    original_size: tuple[int, int], possible_resolutions: list[tuple[int, int]]
+) -> tuple[int, int]:
+    """
+    Selects the best resolution from a list of possible resolutions based on the original size.
+
+    Args:
+        original_size (tuple): The original size of the image in the format (width, height).
+        possible_resolutions (list): A list of possible resolutions in the format [(width1, height1), (width2, height2), ...].
+
+    Returns:
+        tuple: The best fit resolution in the format (width, height).
+    """
+    original_width, original_height = original_size
+    best_fit = None
+    max_effective_resolution = 0
+    min_wasted_resolution = float("inf")
+
+    for width, height in possible_resolutions:
+        scale = min(width / original_width, height / original_height)
+        downscaled_width, downscaled_height = (
+            int(original_width * scale),
+            int(original_height * scale),
+        )
+        effective_resolution = min(
+            downscaled_width * downscaled_height, original_width * original_height
+        )
+        wasted_resolution = (width * height) - effective_resolution
+
+        if effective_resolution > max_effective_resolution or (
+            effective_resolution == max_effective_resolution
+            and wasted_resolution < min_wasted_resolution
+        ):
+            max_effective_resolution = effective_resolution
+            min_wasted_resolution = wasted_resolution
+            best_fit = (width, height)
+
+    return best_fit  # pyright: ignore
+
+
+def get_anyres_image_grid_shape(
+    image_size: tuple[int, int], grid_pinpoints: list[tuple[int, int]], patch_size: int
+) -> tuple[int, int]:
+    """
+    Calculate the shape of the image patch grid after the preprocessing for images of any resolution.
+
+    Args:
+        image_size (tuple): The size of the input image in the format (width, height).
+        grid_pinpoints (str): A string representation of a list of possible resolutions.
+        patch_size (int): The size of each image patch.
+
+    Returns:
+        tuple: The shape of the image patch grid in the format (width, height).
+    """
+    if type(grid_pinpoints) is list:
+        possible_resolutions = grid_pinpoints
+    else:
+        possible_resolutions = ast.literal_eval(grid_pinpoints)
+    width, height = select_best_resolution(image_size, possible_resolutions)
+    return width // patch_size, height // patch_size
 
 
 class VLM(PreTrainedModel, GenerationMixin):
@@ -236,12 +298,12 @@ class VLM(PreTrainedModel, GenerationMixin):
             if total > 0:
                 log.info(f"  - {module_name}: {trainable:,} ({trainable / total:.2%} of {total:,})")
 
-    def encode_images(self, images):
+    def encode_images(self, images: Tensor) -> Tensor:
         image_features = self.visual_encoder(images)
         image_features = self.connector(image_features)
         return image_features
 
-    def unpad_image(self, tensor, original_size):
+    def unpad_image(self, tensor: Tensor, original_size: tuple[int, int]) -> Tensor:
         """
         Unpads a PyTorch tensor of a padded and resized image.
 
@@ -279,7 +341,6 @@ class VLM(PreTrainedModel, GenerationMixin):
         past_key_values: list[FloatTensor] | None = None,
         labels: LongTensor | None = None,
         images: FloatTensor | None = None,
-        image_sizes: list[list[int]] | None = None,
     ) -> tuple[
         Tensor | None,
         LongTensor | None,
@@ -289,84 +350,19 @@ class VLM(PreTrainedModel, GenerationMixin):
         LongTensor | None,
     ]:
         visual_encoder = self.visual_encoder
-        if visual_encoder is None or images is None or input_ids.shape[1] == 1:
+        if visual_encoder is None or images is None or input_ids.shape[1] == 1:  # pyright: ignore
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
 
-        if type(images) is list or images.ndim == 5:
-            if type(images) is list:
-                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
-            concat_images = torch.cat([image for image in images], dim=0)
+        if isinstance(images, list) or images.ndim == 5:
+            if isinstance(images, list):
+                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]  # pyright: ignore
+            concat_images = torch.cat([image for image in images], dim=0)  # pyright: ignore
             image_features = self.encode_images(concat_images)
-            split_sizes = [image.shape[0] for image in images]
-            image_features = torch.split(image_features, split_sizes, dim=0)
-            mm_patch_merge_type = getattr(self.config, "mm_patch_merge_type", "flat")
-            image_aspect_ratio = getattr(self.config, "image_aspect_ratio", "square")
-            if mm_patch_merge_type == "flat":
-                image_features = [x.flatten(0, 1) for x in image_features]
-            elif mm_patch_merge_type.startswith("spatial"):
-                new_image_features = []
-                for image_idx, image_feature in enumerate(image_features):
-                    if image_feature.shape[0] > 1:
-                        base_image_feature = image_feature[0]
-                        image_feature = image_feature[1:]
-                        height = width = (
-                            self.visual_encoder.image_size // self.visual_encoder.patch_size
-                        )
-                        assert height * width == base_image_feature.shape[0]
-                        if image_aspect_ratio == "anyres":
-                            num_patch_width, num_patch_height = get_anyres_image_grid_shape(
-                                image_sizes[image_idx],
-                                self.config.image_grid_pinpoints,
-                                self.visual_encoder.image_size,
-                            )
-                            image_feature = image_feature.view(
-                                num_patch_height, num_patch_width, height, width, -1
-                            )
-                        else:
-                            raise NotImplementedError
-                        if "unpad" in mm_patch_merge_type:
-                            pass
-                            # image_feature = image_feature.permute(4, 0, 2, 1, 3).contiguous()
-                            # image_feature = image_feature.flatten(1, 2).flatten(2, 3)
-                            # image_feature = self.unpad_image(image_feature, image_sizes[image_idx])
-                            # image_feature = torch.cat(
-                            #     (
-                            #         image_feature,
-                            #         self.model.image_newline[:, None, None]
-                            #         .expand(*image_feature.shape[:-1], 1)
-                            #         .to(image_feature.device),
-                            #     ),
-                            #     dim=-1,
-                            # )
-                            # image_feature = image_feature.flatten(1, 2).transpose(0, 1)
-                        else:
-                            image_feature = image_feature.permute(0, 2, 1, 3, 4).contiguous()
-                            image_feature = image_feature.flatten(0, 3)
-                        image_feature = torch.cat((base_image_feature, image_feature), dim=0)
-                    else:
-                        image_feature = image_feature[0]
-                        # if "unpad" in mm_patch_merge_type:
-                        #     image_feature = torch.cat(
-                        #         (
-                        #             image_feature,
-                        #             self.model.image_newline[None].to(image_feature.device),
-                        #         ),
-                        #         dim=0,
-                        #     )
-                    new_image_features.append(image_feature)
-                image_features = new_image_features
-            else:
-                raise ValueError(
-                    f"Unexpected mm_patch_merge_type: {self.config.mm_patch_merge_type}"
-                )
+            split_sizes = [image.shape[0] for image in images]  # pyright: ignore
+            image_features = torch.split(image_features, split_sizes, dim=0)  # pyright: ignore
+            image_features = [x.flatten(0, 1) for x in image_features]
         else:
             image_features = self.encode_images(images)
-
-        # TODO: image start / end is not implemented here to support pretraining.
-        if getattr(self.config, "tune_mm_mlp_adapter", False) and getattr(
-            self.config, "mm_use_im_start_end", False
-        ):
-            raise NotImplementedError
 
         # Let's just add dummy tensors if they do not exist,
         # it is a headache to deal with None all the time.
@@ -381,43 +377,46 @@ class VLM(PreTrainedModel, GenerationMixin):
             attention_mask = attention_mask.bool()
         if position_ids is None:
             position_ids = torch.arange(
-                0, input_ids.shape[1], dtype=torch.long, device=input_ids.device
+                0,
+                input_ids.shape[1],  # pyright: ignore
+                dtype=torch.long,
+                device=input_ids.device,  # pyright: ignore
             )
         if labels is None:
-            labels = torch.full_like(input_ids, IGNORE_INDEX)
+            labels = torch.full_like(input_ids, self.model_config.llm.ignore_index)  # pyright: ignore
 
         # remove the padding using attention_mask -- FIXME
         _input_ids = input_ids
         input_ids = [
             cur_input_ids[cur_attention_mask]
             for cur_input_ids, cur_attention_mask in zip(input_ids, attention_mask, strict=False)
-        ]
+        ]  # pyright: ignore
         labels = [
             cur_labels[cur_attention_mask]
             for cur_labels, cur_attention_mask in zip(labels, attention_mask, strict=False)
-        ]
+        ]  # pyright: ignore
 
         new_input_embeds = []
         new_labels = []
         cur_image_idx = 0
         for batch_idx, cur_input_ids in enumerate(input_ids):
-            num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()
+            num_images = (cur_input_ids == self.model_config.llm.image_token_index).sum()
             if num_images == 0:
                 cur_image_features = image_features[cur_image_idx]
                 cur_input_embeds_1 = self.language_model.embeddings(cur_input_ids)
                 cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
                 new_input_embeds.append(cur_input_embeds)
-                new_labels.append(labels[batch_idx])
+                new_labels.append(labels[batch_idx])  # pyright: ignore
                 cur_image_idx += 1
                 continue
 
             image_token_indices = (
                 [-1]
-                + torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].tolist()
+                + torch.where(cur_input_ids == self.model_config.llm.image_token_index)[0].tolist()
                 + [cur_input_ids.shape[0]]
             )
             cur_input_ids_noim = []
-            cur_labels = labels[batch_idx]
+            cur_labels = labels[batch_idx]  # pyright: ignore
             cur_labels_noim = []
             for i in range(len(image_token_indices) - 1):
                 cur_input_ids_noim.append(
@@ -442,7 +441,7 @@ class VLM(PreTrainedModel, GenerationMixin):
                     cur_new_labels.append(
                         torch.full(
                             (cur_image_features.shape[0],),
-                            IGNORE_INDEX,
+                            self.model_config.llm.ignore_index,
                             device=cur_labels.device,
                             dtype=cur_labels.dtype,
                         )
@@ -469,7 +468,7 @@ class VLM(PreTrainedModel, GenerationMixin):
         new_input_embeds_padded = []
         new_labels_padded = torch.full(
             (batch_size, max_len),
-            IGNORE_INDEX,
+            self.model_config.llm.ignore_index,
             dtype=new_labels[0].dtype,
             device=new_labels[0].device,
         )
@@ -477,8 +476,10 @@ class VLM(PreTrainedModel, GenerationMixin):
             (batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device
         )
         position_ids = torch.zeros(
-            (batch_size, max_len), dtype=position_ids.dtype, device=position_ids.device
-        )
+            (batch_size, max_len),
+            dtype=position_ids.dtype,  # pyright: ignore
+            device=position_ids.device,  # pyright: ignore
+        )  # pyright: ignore
 
         for i, (cur_new_embed, cur_new_labels) in enumerate(
             zip(new_input_embeds, new_labels, strict=False)
@@ -501,8 +502,11 @@ class VLM(PreTrainedModel, GenerationMixin):
                 if cur_len > 0:
                     new_labels_padded[i, -cur_len:] = cur_new_labels
                     attention_mask[i, -cur_len:] = True
-                    position_ids[i, -cur_len:] = torch.arange(
-                        0, cur_len, dtype=position_ids.dtype, device=position_ids.device
+                    position_ids[i, -cur_len:] = torch.arange(  # pyright: ignore
+                        0,
+                        cur_len,
+                        dtype=position_ids.dtype,  # pyright: ignore
+                        device=position_ids.device,  # pyright: ignore
                     )
             else:
                 new_input_embeds_padded.append(
@@ -521,8 +525,11 @@ class VLM(PreTrainedModel, GenerationMixin):
                 if cur_len > 0:
                     new_labels_padded[i, :cur_len] = cur_new_labels
                     attention_mask[i, :cur_len] = True
-                    position_ids[i, :cur_len] = torch.arange(
-                        0, cur_len, dtype=position_ids.dtype, device=position_ids.device
+                    position_ids[i, :cur_len] = torch.arange(  # pyright: ignore
+                        0,
+                        cur_len,
+                        dtype=position_ids.dtype,  # pyright: ignore
+                        device=position_ids.device,  # pyright: ignore
                     )
 
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
@@ -540,18 +547,4 @@ class VLM(PreTrainedModel, GenerationMixin):
         if _position_ids is None:
             position_ids = None
 
-        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
-
-    def prepare_inputs_for_generation(
-        self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs
-    ):
-        images = kwargs.pop("images", None)
-        image_sizes = kwargs.pop("image_sizes", None)
-        inputs = self.language_model.prepare_inputs_for_generation(
-            input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs
-        )
-        if images is not None:
-            inputs["images"] = images
-        if image_sizes is not None:
-            inputs["image_sizes"] = image_sizes
-        return inputs
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels  # pyright: ignore

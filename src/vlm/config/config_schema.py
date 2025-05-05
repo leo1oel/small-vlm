@@ -27,12 +27,14 @@ class LLMConfig:
     image_token: str = "<image>"
     use_start_end_tokens: bool = False
     use_image_patch_token: bool = False
-    image_start_token: str = "<image_start>"
-    image_end_token: str = "<image_end>"
-    image_patch_token: str = "<image_patch>"
+    image_start_token: str = "<im_start>"
+    image_end_token: str = "<im_end>"
+    image_patch_token: str = "<im_patch>"
     system_token: str | None = None
     user_token: str | None = None
     assistant_token: str = MISSING
+    ignore_index: int = -100
+    image_token_index: int = -200
     attn_implementation: str = "flash_attention_2"
 
 
@@ -58,7 +60,6 @@ class DatasetConfig:
     lazy_preprocess: bool = True
     is_multimodal: bool = True
     image_folder: str = MISSING
-    image_aspect_ratio: str = "square"
 
 
 @dataclass
@@ -95,8 +96,6 @@ class TrainerConfig:
     bf16: bool = False
     fp16: bool = False
     tf32: bool = False
-    ignore_index: int = -100
-    image_token_index: int = -200
     deepspeed: str | None = None
     num_train_epochs: int = 1
     save_strategy: str = "steps"
@@ -113,6 +112,7 @@ class TrainerConfig:
     gradient_checkpointing: bool = False
     run_name: str = "small-vlm"
     resume_from_checkpoint: str | None = None
+    seed: int = 42
 
 
 @dataclass

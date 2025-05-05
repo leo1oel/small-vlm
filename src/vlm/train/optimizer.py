@@ -88,6 +88,7 @@ def get_module_param_groups(
     weight_decay: float,
     learning_rate: float,
 ) -> list[dict[str, Any]]:
+    log.info(f"{module_name} lr: {learning_rate}, weight_decay: {weight_decay}")
     return [
         {
             "params": param_groups[module_name]["decay"],

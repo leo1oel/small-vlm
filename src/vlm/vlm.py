@@ -1,7 +1,11 @@
 import logging
+import os
+import random
 from pathlib import Path
 
 import hydra
+import numpy as np
+import torch
 from omegaconf import OmegaConf
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
@@ -12,6 +16,15 @@ from .train.training_arguments import get_training_args
 
 log: logging.Logger = logging.getLogger(name=__name__)
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"
+
+
+def seed_everything(seed: int) -> None:
+    log.info(f"Global seed set to {seed}")
+    os.environ["PL_GLOBAL_SEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def print_model(cfg: ModelConfig) -> None:
@@ -52,6 +65,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
 
 
 def vlm(cfg: AppConfig) -> None:
+    seed_everything(cfg.trainer.seed)
     if cfg.mode.is_training:
         log.info("Training mode")
         training_args = get_training_args(cfg.trainer)

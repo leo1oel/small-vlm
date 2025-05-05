@@ -1,7 +1,9 @@
 import base64
 import dataclasses
+from collections.abc import Callable
 from enum import Enum, auto
 from io import BytesIO
+from typing import Any
 
 from PIL import Image
 
@@ -26,14 +28,14 @@ class Conversation:
     offset: int
     sep_style: SeparatorStyle = SeparatorStyle.SINGLE
     sep: str = "###"
-    sep2: str = None
+    sep2: str | None = None
     version: str = "Unknown"
 
     skip_next: bool = False
 
     def get_prompt(self):
         messages = self.messages
-        if len(messages) > 0 and type(messages[0][1]) is tuple:
+        if len(messages) > 0 and isinstance(messages[0][1], tuple):
             messages = self.messages.copy()
             init_role, init_msg = messages[0].copy()
             init_msg = init_msg[0].replace("<image>", "").strip()
@@ -48,7 +50,7 @@ class Conversation:
             ret = self.system + self.sep
             for role, message in messages:
                 if message:
-                    if type(message) is tuple:
+                    if isinstance(message, tuple):
                         message, _, _ = message
                     ret += role + ": " + message + self.sep
                 else:
@@ -58,7 +60,7 @@ class Conversation:
             ret = self.system + seps[0]
             for i, (role, message) in enumerate(messages):
                 if message:
-                    if type(message) is tuple:
+                    if isinstance(message, tuple):
                         message, _, _ = message
                     ret += role + ": " + message + seps[i % 2]
                 else:
@@ -67,14 +69,16 @@ class Conversation:
             ret = self.system + self.sep
             for role, message in messages:
                 if message:
-                    if type(message) is tuple:
+                    if isinstance(message, tuple):
                         message, _, _ = message
                     ret += role + message + self.sep
                 else:
                     ret += role
         elif self.sep_style == SeparatorStyle.LLAMA_2:
-            wrap_sys = lambda msg: f"<<SYS>>\n{msg}\n<</SYS>>\n\n" if len(msg) > 0 else msg
-            wrap_inst = lambda msg: f"[INST] {msg} [/INST]"
+            wrap_sys: Callable[[str | Any], str] = (
+                lambda msg: f"<<SYS>>\n{msg}\n<</SYS>>\n\n" if len(msg) > 0 else msg
+            )
+            wrap_inst: Callable[[str], str] = lambda msg: f"[INST] {msg} [/INST]"
             ret = ""
 
             for i, (role, message) in enumerate(messages):
@@ -82,7 +86,7 @@ class Conversation:
                     assert message, "first message should not be none"
                     assert role == self.roles[0], "first message should come from user"
                 if message:
-                    if type(message) is tuple:
+                    if isinstance(message, tuple):
                         message, _, _ = message
                     if i == 0:
                         message = wrap_sys(self.system) + message
@@ -97,9 +101,9 @@ class Conversation:
         elif self.sep_style == SeparatorStyle.PLAIN:
             seps = [self.sep, self.sep2]
             ret = self.system
-            for i, (role, message) in enumerate(messages):
+            for i, (_, message) in enumerate(messages):
                 if message:
-                    if type(message) is tuple:
+                    if isinstance(message, tuple):
                         message, _, _ = message
                     ret += message + seps[i % 2]
                 else:
@@ -109,21 +113,23 @@ class Conversation:
 
         return ret
 
-    def append_message(self, role, message):
+    def append_message(self, role: str, message: str):
         self.messages.append([role, message])
 
     def process_image(
         self,
-        image,
-        image_process_mode,
-        return_pil=False,
-        image_format="PNG",
-        max_len=1344,
-        min_len=672,
+        image: Image.Image,
+        image_process_mode: str,
+        return_pil: bool = False,
+        image_format: str = "PNG",
+        max_len: int = 1344,
+        min_len: int = 672,
     ):
         if image_process_mode == "Pad":
 
-            def expand2square(pil_img, background_color=(122, 116, 104)):
+            def expand2square(
+                pil_img: Image.Image, background_color: tuple[int, int, int] = (122, 116, 104)
+            ):
                 width, height = pil_img.size
                 if width == height:
                     return pil_img
@@ -148,12 +154,12 @@ class Conversation:
             aspect_ratio = max_hw / min_hw
             shortest_edge = int(min(max_len / aspect_ratio, min_len, min_hw))
             longest_edge = int(shortest_edge * aspect_ratio)
-            W, H = image.size
-            if H > W:
-                H, W = longest_edge, shortest_edge
+            w, h = image.size
+            if h > w:
+                h, w = longest_edge, shortest_edge
             else:
-                H, W = shortest_edge, longest_edge
-            image = image.resize((W, H))
+                h, w = shortest_edge, longest_edge
+            image = image.resize((w, h))
         if return_pil:
             return image
         else:
@@ -162,11 +168,11 @@ class Conversation:
             img_b64_str = base64.b64encode(buffered.getvalue()).decode()
             return img_b64_str
 
-    def get_images(self, return_pil=False):
+    def get_images(self, return_pil: bool = False):
         images = []
-        for i, (role, msg) in enumerate(self.messages[self.offset :]):
+        for i, (_, msg) in enumerate(self.messages[self.offset :]):
             if i % 2 == 0:
-                if type(msg) is tuple:
+                if isinstance(msg, tuple):
                     msg, image, image_process_mode = msg
                     image = self.process_image(image, image_process_mode, return_pil=return_pil)
                     images.append(image)
@@ -174,10 +180,10 @@ class Conversation:
 
     def to_gradio_chatbot(self):
         ret = []
-        for i, (role, msg) in enumerate(self.messages[self.offset :]):
+        for i, (_, msg) in enumerate(self.messages[self.offset :]):
             if i % 2 == 0:
-                if type(msg) is tuple:
-                    msg, image, image_process_mode = msg
+                if isinstance(msg, tuple):
+                    msg, image, _ = msg
                     img_b64_str = self.process_image(
                         image, "Default", return_pil=False, image_format="JPEG"
                     )
@@ -207,7 +213,7 @@ class Conversation:
             return {
                 "system": self.system,
                 "roles": self.roles,
-                "messages": [[x, y[0] if type(y) is tuple else y] for x, y in self.messages],
+                "messages": [[x, y[0] if isinstance(y, tuple) else y] for x, y in self.messages],
                 "offset": self.offset,
                 "sep": self.sep,
                 "sep2": self.sep2,

@@ -41,6 +41,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 
 
 def train(model: VLM, training_args: TrainingArguments, data_args: DataArguments):
+    log.info("Using gradient checkpointing")
     if training_args.gradient_checkpointing:
 
         def make_inputs_require_grad(module: nn.Module, input: Any, output: Any) -> None:  # pyright: ignore
@@ -51,7 +52,11 @@ def train(model: VLM, training_args: TrainingArguments, data_args: DataArguments
     conversation_lib.default_conversation = conversation_lib.conv_templates[training_args.version]
 
     tokenizer = model.language_model.tokenizer
+
+    log.info("Creating data module")
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+
+    log.info("Creating trainer")
     trainer = VLMTrainer(model=model, processing_class=tokenizer, args=training_args, **data_module)
     trainer.add_callback(LoggingCallback())
     log.info(f"Trainer: {trainer}")
@@ -60,6 +65,11 @@ def train(model: VLM, training_args: TrainingArguments, data_args: DataArguments
         log.info(f"Resuming from checkpoint: {training_args.output_dir}")
         trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     else:
+        log.info("Training from scratch")
         trainer.train()
+
+    log.info("Saving state")
     trainer.save_state()
+
+    log.info("Saving model")
     safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)

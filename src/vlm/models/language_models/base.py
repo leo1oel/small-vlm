@@ -17,9 +17,9 @@ class TokenConfig:
     """Special token configuration"""
 
     image_token: str = "<image>"
-    image_patch_token: str = "<image_patch>"
-    image_start_token: str = "<image_start>"
-    image_end_token: str = "<image_end>"
+    image_patch_token: str = "<im_patch>"
+    image_start_token: str = "<im_start>"
+    image_end_token: str = "<im_end>"
     system_token: str | None = None
     user_token: str | None = None
     assistant_token: str = "<|assistant|>"
@@ -54,9 +54,9 @@ class LanguageModel(nn.Module, ABC):
         # token config
         self.token_config: TokenConfig = TokenConfig(
             image_token=getattr(self.config, "image_token", "<image>"),
-            image_patch_token=getattr(self.config, "image_patch_token", "<image_patch>"),
-            image_start_token=getattr(self.config, "image_start_token", "<image_start>"),
-            image_end_token=getattr(self.config, "image_end_token", "<image_end>"),
+            image_patch_token=getattr(self.config, "image_patch_token", "<im_patch>"),
+            image_start_token=getattr(self.config, "image_start_token", "<im_start>"),
+            image_end_token=getattr(self.config, "image_end_token", "<im_end>"),
             system_token=getattr(self.config, "system_token", None),
             user_token=getattr(self.config, "user_token", None),
             assistant_token=getattr(self.config, "assistant_token", "<|assistant|>"),

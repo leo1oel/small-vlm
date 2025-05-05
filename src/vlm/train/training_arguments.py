@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
-# from typing import Any
 import transformers
 
+# from typing import Any
 # from transformers.debug_utils import DebugOption
 # from transformers.trainer_utils import FSDPOption, HubStrategy, IntervalStrategy, SchedulerType
 # from transformers.training_args import OptimizerNames
@@ -273,4 +273,5 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         gradient_checkpointing=config.gradient_checkpointing,
         run_name=config.run_name,
         resume_from_checkpoint=config.resume_from_checkpoint,
+        seed=config.seed,
     )

@@ -13,10 +13,15 @@ class DataArguments:
     image_folder: str | None = field(default=None)
     use_start_end_tokens: bool = False
     use_image_patch_token: bool = False
+    image_token: str = "<image>"
+    image_start_token: str = "<im_start>"
+    image_end_token: str = "<im_end>"
+    image_patch_token: str = "<im_patch>"
+    ignore_index: int = -100
+    image_token_index: int = -200
     image_preprocessor: BaseImageProcessor | None = field(
         default=None, metadata={"help": "Image preprocessor for the visual encoder."}
     )
-    image_aspect_ratio: str = "square"
 
 
 def get_data_args(
@@ -29,6 +34,11 @@ def get_data_args(
         image_folder=data_config.image_folder,
         use_start_end_tokens=trainer_config.llm.use_start_end_tokens,
         use_image_patch_token=trainer_config.llm.use_image_patch_token,
+        image_token=trainer_config.llm.image_token,
+        image_start_token=trainer_config.llm.image_start_token,
+        image_end_token=trainer_config.llm.image_end_token,
+        image_patch_token=trainer_config.llm.image_patch_token,
+        ignore_index=trainer_config.llm.ignore_index,
+        image_token_index=trainer_config.llm.image_token_index,
         image_preprocessor=image_processor,
-        image_aspect_ratio=data_config.image_aspect_ratio,
     )
