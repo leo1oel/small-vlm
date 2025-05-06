@@ -178,6 +178,10 @@ class VLM(PreTrainedModel, GenerationMixin):
         image_sizes: list[list[int]] | None = None,
         return_dict: bool | None = None,
     ) -> torch.Tensor:
+        print("1", input_ids.shape)
+        print(inputs_embeds)
+        print(attention_mask.shape)
+        print(labels.shape)
         if inputs_embeds is None:
             (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = (
                 self.prepare_inputs_labels_for_multimodal(
@@ -190,6 +194,10 @@ class VLM(PreTrainedModel, GenerationMixin):
                     image_sizes,
                 )
             )
+            print(input_ids)
+            print(inputs_embeds.shape)
+            print(attention_mask.shape)
+            print(labels.shape)
         return self.language_model(
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
@@ -341,6 +349,7 @@ class VLM(PreTrainedModel, GenerationMixin):
         past_key_values: list[FloatTensor] | None = None,
         labels: LongTensor | None = None,
         images: FloatTensor | None = None,
+        image_sizes: list[list[int]] | None = None,
     ) -> tuple[
         Tensor | None,
         LongTensor | None,
@@ -456,7 +465,8 @@ class VLM(PreTrainedModel, GenerationMixin):
             new_labels.append(cur_new_labels)
 
         # Truncate sequences to max length as image embeddings can make the sequence longer
-        tokenizer_model_max_length = getattr(self.config, "tokenizer_model_max_length", None)
+        # tokenizer_model_max_length = getattr(self.config, "tokenizer_model_max_length", None)
+        tokenizer_model_max_length = 2048
         if tokenizer_model_max_length is not None:
             new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
             new_labels = [x[:tokenizer_model_max_length] for x in new_labels]

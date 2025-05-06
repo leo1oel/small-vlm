@@ -56,6 +56,15 @@ def train(model: VLM, training_args: TrainingArguments, data_args: DataArguments
     log.info("Creating data module")
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
 
+    torch_dtype = (
+        torch.float32
+        if training_args.fp16
+        else (torch.bfloat16 if training_args.bf16 else torch.float32)
+    )
+    model.language_model.language_model.to(dtype=torch_dtype, device=training_args.device)
+    model.visual_encoder.visual_encoder.to(dtype=torch_dtype, device=training_args.device)
+    model.connector.to(dtype=torch_dtype, device=training_args.device)
+
     log.info("Creating trainer")
     trainer = VLMTrainer(model=model, processing_class=tokenizer, args=training_args, **data_module)
     trainer.add_callback(LoggingCallback())

@@ -2,7 +2,6 @@ import copy
 import json
 import os
 from collections.abc import Sequence
-from ctypes import cast
 from dataclasses import dataclass
 from typing import Any, override
 
@@ -23,7 +22,7 @@ def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedToken
             text,
             return_tensors="pt",
             padding="longest",
-            max_length=tokenizer.model_max_length,
+            max_length=tokenizer.model_max_max_length,
             truncation=True,
         )
         for text in strings
@@ -250,7 +249,7 @@ def preprocess_v1(
     if has_image:
         input_ids = torch.stack(
             [
-                tokenizer_image_token(prompt, tokenizer, return_tensors="pt")
+                tokenizer_image_token(prompt, tokenizer, return_tensors="pt", data_args=data_args)
                 for prompt in conversations
             ],
             dim=0,
@@ -421,11 +420,14 @@ def preprocess_plain(
         conversations.append(conversation)
     # tokenize conversations
     input_ids = [
-        tokenizer_image_token(prompt, tokenizer, return_tensors="pt") for prompt in conversations
+        tokenizer_image_token(prompt, tokenizer, return_tensors="pt", data_args=data_args)
+        for prompt in conversations
     ]
     targets = copy.deepcopy(input_ids)
     for target, source in zip(targets, sources, strict=False):
-        tokenized_len = len(tokenizer_image_token(source[0]["value"], tokenizer))
+        tokenized_len = len(
+            tokenizer_image_token(source[0]["value"], tokenizer, data_args=data_args)
+        )
         target[:tokenized_len] = data_args.ignore_index
 
     return dict(input_ids=input_ids, labels=targets)
@@ -531,31 +533,9 @@ class LazySupervisedDataset(Dataset):
         if "image" in sources[0]:
             image_file = self.list_data_dict[i]["image"]
             image_folder = self.data_args.image_folder
-            processor: BaseImageProcessor = cast(
-                BaseImageProcessor, self.data_args.image_preprocessor
-            )
+            processor: BaseImageProcessor = self.data_args.image_preprocessor  # pyright: ignore
             image = Image.open(os.path.join(image_folder, image_file)).convert("RGB")
-            if self.data_args.image_aspect_ratio == "pad":
-
-                def expand2square(
-                    pil_img: Image.Image, background_color: tuple[int, int, int]
-                ) -> Image.Image:
-                    width, height = pil_img.size
-                    if width == height:
-                        return pil_img
-                    elif width > height:
-                        result = Image.new(pil_img.mode, (width, width), background_color)
-                        result.paste(pil_img, (0, (width - height) // 2))
-                        return result
-                    else:
-                        result = Image.new(pil_img.mode, (height, height), background_color)
-                        result.paste(pil_img, ((height - width) // 2, 0))
-                        return result
-
-                image = expand2square(image, tuple(int(x * 255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
-            else:
-                image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
+            image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
             sources = preprocess_multimodal(  # pyright: ignore
                 copy.deepcopy([e["conversations"] for e in sources]), self.data_args
             )

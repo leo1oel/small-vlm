@@ -99,7 +99,7 @@ class TrainerConfig:
     deepspeed: str | None = None
     num_train_epochs: int = 1
     save_strategy: str = "steps"
-    save_steps: int = 500
+    save_steps: int = 5000
     save_total_limit: int = 1
     logging_steps: int = 1
     warmup_ratio: float = 0.0
