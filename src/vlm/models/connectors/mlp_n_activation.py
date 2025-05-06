@@ -3,7 +3,7 @@ import re
 from typing import Any, override
 
 import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, device, dtype
 
 from ...config.config_schema import ConnectorConfig
 from .base import Connector
@@ -22,14 +22,19 @@ class MLPConnector(Connector):
 
     @override
     def __init__(
-        self, config: ConnectorConfig, image_hidden_size: int, text_hidden_size: int
+        self,
+        config: ConnectorConfig,
+        image_hidden_size: int,
+        text_hidden_size: int,
+        torch_dtype: dtype,
+        torch_device: device,
     ) -> None:
         self.num_layers: int = 2
         self.activation_name: str = "gelu"
 
         self._parse_config_name(config.name)
 
-        super().__init__(config, image_hidden_size, text_hidden_size)
+        super().__init__(config, image_hidden_size, text_hidden_size, torch_dtype, torch_device)
 
         self._initialize_layers()
 

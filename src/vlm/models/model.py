@@ -4,7 +4,7 @@ from typing import Any, override
 
 import torch
 from omegaconf import OmegaConf
-from torch import FloatTensor, LongTensor, Tensor
+from torch import FloatTensor, LongTensor, Tensor, device, dtype
 from transformers import (
     AutoConfig,
     GenerationMixin,
@@ -23,6 +23,12 @@ from .language_models import LanguageModel
 from .visual_encoders import VisualEncoder
 
 log: logging.Logger = logging.getLogger(name=__name__)
+
+PRECISION_MAP: dict[str, dtype] = {
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+    "default": torch.float32,
+}
 
 
 def select_best_resolution(
@@ -92,12 +98,21 @@ class VLM(PreTrainedModel, GenerationMixin):
         self,
         model_config: ModelConfig,
         trainer_config: TrainerConfig,
-        lazy_loading: bool = False,
+        torch_device: device,
     ) -> None:
         super().__init__(config=AutoConfig.from_pretrained(model_config.llm.hf_name))
         # process config
         self.model_config: ModelConfig = self._process_config(model_config)
         self.trainer_config: TrainerConfig = self._process_config(trainer_config)
+
+        if trainer_config.fp16:
+            self.torch_dtype: dtype = PRECISION_MAP["fp16"]
+        elif trainer_config.bf16:
+            self.torch_dtype = PRECISION_MAP["bf16"]
+        else:
+            self.torch_dtype = PRECISION_MAP["default"]
+
+        self.torch_device: torch.device = torch_device
 
         # initialize components
         self.initialize_components()
@@ -136,7 +151,7 @@ class VLM(PreTrainedModel, GenerationMixin):
         if encoder_config.type == "hf_visual_encoder":
             from .visual_encoders import HFVisualEncoder
 
-            return HFVisualEncoder(encoder_config)
+            return HFVisualEncoder(encoder_config, self.torch_dtype, self.torch_device)
         else:
             error_msg = f"Unknown visual encoder type: {encoder_config.type}"
             log.error(error_msg)
@@ -147,7 +162,7 @@ class VLM(PreTrainedModel, GenerationMixin):
         if llm_config.type == "hf_llm":
             from .language_models import HFLLMLanguageModel
 
-            return HFLLMLanguageModel(llm_config)
+            return HFLLMLanguageModel(llm_config, self.torch_dtype, self.torch_device)
         else:
             error_msg = f"Unknown language model type: {llm_config.type}"
             log.error(error_msg)
@@ -159,7 +174,11 @@ class VLM(PreTrainedModel, GenerationMixin):
         if not connector_class:
             raise ValueError(f"Unsupported connector type: {connector_config.type}")
         return connector_class(
-            connector_config, self.visual_encoder.hidden_size, self.language_model.hidden_size
+            connector_config,
+            self.visual_encoder.hidden_size,
+            self.language_model.hidden_size,
+            self.torch_dtype,
+            self.torch_device,
         )
 
     @override
@@ -178,10 +197,6 @@ class VLM(PreTrainedModel, GenerationMixin):
         image_sizes: list[list[int]] | None = None,
         return_dict: bool | None = None,
     ) -> torch.Tensor:
-        print("1", input_ids.shape)
-        print(inputs_embeds)
-        print(attention_mask.shape)
-        print(labels.shape)
         if inputs_embeds is None:
             (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = (
                 self.prepare_inputs_labels_for_multimodal(
@@ -191,13 +206,8 @@ class VLM(PreTrainedModel, GenerationMixin):
                     past_key_values,
                     labels,
                     images,
-                    image_sizes,
                 )
             )
-            print(input_ids)
-            print(inputs_embeds.shape)
-            print(attention_mask.shape)
-            print(labels.shape)
         return self.language_model(
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
@@ -349,7 +359,6 @@ class VLM(PreTrainedModel, GenerationMixin):
         past_key_values: list[FloatTensor] | None = None,
         labels: LongTensor | None = None,
         images: FloatTensor | None = None,
-        image_sizes: list[list[int]] | None = None,
     ) -> tuple[
         Tensor | None,
         LongTensor | None,
@@ -465,8 +474,7 @@ class VLM(PreTrainedModel, GenerationMixin):
             new_labels.append(cur_new_labels)
 
         # Truncate sequences to max length as image embeddings can make the sequence longer
-        # tokenizer_model_max_length = getattr(self.config, "tokenizer_model_max_length", None)
-        tokenizer_model_max_length = 2048
+        tokenizer_model_max_length = self.language_model.tokenizer.model_max_length
         if tokenizer_model_max_length is not None:
             new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
             new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
@@ -495,7 +503,7 @@ class VLM(PreTrainedModel, GenerationMixin):
             zip(new_input_embeds, new_labels, strict=False)
         ):
             cur_len = cur_new_embed.shape[0]
-            if getattr(self.config, "tokenizer_padding_side", "right") == "left":
+            if self.language_model.tokenizer.padding_side == "left":
                 new_input_embeds_padded.append(
                     torch.cat(
                         (

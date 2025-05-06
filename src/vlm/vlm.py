@@ -58,9 +58,9 @@ def print_model(cfg: ModelConfig) -> None:
     )
 
 
-def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig) -> VLM:
+def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig, device: torch.device) -> VLM:
     print_model(model_cfg)
-    model: VLM = VLM(model_cfg, trainer_cfg)
+    model: VLM = VLM(model_cfg, trainer_cfg, device)
     return model
 
 
@@ -69,8 +69,7 @@ def vlm(cfg: AppConfig) -> None:
     if cfg.mode.is_training:
         log.info("Training mode")
         training_args = get_training_args(cfg.trainer)
-        training_args.use_cache = False
-        model: VLM = load_model(cfg.model, cfg.trainer)
+        model: VLM = load_model(cfg.model, cfg.trainer, training_args.device)
         data_args = get_data_args(cfg.dataset, cfg.model, model.visual_encoder.preprocessor)
         train(model, training_args, data_args)
 

@@ -4,7 +4,8 @@ from typing import Any
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 from transformers import PreTrainedModel
-from transformers.trainer import ALL_LAYERNORM_LAYERS, get_parameter_names
+from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+from transformers.trainer_pt_utils import get_parameter_names
 
 from .training_arguments import TrainingArguments
 

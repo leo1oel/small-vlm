@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from typing import NamedTuple, override
 
 import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, device, dtype
 
 from ...config.config_schema import ConnectorConfig
 
@@ -21,15 +21,25 @@ class ForwardOutput(NamedTuple):
 
 class Connector(nn.Module, ABC):
     def __init__(
-        self, config: ConnectorConfig, image_hidden_size: int, text_hidden_size: int
+        self,
+        config: ConnectorConfig,
+        image_hidden_size: int,
+        text_hidden_size: int,
+        torch_dtype: dtype,
+        torch_device: device,
     ) -> None:
         super().__init__()
         self.config: ConnectorConfig = config
         self.name: str = self.config.name
+        self.torch_dtype: dtype = torch_dtype
+        self.torch_device: device = torch_device
 
         self.image_hidden_size: int = image_hidden_size
         self.text_hidden_size: int = text_hidden_size
-        self.projection_layer: nn.Module = self.build_projection_layer()
+        self.projection_layer: nn.Module = self.build_projection_layer().to(
+            dtype=self.torch_dtype,
+            device=self.torch_device,
+        )
         self.initialize_layers()
 
     @abstractmethod

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import cast, override
 
 import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, device, dtype
 from transformers import BaseImageProcessor, PretrainedConfig, PreTrainedModel
 
 from ...config.config_schema import VisualEncoderConfig
@@ -20,12 +20,14 @@ class VisualModelConfig:
 
 
 class VisualEncoder(nn.Module, ABC):
-    def __init__(self, config: VisualEncoderConfig) -> None:
+    def __init__(self, config: VisualEncoderConfig, torch_dtype: dtype, torch_device: device) -> None:
         super().__init__()
         self.config: VisualEncoderConfig = config
         self.name: str = self.config.name
         self.hf_name: str = self.config.hf_name
         self.model_type: str = self.config.type
+        self.torch_dtype: dtype = torch_dtype
+        self.torch_device: device = torch_device
 
         # model config
         self.model_config: VisualModelConfig = VisualModelConfig(

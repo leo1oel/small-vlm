@@ -274,4 +274,6 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         run_name=config.run_name,
         resume_from_checkpoint=config.resume_from_checkpoint,
         seed=config.seed,
+        data_seed=config.seed,
+        disable_tqdm=True,
     )

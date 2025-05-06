@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, cast, override
 
 import torch.nn as nn
-from torch import FloatTensor, LongTensor, Tensor
+from torch import FloatTensor, LongTensor, Tensor, device, dtype
 from transformers import PretrainedConfig, PreTrainedModel, PreTrainedTokenizer
 
 from ...config.config_schema import LLMConfig
@@ -37,12 +37,14 @@ class LanguageModelConfig:
 
 
 class LanguageModel(nn.Module, ABC):
-    def __init__(self, config: LLMConfig) -> None:
+    def __init__(self, config: LLMConfig, torch_dtype: dtype, torch_device: device) -> None:
         super().__init__()
         self.config: LLMConfig = config
         self.name: str = self.config.name
         self.hf_name: str = self.config.hf_name
         self.model_type: str = self.config.type
+        self.torch_dtype: dtype = torch_dtype
+        self.torch_device: device = torch_device
 
         # model config
         self.model_config: LanguageModelConfig = LanguageModelConfig(
@@ -69,6 +71,7 @@ class LanguageModel(nn.Module, ABC):
         self._hf_config: PretrainedConfig = self._build_hf_config()
         self.verify_config()
         self._tokenizer: PreTrainedTokenizer = self._build_tokenizer()
+        self._tokenizer.pad_token = self._tokenizer.unk_token
         self._add_special_tokens()
         self._language_model: PreTrainedModel = self._build_language_model()
         self.language_model.resize_token_embeddings(len(self.tokenizer))
@@ -79,7 +82,6 @@ class LanguageModel(nn.Module, ABC):
         # Create a mapping of tokens to their attribute names
 
         token_mapping = {
-            self.token_config.image_token: "image_token_id",
             self.token_config.system_token: "system_token_id",
             self.token_config.user_token: "user_token_id",
             self.token_config.assistant_token: "assistant_token_id",

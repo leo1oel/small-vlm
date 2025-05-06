@@ -2,6 +2,7 @@ import logging
 from typing import cast, override
 
 import torch.nn as nn
+from torch import device, dtype
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -18,8 +19,8 @@ log: logging.Logger = logging.getLogger(name=__name__)
 
 
 class HFLLMLanguageModel(LanguageModel):
-    def __init__(self, config: LLMConfig) -> None:
-        super().__init__(config)
+    def __init__(self, config: LLMConfig, torch_dtype: dtype, torch_device: device) -> None:
+        super().__init__(config, torch_dtype, torch_device)
 
     @override
     def _build_embedding_layer(self) -> nn.Module:
@@ -46,7 +47,8 @@ class HFLLMLanguageModel(LanguageModel):
                 low_cpu_mem_usage=True,
                 trust_remote_code=True,
                 attn_implementation=self.config.attn_implementation,
-            ),
+                torch_dtype=self.torch_dtype,
+            ).to(device=self.torch_device),
         )
 
     @override

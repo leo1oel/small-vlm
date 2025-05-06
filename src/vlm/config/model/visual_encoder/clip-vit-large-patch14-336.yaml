@@ -1,0 +1,4 @@
+name: clip-vit-large-patch14-336
+hf_name: openai/clip-vit-large-patch14-336
+output_layer: -2
+use_cls_token: False
