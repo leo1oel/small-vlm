@@ -79,7 +79,6 @@ def build_optimizer_params(
             learning_rate=trainer_config.connector_lr,
         )
     )
-
     return optimizer_params
 
 

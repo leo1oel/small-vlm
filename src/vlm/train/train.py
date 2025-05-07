@@ -9,7 +9,8 @@ from ..data.data_arguments import DataArguments
 from ..data.dataset import make_supervised_data_module
 from ..models.model import VLM
 from ..utils import conversation as conversation_lib
-from ..utils.rich_callback import ProgressCallback
+
+# from ..utils.rich_callback import ProgressCallback
 from .training_arguments import TrainingArguments
 from .vlm_trainer import VLMTrainer
 
@@ -53,10 +54,9 @@ def train(model: VLM, training_args: TrainingArguments, data_args: DataArguments
         model=model,
         processing_class=tokenizer,
         args=training_args,
-        callbacks=[ProgressCallback],
+        # callbacks=[ProgressCallback],
         **data_module,
     )
-    logger.info(f"Trainer: {trainer}")
 
     if training_args.resume_from_checkpoint:
         logger.info(f"Resuming from checkpoint: {training_args.output_dir}")
