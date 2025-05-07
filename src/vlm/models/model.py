@@ -316,7 +316,7 @@ class VLM(PreTrainedModel, GenerationMixin):
             if total > 0:
                 log.info(f"  - {module_name}: {trainable:,} ({trainable / total:.2%} of {total:,})")
 
-    def encode_images(self, images: Tensor) -> Tensor:
+    def encode_images(self, images: Tensor) -> tuple[Tensor, ...]:
         image_features = self.visual_encoder(images)
         image_features = self.connector(image_features)
         return image_features
@@ -377,8 +377,8 @@ class VLM(PreTrainedModel, GenerationMixin):
             concat_images = torch.cat([image for image in images], dim=0)  # pyright: ignore
             image_features = self.encode_images(concat_images)
             split_sizes = [image.shape[0] for image in images]  # pyright: ignore
-            image_features = torch.split(image_features, split_sizes, dim=0)  # pyright: ignore
-            image_features = [x.flatten(0, 1) for x in image_features]
+            image_features: tuple[Tensor, ...] = torch.split(image_features, split_sizes, dim=0)  # pyright: ignore
+            image_features = [x.flatten(0, 1) for x in image_features]  # pyright: ignore
         else:
             image_features = self.encode_images(images)
 
