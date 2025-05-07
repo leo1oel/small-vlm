@@ -20,7 +20,9 @@ class VisualModelConfig:
 
 
 class VisualEncoder(nn.Module, ABC):
-    def __init__(self, config: VisualEncoderConfig, torch_dtype: dtype, torch_device: device) -> None:
+    def __init__(
+        self, config: VisualEncoderConfig, torch_dtype: dtype, torch_device: device
+    ) -> None:
         super().__init__()
         self.config: VisualEncoderConfig = config
         self.name: str = self.config.name

@@ -667,17 +667,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mpi4py"
-version = "4.0.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0d/b6/833caa35145efa52c698c50bc76dd9cd2d30527193a9b54004a76c9d99b4/mpi4py-4.0.3.tar.gz", hash = "sha256:de2710d73e25e115865a3ab63d34a54b2d8608b724f761c567b6ad58dd475609", size = 466338, upload-time = "2025-02-13T18:35:50.548Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/3e/6b26012cc62a29b294fbce135fb0a107a00af05e69cfd69ee23546d5c073/mpi4py-4.0.3-cp311-cp311-win_amd64.whl", hash = "sha256:26d9e70081f3c69c74c81306b6ad33918b710980bd1732ab577702909b2db3e8", size = 1597891, upload-time = "2025-02-13T18:36:55.257Z" },
-    { url = "https://files.pythonhosted.org/packages/6d/1e/d5be898722f74faf0b19c60ed3783b6b59bf0f1056f6d0cdc65ccae6ab8f/mpi4py-4.0.3-cp312-cp312-win_amd64.whl", hash = "sha256:b709c410ab5f3f3f12f44514a18fb392e49b9e3185acb11e0dd8557a4ad1fe40", size = 1725596, upload-time = "2025-02-13T18:37:00.286Z" },
-    { url = "https://files.pythonhosted.org/packages/03/d3/b7cfecd793597b18d81dba63a5d9a1ff022a36417be7dead7b5565cd8fc9/mpi4py-4.0.3-cp313-cp313-win_amd64.whl", hash = "sha256:7b026914b498dd40a28eb1d78494f266446f22894c0e91500f5f035daefb3fda", size = 1724108, upload-time = "2025-02-13T18:37:03.521Z" },
-]
-
-[[package]]
 name = "mpmath"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1613,7 +1602,6 @@ dependencies = [
     { name = "blobfile" },
     { name = "deepspeed" },
     { name = "hydra-core" },
-    { name = "mpi4py" },
     { name = "pillow" },
     { name = "protobuf" },
     { name = "rich" },
@@ -1644,7 +1632,6 @@ requires-dist = [
     { name = "blobfile", specifier = "==3.0.0" },
     { name = "deepspeed", specifier = "==0.16.7" },
     { name = "hydra-core", specifier = "==1.3.2" },
-    { name = "mpi4py", specifier = "==4.0.3" },
     { name = "pillow", specifier = "==11.2.1" },
     { name = "protobuf", specifier = "==6.30.2" },
     { name = "rich", specifier = "==14.0.0" },
