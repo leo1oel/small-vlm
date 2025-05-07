@@ -27,12 +27,14 @@ class LLMConfig:
     image_token: str = "<image>"
     use_start_end_tokens: bool = False
     use_image_patch_token: bool = False
-    image_start_token: str = "<image_start>"
-    image_end_token: str = "<image_end>"
-    image_patch_token: str = "<image_patch>"
+    image_start_token: str = "<im_start>"
+    image_end_token: str = "<im_end>"
+    image_patch_token: str = "<im_patch>"
     system_token: str | None = None
     user_token: str | None = None
     assistant_token: str = MISSING
+    ignore_index: int = -100
+    image_token_index: int = -200
     attn_implementation: str = "flash_attention_2"
 
 
@@ -40,7 +42,6 @@ class LLMConfig:
 class ConnectorConfig:
     name: str = MISSING
     type: str = MISSING
-    mask_format: str = "2d"
 
 
 @dataclass
@@ -55,12 +56,10 @@ class ModelConfig:
 class DatasetConfig:
     name: str = MISSING
     path: str = MISSING
-    type: str = MISSING
-    num_proc: int | None = 8
-    num_workers: int = 4
-    pin_memory: bool = True
-    persistent_workers: bool = True
-    use_length_grouping: bool = True
+    type: str = "json"
+    lazy_preprocess: bool = True
+    is_multimodal: bool = True
+    image_folder: str = MISSING
 
 
 @dataclass
@@ -83,57 +82,37 @@ class WeightDecayConfig:
     visual_encoder_weight_decay: float = 0.0
     language_model_weight_decay: float = 0.0
     connector_weight_decay: float = 0.0
-
-
-@dataclass
-class SchedulerConfig:
-    warmup_ratio: float = 0.0
-    warmup_start_factor: float = 0.0
-    min_lr_ratio: float = 0.0
-
-
-@dataclass
-class OptimizerConfig:
-    adam_beta1: float = 0.9
-    adam_beta2: float = 0.999
-    adam_epsilon: float = 1e-8
+    default_wd: float = 0.0
 
 
 @dataclass
 class TrainerConfig:
+    output_dir: str = "."
     unfreeze: UnfreezeConfig = field(default_factory=UnfreezeConfig)
     learning_rate: LearningRateConfig = field(default_factory=LearningRateConfig)
     weight_decay: WeightDecayConfig = field(default_factory=WeightDecayConfig)
-    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    batch_size: int = 16
-    ignore_index: int = -100
-    default_root_dir: str = "."
-    debug: bool = False
-    experiment_name: str = "vlm_training"
-    max_epochs: int = 30
-    monitor_metric: str = "val_loss"
-    monitor_mode: str = "min"
-    early_stopping: bool = False
-    patience: int = 5
-    log_every_n_steps: int = 50
-    val_check_interval: float = 0.5
-    gradient_clip_val: float = 1.0
-    accumulate_grad_batches: int = 1
-    precision: str | None = None
-    accelerator: str = "auto"
-    devices: int | str = "auto"
-    strategy: str = "auto"
-    resume_from_checkpoint: bool = True
-    checkpoint_path: str | None = None
-    wandb_project_name: str = "vlm-training"
-    log_model_to_wandb: bool = False
-    save_every_n_epochs: int | None = None
-    save_every_n_train_steps: int | None = None
-    num_training_samples: int | None = None
-    chat_template: str = "llava_plain"
-    has_val_dataloader: bool = False
-    load_optimizer_states: bool = True
+    per_device_train_batch_size: int = 16
+    per_device_eval_batch_size: int = 4
+    bf16: bool = False
+    fp16: bool = False
+    tf32: bool = False
+    deepspeed: str | None = None
+    num_train_epochs: int = 1
+    save_strategy: str = "steps"
+    save_steps: int = 5000
+    save_total_limit: int = 1
+    logging_steps: int = 1
+    warmup_ratio: float = 0.0
+    lr_scheduler_type: str = "linear"
+    gradient_accumulation_steps: int = 1
+    report_to: str | None = None
+    dataloader_num_workers: int = 0
+    version: str = "v0"
+    group_by_modality_length: bool = False
+    gradient_checkpointing: bool = False
+    run_name: str = "small-vlm"
+    resume_from_checkpoint: str | None = None
+    seed: int = 42
 
 
 @dataclass

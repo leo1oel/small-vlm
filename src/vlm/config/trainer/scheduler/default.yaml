@@ -1,3 +1,0 @@
-warmup_ratio: 0.03
-warmup_start_factor: 0.001
-min_lr_ratio: 0.0001

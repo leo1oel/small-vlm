@@ -1,19 +1,30 @@
 import logging
+import os
+import random
 from pathlib import Path
 
 import hydra
-from lightning.pytorch import seed_everything
+import numpy as np
+import torch
 from omegaconf import OmegaConf
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
-from .data import DataModule
-from .inference import inference
+from .data.data_arguments import get_data_args
 from .models import VLM
-from .train.trainer import train
+from .train.train import train
+from .train.training_arguments import get_training_args
 
 log: logging.Logger = logging.getLogger(name=__name__)
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"
-seed_everything(42, workers=True)
+
+
+def seed_everything(seed: int) -> None:
+    log.info(f"Global seed set to {seed}")
+    os.environ["PL_GLOBAL_SEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def print_model(cfg: ModelConfig) -> None:
@@ -47,67 +58,20 @@ def print_model(cfg: ModelConfig) -> None:
     )
 
 
-def load_model(
-    model_cfg: ModelConfig, trainer_cfg: TrainerConfig, lazy_loading: bool = False
-) -> VLM:
+def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig, device: torch.device) -> VLM:
     print_model(model_cfg)
-    model: VLM = VLM(model_cfg, trainer_cfg, lazy_loading)
+    model: VLM = VLM(model_cfg, trainer_cfg, device)
     return model
 
 
 def vlm(cfg: AppConfig) -> None:
+    seed_everything(cfg.trainer.seed)
     if cfg.mode.is_training:
         log.info("Training mode")
-        # Load model components needed for DataModule first
-        # Lazy loading might still be useful if model initialization is heavy
-        model: VLM = load_model(cfg.model, cfg.trainer, lazy_loading=True)
-
-        # Initialize DataModule
-        data_module = DataModule(
-            cfg.dataset,
-            cfg.trainer.num_training_samples,  # Pass initial value (can be None)
-            model,
-            cfg.trainer.batch_size,
-            cfg.trainer.chat_template,
-            # Make sure processed_data_dir is configured if needed, or uses default
-            # processed_data_dir=cfg.data.processed_dir # Example if you add it to config
-        )
-
-        data_module.prepare_data()
-        data_module.setup(stage="fit")
-
-        # Check if training data was loaded successfully during setup
-        if "train" not in data_module.num_samples or data_module.num_samples["train"] == 0:
-            log.error("Training data failed to load or is empty after setup.")
-            raise ValueError("Training data load failed or is empty.")
-
-        # Update num_training_samples if it was initially None
-        if cfg.trainer.num_training_samples is None:
-            if "train" in data_module.num_samples:
-                cfg.trainer.num_training_samples = data_module.num_samples["train"]
-                log.info(
-                    f"Updated cfg.trainer.num_training_samples to {cfg.trainer.num_training_samples}"
-                )
-            else:
-                # This case should ideally be caught by the check above, but added for safety
-                log.error("Cannot update num_training_samples because train split was not loaded.")
-                raise ValueError("Failed to determine number of training samples.")
-
-        # Log validation data status (optional, as Trainer will handle loading)
-        if "val" in data_module.num_samples:
-            log.info(
-                f"Validation data loaded successfully during setup: {data_module.num_samples['val']} samples"
-            )
-        else:
-            log.warning("Validation data not found or failed to load during setup.")
-
-        # initialize all components
-        model.initialize_components()
-        train(cfg.trainer, model, data_module)
-    else:
-        log.info("Inference mode")
-        model = load_model(cfg.model, cfg.trainer, lazy_loading=False)
-        inference(cfg.inference, model, cfg.dataset)
+        training_args = get_training_args(cfg.trainer)
+        model: VLM = load_model(cfg.model, cfg.trainer, training_args.device)
+        data_args = get_data_args(cfg.dataset, cfg.model, model.visual_encoder.preprocessor)
+        train(model, training_args, data_args)
 
 
 def validate_config(cfg: AppConfig) -> None:

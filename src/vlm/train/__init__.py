@@ -1,4 +1,3 @@
-__all__ = ["get_optimizer", "get_loss"]
+__all__ = ["configure_optimizers"]
 
-from .loss import get_loss
-from .optimizer import get_optimizer
+from .optimizer import configure_optimizers

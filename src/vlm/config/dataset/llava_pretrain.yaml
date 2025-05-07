@@ -1,0 +1,6 @@
+name: llava-pretrain
+path: /pasteur/u/yiming/.cache/huggingface/hub/datasets--liuhaotian--LLaVA-Pretrain/snapshots/70f9d1e5e1a697fe35830875cfc7de1dd590d727/blip_laion_cc_sbu_558k.json
+type: json
+lazy_preprocess: True
+is_multimodal: True
+image_folder: /pasteur/u/yiming/.cache/huggingface/hub/datasets--liuhaotian--LLaVA-Pretrain/snapshots/70f9d1e5e1a697fe35830875cfc7de1dd590d727/images

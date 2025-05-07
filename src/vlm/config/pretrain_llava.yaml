@@ -4,21 +4,9 @@ defaults:
   - model: llava-7b
   - trainer: pretrain
   - inference: default
-  - dataset: llava-pretrain-json
+  - dataset: llava_pretrain
   - override hydra/job_logging: rich
   - _self_
-
-trainer:
-  # num_training_samples: 2
-  # batch_size: 12
-  # checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-14/03-03-03/checkpoints/last.ckpt
-  # checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-15/22-08-52/checkpoints/last.ckpt
-  # load_optimizer_states: true
-  # save_every_n_train_steps: 500
-  # devices: 1
-  # strategy: auto
-  batch_size: 16
-  # accumulate_grad_batches: 4
 
 hydra:
   job:

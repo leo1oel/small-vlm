@@ -3,11 +3,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, cast, override
 
-import torch
 import torch.nn as nn
-from transformers.configuration_utils import PretrainedConfig
-from transformers.modeling_utils import PreTrainedModel
-from transformers.tokenization_utils import PreTrainedTokenizer
+from torch import FloatTensor, LongTensor, Tensor, device, dtype
+from transformers import PretrainedConfig, PreTrainedModel, PreTrainedTokenizer
 
 from ...config.config_schema import LLMConfig
 
@@ -19,9 +17,9 @@ class TokenConfig:
     """Special token configuration"""
 
     image_token: str = "<image>"
-    image_patch_token: str = "<image_patch>"
-    image_start_token: str = "<image_start>"
-    image_end_token: str = "<image_end>"
+    image_patch_token: str = "<im_patch>"
+    image_start_token: str = "<im_start>"
+    image_end_token: str = "<im_end>"
     system_token: str | None = None
     user_token: str | None = None
     assistant_token: str = "<|assistant|>"
@@ -39,12 +37,14 @@ class LanguageModelConfig:
 
 
 class LanguageModel(nn.Module, ABC):
-    def __init__(self, config: LLMConfig) -> None:
+    def __init__(self, config: LLMConfig, torch_dtype: dtype, torch_device: device) -> None:
         super().__init__()
         self.config: LLMConfig = config
         self.name: str = self.config.name
         self.hf_name: str = self.config.hf_name
         self.model_type: str = self.config.type
+        self.torch_dtype: dtype = torch_dtype
+        self.torch_device: device = torch_device
 
         # model config
         self.model_config: LanguageModelConfig = LanguageModelConfig(
@@ -56,37 +56,32 @@ class LanguageModel(nn.Module, ABC):
         # token config
         self.token_config: TokenConfig = TokenConfig(
             image_token=getattr(self.config, "image_token", "<image>"),
-            image_patch_token=getattr(self.config, "image_patch_token", "<image_patch>"),
-            image_start_token=getattr(self.config, "image_start_token", "<image_start>"),
-            image_end_token=getattr(self.config, "image_end_token", "<image_end>"),
+            image_patch_token=getattr(self.config, "image_patch_token", "<im_patch>"),
+            image_start_token=getattr(self.config, "image_start_token", "<im_start>"),
+            image_end_token=getattr(self.config, "image_end_token", "<im_end>"),
             system_token=getattr(self.config, "system_token", None),
             user_token=getattr(self.config, "user_token", None),
             assistant_token=getattr(self.config, "assistant_token", "<|assistant|>"),
         )
 
-        self._initialize_components()
+        self.initialize_components()
 
     # initialize all components
     def initialize_components(self) -> None:
-        self._language_model: PreTrainedModel = self._build_language_model()
-        self._embeddings: nn.Module = self._build_embedding_layer()
-        self.language_model.resize_token_embeddings(len(self.tokenizer))
-
-    # only initialize components needed for dataset processing
-    def _initialize_components(self) -> None:
-        self._tokenizer: PreTrainedTokenizer = self._build_tokenizer()
         self._hf_config: PretrainedConfig = self._build_hf_config()
-
-        self._add_special_tokens()
-
         self.verify_config()
+        self._tokenizer: PreTrainedTokenizer = self._build_tokenizer()
+        self._tokenizer.pad_token = self._tokenizer.unk_token
+        self._add_special_tokens()
+        self._language_model: PreTrainedModel = self._build_language_model()
+        self.language_model.resize_token_embeddings(len(self.tokenizer))
+        self._embeddings: nn.Module = self._build_embedding_layer()
 
     def _add_special_tokens(self) -> None:
         """Adds special tokens to the tokenizer if they don't exist."""
         # Create a mapping of tokens to their attribute names
 
         token_mapping = {
-            self.token_config.image_token: "image_token_id",
             self.token_config.system_token: "system_token_id",
             self.token_config.user_token: "user_token_id",
             self.token_config.assistant_token: "assistant_token_id",
@@ -184,15 +179,45 @@ class LanguageModel(nn.Module, ABC):
     def _build_hf_config(self) -> PretrainedConfig:
         pass
 
-    @abstractmethod
     @override
     def forward(
         self,
-        input_ids: torch.Tensor | None = None,
-        inputs_embeds: torch.Tensor | None = None,
-        attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        pass
+        input_ids: Tensor | None = None,
+        inputs_embeds: Tensor | None = None,
+        attention_mask: Tensor | None = None,
+        position_ids: LongTensor | None = None,
+        past_key_values: list[FloatTensor] | None = None,
+        labels: LongTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        images: FloatTensor | None = None,
+        image_sizes: list[list[int]] | None = None,
+        return_dict: bool | None = None,
+    ) -> Tensor:
+        return self.language_model(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            labels=labels,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+    # @abstractmethod
+    # @override
+    # def generate(
+    #     self,
+    #     inputs: Tensor | None = None,
+    #     images: FloatTensor | None = None,
+    #     image_sizes: list[list[int]] | None = None,
+    #     **kwargs,
+    # ) -> GenerateOutput | torch.LongTensor:
+    #     pass
 
     def verify_config(self) -> None:
         config_pairs = [
@@ -221,8 +246,7 @@ class LanguageModel(nn.Module, ABC):
         elif model_value is not None and config_value is not None:
             if model_value != config_value:
                 error_msg = f"{capitalized_key} mismatch: hf config: {model_value} != config: {config_value}"
-                log.error(error_msg)
-                raise ValueError(error_msg)
+                log.warning(error_msg)
             else:
                 log.info(
                     f"{capitalized_key} verified: hf config: {model_value} == config: {config_value}"
