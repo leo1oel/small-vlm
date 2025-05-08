@@ -1,18 +1,12 @@
 defaults:
   - cfg
   - mode: train
-  - model: small-vlm
+  - model: llava-7b
   - trainer: pretrain
   - inference: default
   - dataset: llava-pretrain
   - override hydra/job_logging: rich
   - _self_
-
-trainer:
-  num_training_samples: 1000
-  # checkpoint_path: /pasteur2/u/yuhuiz/yiming/small-vlm/outputs/2025-04-14/02-35-32/checkpoints/last.ckpt
-  # strategy: deepspeed_stage_3
-  # batch_size: 2
 
 hydra:
   job:

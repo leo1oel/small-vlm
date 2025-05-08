@@ -3,4 +3,3 @@ hf_name: microsoft/Phi-4-mini-instruct
 system_token: <|system|>
 user_token: <|user|>
 assistant_token: <|assistant|>
-attn_implementation: eager

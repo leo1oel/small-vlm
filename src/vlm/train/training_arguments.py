@@ -224,9 +224,9 @@ class TrainingArguments(transformers.TrainingArguments):
     # average_tokens_across_devices: bool | None = False
 
     # VLM specific
-    unfreeze_language_model: bool = False
-    unfreeze_connector: bool = False
-    unfreeze_visual_encoder: bool = False
+    train_language_model: bool = False
+    train_connector: bool = False
+    train_visual_encoder: bool = False
     language_model_lr: float | None = None
     connector_lr: float | None = None
     visual_encoder_lr: float | None = None
@@ -259,9 +259,9 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         per_device_train_batch_size=config.per_device_train_batch_size,
         per_device_eval_batch_size=config.per_device_eval_batch_size,
         gradient_accumulation_steps=config.gradient_accumulation_steps,
-        unfreeze_language_model=config.unfreeze.train_language_model,
-        unfreeze_connector=config.unfreeze.train_connector,
-        unfreeze_visual_encoder=config.unfreeze.train_visual_encoder,
+        train_language_model=config.unfreeze.train_language_model,
+        train_connector=config.unfreeze.train_connector,
+        train_visual_encoder=config.unfreeze.train_visual_encoder,
         language_model_lr=config.learning_rate.language_model_learning_rate,
         connector_lr=config.learning_rate.connector_learning_rate,
         visual_encoder_lr=config.learning_rate.visual_encoder_learning_rate,

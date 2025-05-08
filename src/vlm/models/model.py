@@ -1,5 +1,6 @@
 import ast
 import logging
+from collections.abc import Callable
 from typing import Any, override
 
 import torch
@@ -7,15 +8,19 @@ from omegaconf import OmegaConf
 from torch import FloatTensor, LongTensor, Tensor, device, dtype
 from transformers import (
     AutoConfig,
+    AutoModel,
+    GenerationConfig,
     GenerationMixin,
+    LogitsProcessorList,
+    PretrainedConfig,
     PreTrainedModel,
+    StoppingCriteriaList,
 )
 
 from ..config import (
     ConnectorConfig,
     LLMConfig,
     ModelConfig,
-    TrainerConfig,
     VisualEncoderConfig,
 )
 from .connectors import Connector, connector_map
@@ -24,11 +29,21 @@ from .visual_encoders import VisualEncoder
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
-PRECISION_MAP: dict[str, dtype] = {
-    "fp16": torch.float16,
-    "bf16": torch.bfloat16,
-    "default": torch.float32,
-}
+
+class VLMConfig(PretrainedConfig):
+    model_type: str = "vlm"
+
+    def __init__(
+        self,
+        model_config_dict: dict[str, Any] = None,
+        model_dtype: str = "float16",
+        hidden_size: int | None = None,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        self.model_config_dict: dict[str, Any] = model_config_dict
+        self.model_dtype: str = model_dtype
+        self.hidden_size: int | None = hidden_size
 
 
 def select_best_resolution(
@@ -94,29 +109,24 @@ def get_anyres_image_grid_shape(
 
 
 class VLM(PreTrainedModel, GenerationMixin):
+    config_class = VLMConfig  # pyright: ignore
+
     def __init__(
         self,
-        model_config: ModelConfig,
-        trainer_config: TrainerConfig,
-        torch_device: device,
+        config: VLMConfig,
+        torch_device: device = "cuda",
+        attn_implementation: str = "triton",
     ) -> None:
-        super().__init__(config=AutoConfig.from_pretrained(model_config.llm.hf_name))
+        super().__init__(config)
         # process config
-        self.model_config: ModelConfig = self._process_config(model_config)
-        self.trainer_config: TrainerConfig = self._process_config(trainer_config)
+        self.model_config: ModelConfig = self._process_config(config.model_config_dict)
 
-        if trainer_config.fp16:
-            self.torch_dtype: dtype = PRECISION_MAP["fp16"]
-        elif trainer_config.bf16:
-            self.torch_dtype = PRECISION_MAP["bf16"]
-        else:
-            self.torch_dtype = PRECISION_MAP["default"]
-
+        self.torch_dtype: dtype = getattr(torch, config.model_dtype)
         self.torch_device: torch.device = torch_device
+        self.attn_implementation: str = attn_implementation
 
         # initialize components
         self.initialize_components()
-        self.set_trainable_params(self.trainer_config.unfreeze)
 
     def _process_config(self, config: Any) -> Any:
         if isinstance(config, dict):
@@ -162,7 +172,9 @@ class VLM(PreTrainedModel, GenerationMixin):
         if llm_config.type == "hf_llm":
             from .language_models import HFLLMLanguageModel
 
-            return HFLLMLanguageModel(llm_config, self.torch_dtype, self.torch_device)
+            return HFLLMLanguageModel(
+                llm_config, self.torch_dtype, self.torch_device, self.attn_implementation
+            )
         else:
             error_msg = f"Unknown language model type: {llm_config.type}"
             log.error(error_msg)
@@ -221,50 +233,51 @@ class VLM(PreTrainedModel, GenerationMixin):
             return_dict=return_dict,
         )
 
-    # @override
-    # def generate(
-    #     self,
-    #     inputs: Tensor | None = None,
-    #     generation_config: GenerationConfig | None = None,
-    #     logits_processor: LogitsProcessorList | None = None,
-    #     stopping_criteria: StoppingCriteriaList | None = None,
-    #     prefix_allowed_tokens_fn: Callable | None = None,
-    #     synced_gpus: bool | None = None,
-    #     assistant_model: PreTrainedModel | None = None,
-    #     streamer: Streamer | None = None,
-    #     negative_prompt_ids: Tensor | None = None,
-    #     negative_prompt_attention_mask: Tensor | None = None,
-    #     use_model_defaults: bool | None = None,
-    #     images: FloatTensor | None = None,
-    #     image_sizes: list[list[int]] | None = None,
-    #     **kwargs,
-    # ) -> Any:
-    #     position_ids = kwargs.pop("position_ids", None)
-    #     attention_mask = kwargs.pop("attention_mask", None)
-    #     if "inputs_embeds" in kwargs:
-    #         raise NotImplementedError("`inputs_embeds` is not supported")
+    @override
+    def generate(
+        self,
+        inputs: Tensor | None = None,
+        generation_config: GenerationConfig | None = None,
+        logits_processor: LogitsProcessorList | None = None,
+        stopping_criteria: StoppingCriteriaList | None = None,
+        prefix_allowed_tokens_fn: Callable | None = None,
+        synced_gpus: bool | None = None,
+        assistant_model: PreTrainedModel | None = None,
+        streamer: Any | None = None,
+        negative_prompt_ids: Tensor | None = None,
+        negative_prompt_attention_mask: Tensor | None = None,
+        use_model_defaults: bool | None = None,
+        images: FloatTensor | None = None,
+        image_sizes: list[list[int]] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        position_ids = kwargs.pop("position_ids", None)
+        attention_mask = kwargs.pop("attention_mask", None)
+        if "inputs_embeds" in kwargs:
+            raise NotImplementedError("`inputs_embeds` is not supported")
 
-    #     if images is not None:
-    #         (inputs, position_ids, attention_mask, _, inputs_embeds, _) = (
-    #             self.prepare_inputs_labels_for_multimodal(
-    #                 inputs,
-    #                 position_ids,
-    #                 attention_mask,
-    #                 None,
-    #                 None,
-    #                 images,
-    #                 image_sizes=image_sizes,
-    #             )
-    #         )
-    #     else:
-    #         inputs_embeds = self.language_model.embeddings(inputs)
+        if images is not None:
+            (inputs, position_ids, attention_mask, _, inputs_embeds, _) = (
+                self.prepare_inputs_labels_for_multimodal(
+                    inputs,
+                    position_ids,
+                    attention_mask,
+                    None,
+                    None,
+                    images,
+                    image_sizes=image_sizes,
+                )
+            )
+        else:
+            inputs_embeds = self.language_model.embeddings(inputs)
 
-    #     return self.language_model.generate(
-    #         position_ids=position_ids,
-    #         attention_mask=attention_mask,
-    #         inputs_embeds=inputs_embeds,
-    #         **kwargs,
-    #     )
+        return self.language_model.generate(
+            generation_config=generation_config,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            inputs_embeds=inputs_embeds,
+            **kwargs,
+        )
 
     def freeze_visual_encoder(self, freeze: bool = True) -> None:
         for param in self.visual_encoder.visual_encoder.parameters():
@@ -289,23 +302,18 @@ class VLM(PreTrainedModel, GenerationMixin):
             param.requires_grad = not freeze
 
     def set_trainable_params(self, config: dict[str, bool]) -> None:
-        if "train_visual_encoder" in config:
-            self.freeze_visual_encoder(not config["train_visual_encoder"])
-
-        if "train_language_model" in config:
-            self.freeze_language_model(not config["train_language_model"])
-
-        if "train_connector" in config:
-            self.freeze_connector(not config["train_connector"])
-
+        self.freeze_visual_encoder(not config.train_visual_encoder)
+        self.freeze_language_model(not config.train_language_model)
+        self.freeze_connector(not config.train_connector)
         self._log_trainable_params()
 
     def _log_trainable_params(self) -> None:
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.parameters())
-        log.info(
-            f"Trainable parameters: {trainable_params:,} ({trainable_params / total_params:.2%} of total)"
-        )
+        if total_params > 0:
+            log.info(
+                f"Trainable parameters: {trainable_params:,} ({trainable_params / total_params:.2%} of total)"
+            )
         for module_name, module in [
             ("visual_encoder", self.visual_encoder),
             ("language_model", self.language_model),
@@ -566,3 +574,7 @@ class VLM(PreTrainedModel, GenerationMixin):
             position_ids = None
 
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels  # pyright: ignore
+
+
+AutoConfig.register("vlm", VLMConfig)
+AutoModel.register(VLMConfig, VLM)

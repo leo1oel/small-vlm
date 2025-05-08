@@ -5,7 +5,13 @@ from typing import Any, cast, override
 
 import torch.nn as nn
 from torch import FloatTensor, LongTensor, Tensor, device, dtype
-from transformers import PretrainedConfig, PreTrainedModel, PreTrainedTokenizer
+from transformers import (
+    GenerationConfig,
+    PretrainedConfig,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+)
+from transformers.utils import ModelOutput
 
 from ...config.config_schema import LLMConfig
 
@@ -37,7 +43,13 @@ class LanguageModelConfig:
 
 
 class LanguageModel(nn.Module, ABC):
-    def __init__(self, config: LLMConfig, torch_dtype: dtype, torch_device: device) -> None:
+    def __init__(
+        self,
+        config: LLMConfig,
+        torch_dtype: dtype,
+        torch_device: device,
+        attn_implementation: str = "triton",
+    ) -> None:
         super().__init__()
         self.config: LLMConfig = config
         self.name: str = self.config.name
@@ -45,6 +57,7 @@ class LanguageModel(nn.Module, ABC):
         self.model_type: str = self.config.type
         self.torch_dtype: dtype = torch_dtype
         self.torch_device: device = torch_device
+        self.attn_implementation: str = attn_implementation
 
         # model config
         self.model_config: LanguageModelConfig = LanguageModelConfig(
@@ -208,16 +221,16 @@ class LanguageModel(nn.Module, ABC):
             return_dict=return_dict,
         )
 
-    # @abstractmethod
-    # @override
-    # def generate(
-    #     self,
-    #     inputs: Tensor | None = None,
-    #     images: FloatTensor | None = None,
-    #     image_sizes: list[list[int]] | None = None,
-    #     **kwargs,
-    # ) -> GenerateOutput | torch.LongTensor:
-    #     pass
+    @abstractmethod
+    def generate(
+        self,
+        generation_config: GenerationConfig | None = None,
+        position_ids: LongTensor | None = None,
+        attention_mask: LongTensor | None = None,
+        inputs_embeds: FloatTensor | None = None,
+        **kwargs: Any,
+    ) -> ModelOutput | LongTensor:
+        pass
 
     def verify_config(self) -> None:
         config_pairs = [

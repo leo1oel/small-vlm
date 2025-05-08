@@ -35,7 +35,6 @@ class LLMConfig:
     assistant_token: str = MISSING
     ignore_index: int = -100
     image_token_index: int = -200
-    attn_implementation: str = "flash_attention_2"
 
 
 @dataclass
@@ -60,6 +59,7 @@ class DatasetConfig:
     lazy_preprocess: bool = True
     is_multimodal: bool = True
     image_folder: str = MISSING
+    image_aspect_ratio: str = "square"
 
 
 @dataclass
@@ -100,7 +100,7 @@ class TrainerConfig:
     num_train_epochs: int = 1
     save_strategy: str = "steps"
     save_steps: int = 5000
-    save_total_limit: int = 1
+    save_total_limit: int = 20
     logging_steps: int = 1
     warmup_ratio: float = 0.0
     lr_scheduler_type: str = "linear"
@@ -112,7 +112,9 @@ class TrainerConfig:
     gradient_checkpointing: bool = False
     run_name: str = "small-vlm"
     resume_from_checkpoint: str | None = None
+    from_pretrained: str | None = None
     seed: int = 42
+    attn_implementation: str | None = "flash_attention_2"
 
 
 @dataclass

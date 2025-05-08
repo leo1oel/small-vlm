@@ -36,10 +36,7 @@ class Connector(nn.Module, ABC):
 
         self.image_hidden_size: int = image_hidden_size
         self.text_hidden_size: int = text_hidden_size
-        self.projection_layer: nn.Module = self.build_projection_layer().to(
-            dtype=self.torch_dtype,
-            device=self.torch_device,
-        )
+        self.projection_layer: nn.Module = self.build_projection_layer().to(dtype=self.torch_dtype)
         self.initialize_layers()
 
     @abstractmethod

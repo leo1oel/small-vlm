@@ -82,7 +82,7 @@ class MLPConnector(Connector):
                 linear_layers.append(module)
 
         for layer in linear_layers:
-            nn.init.xavier_uniform_(layer.weight)
+            nn.init.normal_(layer.weight, mean=0.0, std=0.02)
             nn.init.zeros_(layer.bias)
 
     @override

@@ -22,6 +22,7 @@ class DataArguments:
     image_preprocessor: BaseImageProcessor | None = field(
         default=None, metadata={"help": "Image preprocessor for the visual encoder."}
     )
+    image_aspect_ratio: str = "square"
 
 
 def get_data_args(
@@ -41,4 +42,5 @@ def get_data_args(
         ignore_index=trainer_config.llm.ignore_index,
         image_token_index=trainer_config.llm.image_token_index,
         image_preprocessor=image_processor,
+        image_aspect_ratio=data_config.image_aspect_ratio,
     )

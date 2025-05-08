@@ -43,6 +43,12 @@ class HFVisualEncoder(VisualEncoder):
                 trust_remote_code=True,
             ),
         )
+        if visual_encoder.device == device("meta"):
+            visual_encoder.to_empty(device=self.torch_device)
+            visual_encoder.to(dtype=self.torch_dtype)
+            if getattr(visual_encoder, "vision_model", None):
+                visual_encoder = visual_encoder.vision_model  # pyright: ignore
+            return visual_encoder
         if getattr(visual_encoder, "vision_model", None):
             visual_encoder = visual_encoder.vision_model  # pyright: ignore
         visual_encoder.to(

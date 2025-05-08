@@ -1,0 +1,4 @@
+visual_encoder_learning_rate: 0.001
+language_model_learning_rate: 0.001
+connector_learning_rate: 0.001
+default_lr: 0.001

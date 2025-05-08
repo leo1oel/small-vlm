@@ -1,25 +1,21 @@
-experiment_name: vlm_training
-max_epochs: 1
-save_every_n_epochs: null
-save_every_n_train_steps: null
-log_every_n_steps: 4
-accumulate_grad_batches: 4
-# choose from [64, 32, 16, 'transformer-engine', 'transformer-engine-float16', '16-true', '16-mixed', 'bf16-true', 'bf16-mixed', '32-true', '64-true', '64', '32', '16', 'bf16']
-precision: bf16-mixed
-# precision: 32-true
-# devices can be int or str, but currently don't support list since OmegaConf doesn't support Union[list]
-strategy: deepspeed_stage_2
-devices: auto
-resume_from_checkpoint: true
-load_optimizer_states: false
-checkpoint_path: null
-batch_size: 8
-chat_template: "chat"
-num_training_samples: null
+deepspeed: /pasteur/u/yiming/small-vlm/src/vlm/config/deepspeed/zero3.json
+version: v1
+bf16: True
+tf32: False
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4
+warmup_ratio: 0.03
+lr_scheduler_type: cosine
+gradient_checkpointing: True
+dataloader_num_workers: 4
+report_to: wandb
+resume_from_checkpoint: null
+from_pretrained: /pasteur/u/yiming/small-vlm/outputs/2025-05-06/19-26-09
+group_by_modality_length: True
+save_steps: 500
+attn_implementation: eager
 
 defaults:
   - unfreeze: finetune
   - learning_rate: llava-finetune
   - weight_decay: default
-  - optimizer: adamw
-  - scheduler: default

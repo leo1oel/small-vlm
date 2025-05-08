@@ -13,5 +13,5 @@ resume_from_checkpoint: null
 
 defaults:
   - unfreeze: pretrain
-  - learning_rate: default
+  - learning_rate: llava-pretrain
   - weight_decay: default

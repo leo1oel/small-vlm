@@ -1,3 +1,3 @@
-__all__ = ["VLM"]
+__all__ = ["VLM", "VLMConfig"]
 
-from .model import VLM
+from .model import VLM, VLMConfig

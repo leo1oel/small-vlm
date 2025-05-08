@@ -1,5 +1,6 @@
 import copy
 import json
+import logging
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from transformers.image_processing_utils import BaseImageProcessor
 
 from ..utils import conversation as conversation_lib
 from .data_arguments import DataArguments
+
+log: logging.Logger = logging.getLogger(name=__name__)
 
 
 def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedTokenizer) -> dict:
@@ -285,8 +288,10 @@ def preprocess_v1(
             parts[0] += sep
 
             if has_image:
-                round_len = len(tokenizer_image_token(rou, tokenizer))
-                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
+                round_len = len(tokenizer_image_token(rou, tokenizer, data_args=data_args))
+                instruction_len = (
+                    len(tokenizer_image_token(parts[0], tokenizer, data_args=data_args)) - 2
+                )
             else:
                 round_len = len(tokenizer(rou).input_ids)
                 instruction_len = len(tokenizer(parts[0]).input_ids) - 2
@@ -534,8 +539,35 @@ class LazySupervisedDataset(Dataset):
             image_file = self.list_data_dict[i]["image"]
             image_folder = self.data_args.image_folder
             processor: BaseImageProcessor = self.data_args.image_preprocessor  # pyright: ignore
-            image = Image.open(os.path.join(image_folder, image_file)).convert("RGB")
-            image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
+            image_path = os.path.join(image_folder, image_file)
+            try:
+                image = Image.open(image_path).convert("RGB")
+            except Exception as e:
+                log.warning(
+                    f"Unexpected error processing image {image_path}: {e}. Using a placeholder."
+                )
+                crop_size = getattr(processor, "crop_size", {"height": 224, "width": 224})
+                image = torch.zeros(3, crop_size["height"], crop_size["width"])
+
+            if self.data_args.image_aspect_ratio == "pad":
+
+                def expand2square(pil_img: Image.Image, background_color: tuple[int, int, int]):
+                    width, height = pil_img.size
+                    if width == height:
+                        return pil_img
+                    elif width > height:
+                        result = Image.new(pil_img.mode, (width, width), background_color)
+                        result.paste(pil_img, (0, (width - height) // 2))
+                        return result
+                    else:
+                        result = Image.new(pil_img.mode, (height, height), background_color)
+                        result.paste(pil_img, ((height - width) // 2, 0))
+                        return result
+
+                image = expand2square(image, tuple(int(x * 255) for x in processor.image_mean))
+                image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
+            else:
+                image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
             sources = preprocess_multimodal(  # pyright: ignore
                 copy.deepcopy([e["conversations"] for e in sources]), self.data_args
             )
@@ -555,7 +587,7 @@ class LazySupervisedDataset(Dataset):
             data_dict["image"] = image  # pyright: ignore
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
-            crop_size = self.data_args.image_processor.crop_size
+            crop_size = self.data_args.image_preprocessor.crop_size  # pyright: ignore
             data_dict["image"] = torch.zeros(3, crop_size["height"], crop_size["width"])
         return data_dict
 

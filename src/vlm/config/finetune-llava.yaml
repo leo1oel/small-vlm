@@ -2,9 +2,9 @@ defaults:
   - cfg
   - mode: train
   - model: llava-7b
-  - trainer: pretrain
+  - trainer: finetune
   - inference: default
-  - dataset: llava_pretrain
+  - dataset: llava-finetune
   - override hydra/job_logging: rich
   - _self_
 

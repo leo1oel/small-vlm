@@ -7,10 +7,11 @@ import hydra
 import numpy as np
 import torch
 from omegaconf import OmegaConf
+from transformers import AutoConfig
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
 from .data.data_arguments import get_data_args
-from .models import VLM
+from .models import VLM, VLMConfig
 from .train.train import train
 from .train.training_arguments import get_training_args
 
@@ -59,9 +60,21 @@ def print_model(cfg: ModelConfig) -> None:
 
 
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig, device: torch.device) -> VLM:
-    print_model(model_cfg)
-    model: VLM = VLM(model_cfg, trainer_cfg, device)
-    return model
+    if trainer_cfg.from_pretrained:
+        log.info(f"Loading model from pretrained: {trainer_cfg.from_pretrained}")
+        model: VLM = VLM.from_pretrained(
+            trainer_cfg.from_pretrained, device, trainer_cfg.attn_implementation
+        )
+        return model
+    else:
+        print_model(model_cfg)
+        config: VLMConfig = VLMConfig(
+            OmegaConf.to_container(model_cfg, resolve=True),
+            "float16" if trainer_cfg.fp16 else ("bfloat16" if trainer_cfg.bf16 else "float32"),
+            AutoConfig.from_pretrained(model_cfg.llm.hf_name).hidden_size,
+        )
+        model = VLM(config, device, trainer_cfg.attn_implementation)
+        return model
 
 
 def vlm(cfg: AppConfig) -> None:
@@ -70,6 +83,7 @@ def vlm(cfg: AppConfig) -> None:
         log.info("Training mode")
         training_args = get_training_args(cfg.trainer)
         model: VLM = load_model(cfg.model, cfg.trainer, training_args.device)
+        model.set_trainable_params(cfg.trainer.unfreeze)
         data_args = get_data_args(cfg.dataset, cfg.model, model.visual_encoder.preprocessor)
         train(model, training_args, data_args)
 

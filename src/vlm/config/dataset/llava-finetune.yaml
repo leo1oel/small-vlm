@@ -1,0 +1,7 @@
+name: llava-finetune
+path: /pasteur/u/yiming/.cache/huggingface/hub/datasets--liuhaotian--LLaVA-Instruct-150K/snapshots/9d451dc7629cfe0469f6ae4432b765cd603d5fcb/llava_v1_5_mix665k.json
+type: json
+lazy_preprocess: True
+is_multimodal: True
+image_folder: /pasteur/u/yiming/.cache/llava
+image_aspect_ratio: pad
