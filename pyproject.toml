@@ -172,6 +172,7 @@ reportUnknownParameterType = false
 reportArgumentType = false
 reportCallIssue = false
 reportIndexIssue = false
+reportIncompatibleMethodOverride = false
 
 
 [tool.codespell]

@@ -63,7 +63,9 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig, device: torch
     if trainer_cfg.from_pretrained:
         log.info(f"Loading model from pretrained: {trainer_cfg.from_pretrained}")
         model: VLM = VLM.from_pretrained(
-            trainer_cfg.from_pretrained, device, trainer_cfg.attn_implementation
+            trainer_cfg.from_pretrained,
+            torch_device=device,
+            attn_implementation=trainer_cfg.attn_implementation,
         )
         return model
     else:

@@ -1,4 +1,3 @@
-import ast
 import logging
 from collections.abc import Callable
 from typing import Any, override
@@ -38,74 +37,16 @@ class VLMConfig(PretrainedConfig):
         model_config_dict: dict[str, Any] = None,
         model_dtype: str = "float16",
         hidden_size: int | None = None,
+        attn_implementation: str = "eager",
+        torch_device: device = "cuda",
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
         self.model_config_dict: dict[str, Any] = model_config_dict
         self.model_dtype: str = model_dtype
         self.hidden_size: int | None = hidden_size
-
-
-def select_best_resolution(
-    original_size: tuple[int, int], possible_resolutions: list[tuple[int, int]]
-) -> tuple[int, int]:
-    """
-    Selects the best resolution from a list of possible resolutions based on the original size.
-
-    Args:
-        original_size (tuple): The original size of the image in the format (width, height).
-        possible_resolutions (list): A list of possible resolutions in the format [(width1, height1), (width2, height2), ...].
-
-    Returns:
-        tuple: The best fit resolution in the format (width, height).
-    """
-    original_width, original_height = original_size
-    best_fit = None
-    max_effective_resolution = 0
-    min_wasted_resolution = float("inf")
-
-    for width, height in possible_resolutions:
-        scale = min(width / original_width, height / original_height)
-        downscaled_width, downscaled_height = (
-            int(original_width * scale),
-            int(original_height * scale),
-        )
-        effective_resolution = min(
-            downscaled_width * downscaled_height, original_width * original_height
-        )
-        wasted_resolution = (width * height) - effective_resolution
-
-        if effective_resolution > max_effective_resolution or (
-            effective_resolution == max_effective_resolution
-            and wasted_resolution < min_wasted_resolution
-        ):
-            max_effective_resolution = effective_resolution
-            min_wasted_resolution = wasted_resolution
-            best_fit = (width, height)
-
-    return best_fit  # pyright: ignore
-
-
-def get_anyres_image_grid_shape(
-    image_size: tuple[int, int], grid_pinpoints: list[tuple[int, int]], patch_size: int
-) -> tuple[int, int]:
-    """
-    Calculate the shape of the image patch grid after the preprocessing for images of any resolution.
-
-    Args:
-        image_size (tuple): The size of the input image in the format (width, height).
-        grid_pinpoints (str): A string representation of a list of possible resolutions.
-        patch_size (int): The size of each image patch.
-
-    Returns:
-        tuple: The shape of the image patch grid in the format (width, height).
-    """
-    if type(grid_pinpoints) is list:
-        possible_resolutions = grid_pinpoints
-    else:
-        possible_resolutions = ast.literal_eval(grid_pinpoints)
-    width, height = select_best_resolution(image_size, possible_resolutions)
-    return width // patch_size, height // patch_size
+        self.attn_implementation: str = attn_implementation
+        self.torch_device: device = torch_device
 
 
 class VLM(PreTrainedModel, GenerationMixin):
@@ -114,23 +55,20 @@ class VLM(PreTrainedModel, GenerationMixin):
     def __init__(
         self,
         config: VLMConfig,
-        torch_device: device = "cuda",
-        attn_implementation: str = "triton",
     ) -> None:
         super().__init__(config)
-        # process config
         self.model_config: ModelConfig = self._process_config(config.model_config_dict)
 
         self.torch_dtype: dtype = getattr(torch, config.model_dtype)
-        self.torch_device: torch.device = torch_device
-        self.attn_implementation: str = attn_implementation
+        self.torch_device: torch.device = config.torch_device
+        self.attn_implementation: str = config.attn_implementation
 
         # initialize components
         self.initialize_components()
 
     def _process_config(self, config: Any) -> Any:
         if isinstance(config, dict):
-            return OmegaConf.create(config)  # pyright: ignore
+            return OmegaConf.create(config)
         return config
 
     # initialize all components
@@ -269,10 +207,9 @@ class VLM(PreTrainedModel, GenerationMixin):
                 )
             )
         else:
-            inputs_embeds = self.language_model.embeddings(inputs)
+            inputs_embeds = self.language_model.get_embedding_layer()(inputs)
 
         return self.language_model.generate(
-            generation_config=generation_config,
             position_ids=position_ids,
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
@@ -291,10 +228,10 @@ class VLM(PreTrainedModel, GenerationMixin):
                 param.requires_grad = True
             else:
                 param.requires_grad = not freeze
-        for param in self.language_model.embeddings.parameters():
+        for param in self.language_model.get_embedding_layer().parameters():
             param.requires_grad = False
         if self.model_config.llm.use_start_end_tokens:
-            for param in self.language_model.embeddings.parameters():
+            for param in self.language_model.get_embedding_layer().parameters():
                 param.requires_grad = True
 
     def freeze_connector(self, freeze: bool = True) -> None:
@@ -429,7 +366,7 @@ class VLM(PreTrainedModel, GenerationMixin):
             num_images = (cur_input_ids == self.model_config.llm.image_token_index).sum()
             if num_images == 0:
                 cur_image_features = image_features[cur_image_idx]
-                cur_input_embeds_1 = self.language_model.embeddings(cur_input_ids)
+                cur_input_embeds_1 = self.language_model.get_embedding_layer()(cur_input_ids)
                 cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
                 new_input_embeds.append(cur_input_embeds)
                 new_labels.append(labels[batch_idx])  # pyright: ignore
@@ -452,7 +389,9 @@ class VLM(PreTrainedModel, GenerationMixin):
                     cur_labels[image_token_indices[i] + 1 : image_token_indices[i + 1]]
                 )
             split_sizes = [x.shape[0] for x in cur_labels_noim]
-            cur_input_embeds = self.language_model.embeddings(torch.cat(cur_input_ids_noim))
+            cur_input_embeds = self.language_model.get_embedding_layer()(
+                torch.cat(cur_input_ids_noim)
+            )
             cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
             cur_new_input_embeds = []
             cur_new_labels = []

@@ -6,7 +6,6 @@ from typing import Any, cast, override
 import torch.nn as nn
 from torch import FloatTensor, LongTensor, Tensor, device, dtype
 from transformers import (
-    GenerationConfig,
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizer,
@@ -48,7 +47,7 @@ class LanguageModel(nn.Module, ABC):
         config: LLMConfig,
         torch_dtype: dtype,
         torch_device: device,
-        attn_implementation: str = "triton",
+        attn_implementation: str = "eager",
     ) -> None:
         super().__init__()
         self.config: LLMConfig = config
@@ -88,7 +87,6 @@ class LanguageModel(nn.Module, ABC):
         self._add_special_tokens()
         self._language_model: PreTrainedModel = self._build_language_model()
         self.language_model.resize_token_embeddings(len(self.tokenizer))
-        self._embeddings: nn.Module = self._build_embedding_layer()
 
     def _add_special_tokens(self) -> None:
         """Adds special tokens to the tokenizer if they don't exist."""
@@ -165,10 +163,6 @@ class LanguageModel(nn.Module, ABC):
         self.model_config.max_seq_length = value
 
     @property
-    def embeddings(self) -> nn.Module:
-        return self._embeddings
-
-    @property
     def image_token_id(self) -> int:
         return cast(int, self.token_config.image_token_id)
 
@@ -177,7 +171,7 @@ class LanguageModel(nn.Module, ABC):
         return cast(int, self.tokenizer.pad_token_id)
 
     @abstractmethod
-    def _build_embedding_layer(self) -> nn.Module:
+    def get_embedding_layer(self) -> nn.Module:
         pass
 
     @abstractmethod
@@ -224,7 +218,6 @@ class LanguageModel(nn.Module, ABC):
     @abstractmethod
     def generate(
         self,
-        generation_config: GenerationConfig | None = None,
         position_ids: LongTensor | None = None,
         attention_mask: LongTensor | None = None,
         inputs_embeds: FloatTensor | None = None,

@@ -38,7 +38,7 @@ def train(model: VLM, training_args: TrainingArguments, data_args: DataArguments
         def make_inputs_require_grad(module: nn.Module, input: Any, output: Any) -> None:  # pyright: ignore
             output.requires_grad_(True)
 
-        model.language_model.embeddings.register_forward_hook(make_inputs_require_grad)
+        model.language_model.get_embedding_layer().register_forward_hook(make_inputs_require_grad)
 
     conversation_lib.default_conversation = conversation_lib.conv_templates[training_args.version]
 

@@ -7,7 +7,6 @@ from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
-    GenerationConfig,
     PretrainedConfig,
     PreTrainedModel,
     PreTrainedTokenizer,
@@ -27,7 +26,7 @@ class HFLLMLanguageModel(LanguageModel):
         super().__init__(config, torch_dtype, torch_device, attn_implementation)
 
     @override
-    def _build_embedding_layer(self) -> nn.Module:
+    def get_embedding_layer(self) -> nn.Module:
         return self.language_model.get_input_embeddings()
 
     @override
@@ -69,14 +68,12 @@ class HFLLMLanguageModel(LanguageModel):
     @override
     def generate(
         self,
-        generation_config: GenerationConfig | None = None,
         position_ids: LongTensor | None = None,
         attention_mask: LongTensor | None = None,
         inputs_embeds: FloatTensor | None = None,
         **kwargs: Any,
     ) -> ModelOutput | LongTensor:
         return self.language_model.generate(
-            generation_config=generation_config,
             position_ids=position_ids,
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
