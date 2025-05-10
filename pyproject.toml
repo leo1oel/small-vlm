@@ -173,6 +173,7 @@ reportArgumentType = false
 reportCallIssue = false
 reportIndexIssue = false
 reportIncompatibleMethodOverride = false
+reportUnsupportedDunderAll = false
 
 
 [tool.codespell]

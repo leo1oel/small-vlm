@@ -1,14 +1,3 @@
-__all__ = [
-    "AppConfig",
-    "ModelConfig",
-    "TrainerConfig",
-    "register_configs",
-    "DatasetConfig",
-    "ConnectorConfig",
-    "LLMConfig",
-    "VisualEncoderConfig",
-]
-
 from .config_schema import (
     AppConfig,
     ConnectorConfig,
@@ -19,3 +8,14 @@ from .config_schema import (
     VisualEncoderConfig,
     register_configs,
 )
+
+__all__ = [
+    "AppConfig",
+    "ModelConfig",
+    "TrainerConfig",
+    "register_configs",
+    "DatasetConfig",
+    "ConnectorConfig",
+    "LLMConfig",
+    "VisualEncoderConfig",
+]

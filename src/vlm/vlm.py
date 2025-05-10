@@ -10,10 +10,9 @@ from omegaconf import OmegaConf
 from transformers import AutoConfig
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
-from .data.data_arguments import get_data_args
+from .data import get_data_args
 from .models import VLM, VLMConfig
-from .train.train import train
-from .train.training_arguments import get_training_args
+from .train import get_training_args, train
 
 log: logging.Logger = logging.getLogger(name=__name__)
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"

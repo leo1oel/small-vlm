@@ -5,9 +5,8 @@ import torch
 import torch.nn as nn
 import transformers
 
-from ..data.data_arguments import DataArguments
-from ..data.dataset import make_supervised_data_module
-from ..models.model import VLM
+from ..data import DataArguments, make_supervised_data_module
+from ..models import VLM
 from ..utils import conversation as conversation_lib
 
 # from ..utils.rich_callback import ProgressCallback
