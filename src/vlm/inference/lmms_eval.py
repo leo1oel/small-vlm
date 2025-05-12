@@ -84,11 +84,11 @@
 #             small_vlm_model_args["attn_implementation"] = attn_implementation
 #         self._model = VLM.from_pretrained(pretrained, **small_vlm_model_args)
 #         self._tokenizer = self.model.language_model.tokenizer
-#         self._image_processor = self.model.image_processor
-#         self._max_length = self.model.model_config.llm.max_seq_length
+#         self._image_processor = self.model.visual_encoder.preprocessor
+#         self._max_length = self.model.model_config.language_model.max_seq_length
 #         self._config = self._model.config
-#         self.image_token_index: int = self.model.model_config.llm.image_token_index
-#         self.image_token = self.model.model_config.llm.image_token
+#         self.image_token_index: int = self.model.model_config.language_model.image_token_index
+#         self.image_token = self.model.model_config.language_model.image_token
 #         self.model.eval()
 #         if tie_weights:
 #             self.model.tie_weights()

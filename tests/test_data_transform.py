@@ -23,13 +23,13 @@
 #     mock_encoder.token_size = 5
 #     mock_encoder.preprocessor.return_value = {"pixel_values": torch.randn(1, 3, 224, 224)}  # pyright: ignore
 
-#     mock_llm = MagicMock()
+#     mock_language_model = MagicMock()
 
 #     with (
 #         patch("vlm.models.model.VLM._build_visual_encoder", return_value=mock_encoder),
 #         patch(
 #             "vlm.models.language_models.HFLLMLanguageModel._build_language_model",
-#             return_value=mock_llm,
+#             return_value=mock_language_model,
 #         ),
 #         patch("vlm.models.model.VLM._build_connector", return_value=MagicMock()),
 #     ):

@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 from transformers import BaseImageProcessor
 
-from ..config.config_schema import DatasetConfig, ModelConfig
+from ..config import DatasetConfig, ModelConfig
 
 
 @dataclass
@@ -33,14 +33,14 @@ def get_data_args(
         lazy_preprocess=data_config.lazy_preprocess,
         is_multimodal=data_config.is_multimodal,
         image_folder=data_config.image_folder,
-        use_start_end_tokens=trainer_config.llm.use_start_end_tokens,
-        use_image_patch_token=trainer_config.llm.use_image_patch_token,
-        image_token=trainer_config.llm.image_token,
-        image_start_token=trainer_config.llm.image_start_token,
-        image_end_token=trainer_config.llm.image_end_token,
-        image_patch_token=trainer_config.llm.image_patch_token,
-        ignore_index=trainer_config.llm.ignore_index,
-        image_token_index=trainer_config.llm.image_token_index,
+        use_start_end_tokens=trainer_config.language_model.use_start_end_tokens,
+        use_image_patch_token=trainer_config.language_model.use_image_patch_token,
+        image_token=trainer_config.language_model.image_token,
+        image_start_token=trainer_config.language_model.image_start_token,
+        image_end_token=trainer_config.language_model.image_end_token,
+        image_patch_token=trainer_config.language_model.image_patch_token,
+        ignore_index=trainer_config.language_model.ignore_index,
+        image_token_index=trainer_config.language_model.image_token_index,
         image_preprocessor=image_processor,
         image_aspect_ratio=data_config.image_aspect_ratio,
     )

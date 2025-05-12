@@ -17,12 +17,10 @@ class VisualEncoderConfig:
 
 
 @dataclass
-class LLMConfig:
+class LanguageModelConfig:
     name: str = MISSING
     hf_name: str = MISSING
-    type: str = "hf_llm"
-    hidden_size: int | None = None
-    vocab_size: int | None = None
+    type: str = "hf_language_model"
     max_seq_length: int | None = None
     image_token: str = "<image>"
     use_start_end_tokens: bool = False
@@ -35,6 +33,7 @@ class LLMConfig:
     assistant_token: str = MISSING
     ignore_index: int = -100
     image_token_index: int = -200
+    padding_side: str = "left"
 
 
 @dataclass
@@ -47,7 +46,7 @@ class ConnectorConfig:
 class ModelConfig:
     name: str = MISSING
     visual_encoder: VisualEncoderConfig = field(default_factory=VisualEncoderConfig)
-    llm: LLMConfig = field(default_factory=LLMConfig)
+    language_model: LanguageModelConfig = field(default_factory=LanguageModelConfig)
     connector: ConnectorConfig = field(default_factory=ConnectorConfig)
 
 
@@ -64,7 +63,7 @@ class DatasetConfig:
 
 @dataclass
 class UnfreezeConfig:
-    train_visual_encoder: bool = True
+    train_vision_model: bool = True
     train_language_model: bool = True
     train_connector: bool = True
 

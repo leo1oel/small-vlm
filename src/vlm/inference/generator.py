@@ -130,7 +130,7 @@ def tokenizer_image_token(
 
 #         self.model = self.model.cuda()
 #         self.tokenizer: PreTrainedTokenizer = self.model.language_model.tokenizer
-#         self.image_processor: BaseImageProcessor = self.model.image_processor
+#         self.image_processor: BaseImageProcessor = self.model..visual_encoder.preprocessor
 #         self.conv_mode: str = "llava_v1"
 #         kwargs_default = dict(
 #             do_sample=False,
@@ -196,7 +196,7 @@ def tokenizer_image_token(
 #         return text, images
 
 #     def chat_inner(self, message: list, _: Any = None):
-#         image_token_index: int = self.model.model_config.llm.image_token_index
+#         image_token_index: int = self.model.model_config.language_model.image_token_index
 
 #         prompt = self.system_prompt
 #         images = []
@@ -234,7 +234,7 @@ def tokenizer_image_token(
 
 #     @override
 #     def generate_inner(self, message: list, _: Any = None):
-#         image_token_index: int = self.model.model_config.llm.image_token_index
+#         image_token_index: int = self.model.model_config.language_model.image_token_index
 
 #         # Support interleave text and image
 #         content, images = self.concat_tilist(message)

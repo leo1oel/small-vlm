@@ -1,3 +1,4 @@
-__all__ = ["VLM", "VLMConfig"]
+__all__ = ["get_dynamic_vlm", "VLMProcessor"]
 
-from .model import VLM, VLMConfig
+from .modeling_vlm import get_dynamic_vlm
+from .processing_vlm import VLMProcessor

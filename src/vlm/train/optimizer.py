@@ -7,6 +7,7 @@ from transformers import PreTrainedModel
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 from transformers.trainer_pt_utils import get_parameter_names
 
+from .set_trainable import group_params_by_prefix
 from .training_arguments import TrainingArguments
 
 log = logging.getLogger(__name__)
@@ -17,34 +18,52 @@ def configure_optimizers(model: PreTrainedModel | nn.Module, trainer_config: Tra
     decay_parameters = get_parameter_names(model, ALL_LAYERNORM_LAYERS)
     decay_parameters = [name for name in decay_parameters if "bias" not in name]
 
+    grouped_params = group_params_by_prefix(model)
+
     param_groups: dict[str, dict[str, list[Parameter]]] = {}
 
-    visual_encoder_params = collect_param_groups(model.visual_encoder, decay_parameters)
-    param_groups["visual_encoder"] = visual_encoder_params
+    component_to_config = {
+        "language_model": "model",
+        "vision_model": "vision_model",
+        "connector": "connector",
+        "lm_head": "model",
+    }
 
-    language_model_params = collect_param_groups(model.language_model, decay_parameters)
-    param_groups["language_model"] = language_model_params
+    for component, params_list in grouped_params.items():
+        if not params_list:
+            continue
 
-    connector_params = collect_param_groups(model.connector, decay_parameters)
-    param_groups["connector"] = connector_params
+        config_name = component_to_config.get(component)
+        if not config_name:
+            continue
 
-    return build_optimizer_params(trainer_config, param_groups)
+        if config_name not in param_groups:
+            param_groups[config_name] = {"decay": [], "no_decay": []}
 
+        for name, param in params_list:
+            if not param.requires_grad:
+                continue
 
-def collect_param_groups(
-    module: PreTrainedModel | nn.Module, decay_parameters: list[str]
-) -> dict[str, list[Parameter]]:
-    decay_params = [
-        p for n, p in module.named_parameters() if p.requires_grad and n in decay_parameters
-    ]
+            if name in decay_parameters:
+                param_groups[config_name]["decay"].append(param)
+            else:
+                param_groups[config_name]["no_decay"].append(param)
 
-    no_decay_params = [
-        p for n, p in module.named_parameters() if p.requires_grad and n not in decay_parameters
-    ]
+    filtered_param_groups = {}
+    for group_name, group in param_groups.items():
+        has_params = len(group["decay"]) > 0 or len(group["no_decay"]) > 0
+        if has_params:
+            filtered_param_groups[group_name] = group
+            decay_count = sum(p.numel() for p in group["decay"])
+            no_decay_count = sum(p.numel() for p in group["no_decay"])
+            if decay_count or no_decay_count:
+                log.info(
+                    f"{group_name}: decay params: {decay_count:,}, no_decay params: {no_decay_count:,} (trainable)"
+                )
+        else:
+            log.info(f"{group_name}: No trainable parameters found for this group, skipping")
 
-    if decay_params or no_decay_params:
-        return {"decay": decay_params, "no_decay": no_decay_params}
-    return {"decay": [], "no_decay": []}
+    return build_optimizer_params(trainer_config, filtered_param_groups)
 
 
 def build_optimizer_params(
@@ -53,32 +72,37 @@ def build_optimizer_params(
 ) -> list[dict[str, Any]]:
     optimizer_params: list[dict[str, Any]] = []
 
-    optimizer_params.extend(
-        get_module_param_groups(
-            module_name="visual_encoder",
-            param_groups=param_groups,
-            weight_decay=trainer_config.visual_encoder_wd,
-            learning_rate=trainer_config.visual_encoder_lr,
-        )
-    )
+    component_configs = {
+        "vision_model": {
+            "weight_decay": trainer_config.visual_encoder_wd,
+            "learning_rate": trainer_config.visual_encoder_lr,
+        },
+        "model": {
+            "weight_decay": trainer_config.language_model_wd,
+            "learning_rate": trainer_config.language_model_lr,
+        },
+        "connector": {
+            "weight_decay": trainer_config.connector_wd,
+            "learning_rate": trainer_config.connector_lr,
+        },
+    }
 
-    optimizer_params.extend(
-        get_module_param_groups(
-            module_name="language_model",
-            param_groups=param_groups,
-            weight_decay=trainer_config.language_model_wd,
-            learning_rate=trainer_config.language_model_lr,
-        )
-    )
+    for module_name, config in component_configs.items():
+        if module_name in param_groups:
+            optimizer_params.extend(
+                get_module_param_groups(
+                    module_name=module_name,
+                    param_groups=param_groups,
+                    weight_decay=config["weight_decay"],
+                    learning_rate=config["learning_rate"],
+                )
+            )
 
-    optimizer_params.extend(
-        get_module_param_groups(
-            module_name="connector",
-            param_groups=param_groups,
-            weight_decay=trainer_config.connector_wd,
-            learning_rate=trainer_config.connector_lr,
+    if not optimizer_params:
+        log.warning(
+            "No parameter groups found for optimization. Check if any parameters are set to trainable."
         )
-    )
+
     return optimizer_params
 
 
@@ -89,15 +113,21 @@ def get_module_param_groups(
     learning_rate: float,
 ) -> list[dict[str, Any]]:
     log.info(f"{module_name} lr: {learning_rate}, weight_decay: {weight_decay}")
-    return [
-        {
+
+    groups = []
+
+    if param_groups[module_name]["decay"]:
+        groups.append({
             "params": param_groups[module_name]["decay"],
             "weight_decay": weight_decay,
             "lr": learning_rate,
-        },
-        {
+        })
+
+    if param_groups[module_name]["no_decay"]:
+        groups.append({
             "params": param_groups[module_name]["no_decay"],
             "weight_decay": 0.0,
             "lr": learning_rate,
-        },
-    ]
+        })
+
+    return groups

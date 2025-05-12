@@ -5,7 +5,7 @@
 A small vision-language model (VLM) implementation in PyTorch. The model consists of three main components:
 
 - **Visual Encoder**: Extracts visual features from images using vision transformers
-- **Language Model**: Processes text and generates responses using LLMs
+- **Language Model**: Processes text and generates responses using language_models
 - **Connector**: Connects visual and language features for multimodal understanding
 
 You can switch different visual encoders, language models and connectors by changing the config.
@@ -17,6 +17,8 @@ uv pip install flash-attn --no-build-isolation
 ```
 
 ---
+
+When using Vicuna-v1.5-7b, make sure to manually add "do_sample": true in the generation_config, or you cannot resume training from checkpoints.
 
 ## Project Docs
 

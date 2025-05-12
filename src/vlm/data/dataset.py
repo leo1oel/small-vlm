@@ -547,7 +547,7 @@ class LazySupervisedDataset(Dataset):
                     f"Unexpected error processing image {image_path}: {e}. Using a placeholder."
                 )
                 crop_size = getattr(processor, "crop_size", {"height": 224, "width": 224})
-                image = torch.zeros(3, crop_size["height"], crop_size["width"])
+                image = Image.new("RGB", (crop_size["width"], crop_size["height"]), (255, 255, 255))
 
             if self.data_args.image_aspect_ratio == "pad":
 

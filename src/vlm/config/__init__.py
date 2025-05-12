@@ -2,7 +2,7 @@ from .config_schema import (
     AppConfig,
     ConnectorConfig,
     DatasetConfig,
-    LLMConfig,
+    LanguageModelConfig,
     ModelConfig,
     TrainerConfig,
     VisualEncoderConfig,
@@ -16,6 +16,6 @@ __all__ = [
     "register_configs",
     "DatasetConfig",
     "ConnectorConfig",
-    "LLMConfig",
+    "LanguageModelConfig",
     "VisualEncoderConfig",
 ]

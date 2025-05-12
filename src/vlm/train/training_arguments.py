@@ -226,7 +226,7 @@ class TrainingArguments(transformers.TrainingArguments):
     # VLM specific
     train_language_model: bool = False
     train_connector: bool = False
-    train_visual_encoder: bool = False
+    train_vision_model: bool = False
     language_model_lr: float | None = None
     connector_lr: float | None = None
     visual_encoder_lr: float | None = None
@@ -261,7 +261,7 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         train_language_model=config.unfreeze.train_language_model,
         train_connector=config.unfreeze.train_connector,
-        train_visual_encoder=config.unfreeze.train_visual_encoder,
+        train_vision_model=config.unfreeze.train_vision_model,
         language_model_lr=config.learning_rate.language_model_learning_rate,
         connector_lr=config.learning_rate.connector_learning_rate,
         visual_encoder_lr=config.learning_rate.visual_encoder_learning_rate,

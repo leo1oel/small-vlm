@@ -304,7 +304,7 @@ conv_llava_llama_2 = Conversation(
 
 conv_mpt = Conversation(
     system="""<|im_start|>system
-A conversation between a user and an LLM-based AI assistant. The assistant gives helpful and honest answers.""",
+A conversation between a user and an LanguageModel-based AI assistant. The assistant gives helpful and honest answers.""",
     roles=("<|im_start|>user\n", "<|im_start|>assistant\n"),
     version="mpt",
     messages=(),

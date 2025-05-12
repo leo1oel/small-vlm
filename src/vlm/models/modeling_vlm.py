@@ -1,139 +1,130 @@
+import json
 import logging
-from collections.abc import Callable
+from pathlib import Path
 from typing import Any, override
 
 import torch
+import torch.nn as nn
 from omegaconf import OmegaConf
-from torch import FloatTensor, LongTensor, Tensor, device, dtype
+from torch import FloatTensor, LongTensor, Tensor
 from transformers import (
     AutoConfig,
-    AutoModel,
-    GenerationConfig,
-    GenerationMixin,
-    LogitsProcessorList,
-    PretrainedConfig,
-    PreTrainedModel,
-    StoppingCriteriaList,
+)
+from transformers.models.auto.modeling_auto import (
+    MODEL_FOR_CAUSAL_LM_MAPPING,
+    MODEL_MAPPING,
 )
 
 from ..config import (
     ConnectorConfig,
-    LLMConfig,
-    ModelConfig,
-    VisualEncoderConfig,
 )
+from .configuration_vlm import create_dynamic_vlm_config_class
 from .connectors import Connector, connector_map
-from .language_models import LanguageModel
-from .visual_encoders import VisualEncoder
+from .visual_encoders import HFVisualEncoder
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
 
-class VLMConfig(PretrainedConfig):
-    model_type: str = "vlm"
+def get_dynamic_vlm_class(
+    base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
+):
+    # Determine the base LLM's actual config class and model class
+    try:
+        base_language_model_actual_config = AutoConfig.from_pretrained(
+            base_language_model_name_or_path, trust_remote_code=True
+        )
+        base_language_model_config_class = base_language_model_actual_config.__class__
+    except Exception as _:
+        config_file = Path(base_language_model_name_or_path) / "config.json"
+        try:
+            data = json.loads(config_file.read_text())
+            base_language_model_name_or_path = data["hf_name"]
+            base_language_model_actual_config = AutoConfig.from_pretrained(
+                base_language_model_name_or_path, trust_remote_code=True
+            )
+            base_language_model_config_class = base_language_model_actual_config.__class__
+        except Exception as e:
+            raise e
 
-    def __init__(
-        self,
-        model_config_dict: dict[str, Any] = None,
-        model_dtype: str = "float16",
-        hidden_size: int | None = None,
-        attn_implementation: str = "eager",
-        torch_device: device = "cuda",
-        **kwargs: Any,
-    ):
-        super().__init__(**kwargs)
-        self.model_config_dict: dict[str, Any] = model_config_dict
-        self.model_dtype: str = model_dtype
-        self.hidden_size: int | None = hidden_size
-        self.attn_implementation: str = attn_implementation
-        self.torch_device: device = torch_device
+    if base_language_model_config_class not in MODEL_FOR_CAUSAL_LM_MAPPING:
+        raise ValueError(
+            f"Config class {base_language_model_config_class.__name__} for LLM {base_language_model_name_or_path} "
+            f"not in MODEL_FOR_CAUSAL_LM_MAPPING. Cannot determine parent CausalLM class."
+        )
+    ParentLLMClass = MODEL_MAPPING[base_language_model_config_class]
+    ParentCasualLLMClass = MODEL_FOR_CAUSAL_LM_MAPPING[base_language_model_config_class]
+    log.info(
+        f"Determined ParentLLMClass and ParentCasualLLMClass for VLM: {ParentLLMClass.__name__} and {ParentCasualLLMClass.__name__} (from {base_language_model_name_or_path})"
+    )
+    return ParentLLMClass, ParentCasualLLMClass, base_language_model_name_or_path
 
 
-class VLM(PreTrainedModel, GenerationMixin):
-    config_class = VLMConfig  # pyright: ignore
+def create_dynamic_vlm_class(
+    base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
+    config_class: Any,
+    ParentLLMClass: Any,
+):
+    @override
+    def __init__(self: Any, config):  # pyright: ignore
+        super(self.__class__, self).__init__(config)
+        if not config.lazy_load:
+            self.vision_model = HFVisualEncoder(self._process_config(config.vision_config))
+            self.connector = self._build_connector(config)
+        log.info(f"DynamicVLM class {self.__class__.__name__} initialized.")
 
-    def __init__(
-        self,
-        config: VLMConfig,
-    ) -> None:
-        super().__init__(config)
-        self.model_config: ModelConfig = self._process_config(config.model_config_dict)
+    def init_other_components(self: Any) -> None:
+        self.vision_model = HFVisualEncoder(self._process_config(self.config.vision_config))
+        self.connector = self._build_connector(self.config)
 
-        self.torch_dtype: dtype = getattr(torch, config.model_dtype)
-        self.torch_device: torch.device = config.torch_device
-        self.attn_implementation: str = config.attn_implementation
-
-        # initialize components
-        self.initialize_components()
-
-    def _process_config(self, config: Any) -> Any:
+    # Placeholder for _process_config (you need to implement this)
+    def _process_config(self: Any, config: Any) -> Any:
         if isinstance(config, dict):
-            return OmegaConf.create(config)
+            return OmegaConf.create(config.to_dict())
         return config
 
-    # initialize all components
-    def initialize_components(self) -> None:
-        self._visual_encoder: VisualEncoder = self._build_visual_encoder()
-        self._language_model: LanguageModel = self._build_language_model()
-        self._connector: Connector = self._build_connector()
-
-    @property
-    def visual_encoder(self) -> VisualEncoder:
-        return self._visual_encoder
-
-    @property
-    def language_model(self) -> LanguageModel:
-        return self._language_model
-
-    @property
-    def connector(self) -> Connector:
-        return self._connector
-
-    @property
-    @override
-    def supports_gradient_checkpointing(self):
-        return self.language_model.language_model.supports_gradient_checkpointing
-
-    def _build_visual_encoder(self) -> VisualEncoder:
-        encoder_config: VisualEncoderConfig = self.model_config.visual_encoder
-        if encoder_config.type == "hf_visual_encoder":
-            from .visual_encoders import HFVisualEncoder
-
-            return HFVisualEncoder(encoder_config, self.torch_dtype, self.torch_device)
-        else:
-            error_msg = f"Unknown visual encoder type: {encoder_config.type}"
-            log.error(error_msg)
-            raise ValueError(error_msg)
-
-    def _build_language_model(self) -> LanguageModel:
-        llm_config: LLMConfig = self.model_config.llm
-        if llm_config.type == "hf_llm":
-            from .language_models import HFLLMLanguageModel
-
-            return HFLLMLanguageModel(
-                llm_config, self.torch_dtype, self.torch_device, self.attn_implementation
-            )
-        else:
-            error_msg = f"Unknown language model type: {llm_config.type}"
-            log.error(error_msg)
-            raise ValueError(error_msg)
-
-    def _build_connector(self) -> Connector:
-        connector_config: ConnectorConfig = self.model_config.connector
+    # Placeholder for _build_connector (you need to implement this)
+    def _build_connector(self: Any, config: Any) -> Connector:
+        connector_config: ConnectorConfig = self._process_config(config.connector_config)
         connector_class = connector_map.get(connector_config.type)
         if not connector_class:
             raise ValueError(f"Unsupported connector type: {connector_config.type}")
         return connector_class(
             connector_config,
-            self.visual_encoder.hidden_size,
-            self.language_model.hidden_size,
-            self.torch_dtype,
-            self.torch_device,
+            self.vision_model.hidden_size,
+            config.hidden_size,
         )
+
+    DynamicVLMClass = type(
+        "VLM",
+        (ParentLLMClass,),  # Inherit from the specific LLM class
+        {
+            "config_class": config_class,
+            "__init__": __init__,
+            "init_other_components": init_other_components,
+            "_process_config": _process_config,
+            "_build_connector": _build_connector,
+        },
+    )
+    return DynamicVLMClass
+
+
+def create_dynamic_casual_vlm_class(
+    base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
+    pretrain_class: Any,
+    config_class: Any,
+    ParentCasualLLMClass: Any,
+):
+    @override
+    def __init__(self: Any, config):  # pyright: ignore
+        super(self.__class__, self).__init__(config)
+        self.model = pretrain_class(config)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.post_init()
+        log.info(f"DynamicCasualVLM class {self.__class__.__name__} initialized.")
 
     @override
     def forward(
-        self,
+        self: Any,
         input_ids: Tensor | None = None,
         inputs_embeds: Tensor | None = None,
         attention_mask: Tensor | None = None,
@@ -158,7 +149,7 @@ class VLM(PreTrainedModel, GenerationMixin):
                     images,
                 )
             )
-        return self.language_model(
+        return super(self.__class__, self).forward(
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -173,18 +164,8 @@ class VLM(PreTrainedModel, GenerationMixin):
 
     @override
     def generate(
-        self,
+        self: Any,
         inputs: Tensor | None = None,
-        generation_config: GenerationConfig | None = None,
-        logits_processor: LogitsProcessorList | None = None,
-        stopping_criteria: StoppingCriteriaList | None = None,
-        prefix_allowed_tokens_fn: Callable | None = None,
-        synced_gpus: bool | None = None,
-        assistant_model: PreTrainedModel | None = None,
-        streamer: Any | None = None,
-        negative_prompt_ids: Tensor | None = None,
-        negative_prompt_attention_mask: Tensor | None = None,
-        use_model_defaults: bool | None = None,
         images: FloatTensor | None = None,
         image_sizes: list[list[int]] | None = None,
         **kwargs: Any,
@@ -195,7 +176,7 @@ class VLM(PreTrainedModel, GenerationMixin):
             raise NotImplementedError("`inputs_embeds` is not supported")
 
         if images is not None:
-            (inputs, position_ids, attention_mask, _, inputs_embeds, _) = (
+            (_, position_ids, attention_mask, _, inputs_embeds, _) = (
                 self.prepare_inputs_labels_for_multimodal(
                     inputs,
                     position_ids,
@@ -203,70 +184,48 @@ class VLM(PreTrainedModel, GenerationMixin):
                     None,
                     None,
                     images,
-                    image_sizes=image_sizes,
                 )
             )
         else:
-            inputs_embeds = self.language_model.get_embedding_layer()(inputs)
+            inputs_embeds = self.get_input_embeddings()(inputs)
 
-        return self.language_model.generate(
-            position_ids=position_ids,
-            attention_mask=attention_mask,
+        return super(self.__class__, self).generate(
             inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
             **kwargs,
         )
 
-    def freeze_visual_encoder(self, freeze: bool = True) -> None:
-        for param in self.visual_encoder.visual_encoder.parameters():
-            param.requires_grad = not freeze
+    @override
+    def prepare_inputs_for_generation(
+        self: Any,
+        input_ids: Tensor,
+        past_key_values: list[FloatTensor] | None = None,
+        inputs_embeds: Tensor | None = None,
+        **kwargs: Any,
+    ):
+        images = kwargs.pop("images", None)
+        image_sizes = kwargs.pop("image_sizes", None)
+        inputs = super(self.__class__, self).prepare_inputs_for_generation(
+            input_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            **kwargs,
+        )
+        inputs.pop("cache_position")
+        if images is not None:
+            inputs["images"] = images
+        if image_sizes is not None:
+            inputs["image_sizes"] = image_sizes
+        return inputs
 
-    def freeze_language_model(self, freeze: bool = True, except_layer_norm: bool = False) -> None:
-        for name, param in self.language_model.language_model.named_parameters():
-            if except_layer_norm and (
-                "layernorm" in name.lower() or "layer_norm" in name.lower() or "ln_" in name.lower()
-            ):
-                param.requires_grad = True
-            else:
-                param.requires_grad = not freeze
-        for param in self.language_model.get_embedding_layer().parameters():
-            param.requires_grad = False
-        if self.model_config.llm.use_start_end_tokens:
-            for param in self.language_model.get_embedding_layer().parameters():
-                param.requires_grad = True
+    def encode_images(self: Any, images: Tensor) -> tuple[Tensor, ...]:
+        image_features = self.model.vision_model(images)
+        image_features = self.model.connector(image_features)
 
-    def freeze_connector(self, freeze: bool = True) -> None:
-        for param in self.connector.parameters():
-            param.requires_grad = not freeze
-
-    def set_trainable_params(self, config: dict[str, bool]) -> None:
-        self.freeze_visual_encoder(not config.train_visual_encoder)
-        self.freeze_language_model(not config.train_language_model)
-        self.freeze_connector(not config.train_connector)
-        self._log_trainable_params()
-
-    def _log_trainable_params(self) -> None:
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.parameters())
-        if total_params > 0:
-            log.info(
-                f"Trainable parameters: {trainable_params:,} ({trainable_params / total_params:.2%} of total)"
-            )
-        for module_name, module in [
-            ("visual_encoder", self.visual_encoder),
-            ("language_model", self.language_model),
-            ("connector", self.connector),
-        ]:
-            trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
-            total = sum(p.numel() for p in module.parameters())
-            if total > 0:
-                log.info(f"  - {module_name}: {trainable:,} ({trainable / total:.2%} of {total:,})")
-
-    def encode_images(self, images: Tensor) -> tuple[Tensor, ...]:
-        image_features = self.visual_encoder(images)
-        image_features = self.connector(image_features)
         return image_features
 
-    def unpad_image(self, tensor: Tensor, original_size: tuple[int, int]) -> Tensor:
+    def unpad_image(self: Any, tensor: Tensor, original_size: tuple[int, int]) -> Tensor:
         """
         Unpads a PyTorch tensor of a padded and resized image.
 
@@ -297,7 +256,7 @@ class VLM(PreTrainedModel, GenerationMixin):
         return unpadded_tensor
 
     def prepare_inputs_labels_for_multimodal(
-        self,
+        self: Any,
         input_ids: Tensor | None = None,
         position_ids: LongTensor | None = None,
         attention_mask: Tensor | None = None,
@@ -312,8 +271,8 @@ class VLM(PreTrainedModel, GenerationMixin):
         Tensor | None,
         LongTensor | None,
     ]:
-        visual_encoder = self.visual_encoder
-        if visual_encoder is None or images is None or input_ids.shape[1] == 1:  # pyright: ignore
+        vision_model = self.model.vision_model
+        if vision_model is None or images is None or input_ids.shape[1] == 1:  # pyright: ignore
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
 
         if isinstance(images, list) or images.ndim == 5:
@@ -346,7 +305,7 @@ class VLM(PreTrainedModel, GenerationMixin):
                 device=input_ids.device,  # pyright: ignore
             )
         if labels is None:
-            labels = torch.full_like(input_ids, self.model_config.llm.ignore_index)  # pyright: ignore
+            labels = torch.full_like(input_ids, self.config.ignore_index)  # pyright: ignore
 
         # remove the padding using attention_mask -- FIXME
         _input_ids = input_ids
@@ -363,10 +322,10 @@ class VLM(PreTrainedModel, GenerationMixin):
         new_labels = []
         cur_image_idx = 0
         for batch_idx, cur_input_ids in enumerate(input_ids):
-            num_images = (cur_input_ids == self.model_config.llm.image_token_index).sum()
+            num_images = (cur_input_ids == self.config.image_token_index).sum()
             if num_images == 0:
                 cur_image_features = image_features[cur_image_idx]
-                cur_input_embeds_1 = self.language_model.get_embedding_layer()(cur_input_ids)
+                cur_input_embeds_1 = self.get_input_embeddings()(cur_input_ids)
                 cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
                 new_input_embeds.append(cur_input_embeds)
                 new_labels.append(labels[batch_idx])  # pyright: ignore
@@ -375,7 +334,7 @@ class VLM(PreTrainedModel, GenerationMixin):
 
             image_token_indices = (
                 [-1]
-                + torch.where(cur_input_ids == self.model_config.llm.image_token_index)[0].tolist()
+                + torch.where(cur_input_ids == self.config.image_token_index)[0].tolist()
                 + [cur_input_ids.shape[0]]
             )
             cur_input_ids_noim = []
@@ -389,9 +348,7 @@ class VLM(PreTrainedModel, GenerationMixin):
                     cur_labels[image_token_indices[i] + 1 : image_token_indices[i + 1]]
                 )
             split_sizes = [x.shape[0] for x in cur_labels_noim]
-            cur_input_embeds = self.language_model.get_embedding_layer()(
-                torch.cat(cur_input_ids_noim)
-            )
+            cur_input_embeds = self.get_input_embeddings()(torch.cat(cur_input_ids_noim))
             cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
             cur_new_input_embeds = []
             cur_new_labels = []
@@ -406,7 +363,7 @@ class VLM(PreTrainedModel, GenerationMixin):
                     cur_new_labels.append(
                         torch.full(
                             (cur_image_features.shape[0],),
-                            self.model_config.llm.ignore_index,
+                            self.config.ignore_index,
                             device=cur_labels.device,
                             dtype=cur_labels.dtype,
                         )
@@ -421,7 +378,7 @@ class VLM(PreTrainedModel, GenerationMixin):
             new_labels.append(cur_new_labels)
 
         # Truncate sequences to max length as image embeddings can make the sequence longer
-        tokenizer_model_max_length = self.language_model.tokenizer.model_max_length
+        tokenizer_model_max_length = self.config.max_seq_length
         if tokenizer_model_max_length is not None:
             new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
             new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
@@ -433,7 +390,7 @@ class VLM(PreTrainedModel, GenerationMixin):
         new_input_embeds_padded = []
         new_labels_padded = torch.full(
             (batch_size, max_len),
-            self.model_config.llm.ignore_index,
+            self.config.ignore_index,
             dtype=new_labels[0].dtype,
             device=new_labels[0].device,
         )
@@ -450,7 +407,7 @@ class VLM(PreTrainedModel, GenerationMixin):
             zip(new_input_embeds, new_labels, strict=False)
         ):
             cur_len = cur_new_embed.shape[0]
-            if self.language_model.tokenizer.padding_side == "left":
+            if self.config.padding_side == "left":
                 new_input_embeds_padded.append(
                     torch.cat(
                         (
@@ -514,6 +471,36 @@ class VLM(PreTrainedModel, GenerationMixin):
 
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels  # pyright: ignore
 
+    DynamicCasualVLMClass = type(
+        "VLMForCausalLM",
+        (ParentCasualLLMClass,),  # Inherit from the specific LLM class
+        {
+            "config_class": config_class,
+            "__init__": __init__,
+            "forward": forward,
+            "generate": generate,
+            "prepare_inputs_for_generation": prepare_inputs_for_generation,
+            "encode_images": encode_images,
+            "unpad_image": unpad_image,
+            "prepare_inputs_labels_for_multimodal": prepare_inputs_labels_for_multimodal,
+        },
+    )
 
-AutoConfig.register("vlm", VLMConfig)
-AutoModel.register(VLMConfig, VLM)
+    return DynamicCasualVLMClass
+
+
+def get_dynamic_vlm(
+    base_language_model_name_or_path: str,
+):
+    ParentLLMClass, ParentCasualLLMClass, base_language_model_name_or_path = get_dynamic_vlm_class(
+        base_language_model_name_or_path
+    )
+    VLMConfig = create_dynamic_vlm_config_class(base_language_model_name_or_path)
+    VLM = create_dynamic_vlm_class(base_language_model_name_or_path, VLMConfig, ParentLLMClass)
+    VLMForCausalLM = create_dynamic_casual_vlm_class(
+        base_language_model_name_or_path,
+        VLM,
+        VLMConfig,
+        ParentCasualLLMClass,
+    )
+    return VLMForCausalLM, VLMConfig

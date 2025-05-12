@@ -1,3 +1,3 @@
-train_visual_encoder: false
+train_vision_model: false
 train_language_model: false
 train_connector: false

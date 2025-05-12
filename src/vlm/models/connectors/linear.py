@@ -1,7 +1,7 @@
-from typing import cast, override
+from typing import override
 
 import torch.nn as nn
-from torch import Tensor, device, dtype
+from torch import Tensor
 
 from ...config.config_schema import ConnectorConfig
 from .base import Connector
@@ -13,10 +13,8 @@ class LinearConnector(Connector):
         config: ConnectorConfig,
         image_hidden_size: int,
         text_hidden_size: int,
-        torch_dtype: dtype,
-        torch_device: device,
     ) -> None:
-        super().__init__(config, image_hidden_size, text_hidden_size, torch_dtype, torch_device)
+        super().__init__(config, image_hidden_size, text_hidden_size)
 
     @override
     def _build_projection_layer(self) -> nn.Module:
@@ -24,12 +22,6 @@ class LinearConnector(Connector):
             self.image_hidden_size,
             self.text_hidden_size,
         )
-
-    @override
-    def _initialize_layers(self) -> None:
-        linear_layer = cast(nn.Linear, self.projection_layer)
-        nn.init.normal_(linear_layer.weight, mean=0.0, std=0.02)
-        nn.init.zeros_(linear_layer.bias)
 
     @override
     def projection(self, visual_features: Tensor) -> Tensor:

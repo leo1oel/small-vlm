@@ -3,7 +3,7 @@ import re
 from typing import Any, override
 
 import torch.nn as nn
-from torch import Tensor, device, dtype
+from torch import Tensor
 
 from ...config.config_schema import ConnectorConfig
 from .base import Connector
@@ -26,17 +26,13 @@ class MLPConnector(Connector):
         config: ConnectorConfig,
         image_hidden_size: int,
         text_hidden_size: int,
-        torch_dtype: dtype,
-        torch_device: device,
     ) -> None:
         self.num_layers: int = 2
         self.activation_name: str = "gelu"
 
         self._parse_config_name(config.name)
 
-        super().__init__(config, image_hidden_size, text_hidden_size, torch_dtype, torch_device)
-
-        self._initialize_layers()
+        super().__init__(config, image_hidden_size, text_hidden_size)
 
     def _parse_config_name(self, name: str) -> None:
         pattern = r"mlp_(\d+)_(\w+)"
@@ -71,19 +67,6 @@ class MLPConnector(Connector):
                 layers.append(activation_class())
 
         return nn.Sequential(*layers)
-
-    @override
-    def _initialize_layers(self) -> None:
-        sequential = self.projection_layer
-
-        linear_layers: list[nn.Linear] = []
-        for module in sequential.modules():
-            if isinstance(module, nn.Linear):
-                linear_layers.append(module)
-
-        for layer in linear_layers:
-            nn.init.normal_(layer.weight, mean=0.0, std=0.02)
-            nn.init.zeros_(layer.bias)
 
     @override
     def projection(self, visual_features: Tensor) -> Tensor:
