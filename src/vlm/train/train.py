@@ -54,7 +54,7 @@ def train(model: Any, training_args: TrainingArguments, data_module: Any, proces
         log.info(f"Resuming from checkpoint: {training_args.resume_from_checkpoint}")
         trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     else:
-        log.info("Training from scratch")
+        log.info("Training without resuming from checkpoint")
         trainer.train()
 
     log.info("Saving state")

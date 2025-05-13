@@ -13,8 +13,7 @@ report_to: wandb
 from_pretrained: /pasteur/u/yiming/small-vlm/outputs/2025-05-12/06-25-38/checkpoint-2180
 attn_implementation: eager
 group_by_modality_length: True
-save_steps: 300
-output_dir: /pasteur/u/yiming/small-vlm/outputs/2025-05-13/checkpoint
+save_steps: 100
 
 defaults:
   - unfreeze: finetune
