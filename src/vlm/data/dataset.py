@@ -12,6 +12,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from transformers.image_processing_utils import BaseImageProcessor
 
+from ..models import VLMProcessor
 from ..utils import conversation as conversation_lib
 from .data_arguments import DataArguments
 
@@ -496,14 +497,13 @@ def preprocess(
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
-    def __init__(
-        self, data_path: str, tokenizer: transformers.PreTrainedTokenizer, data_args: DataArguments
-    ):
+    def __init__(self, data_path: str, processor: VLMProcessor, data_args: DataArguments):
         super().__init__()
         list_data_dict = json.load(open(data_path))
 
         # rank0_print("Formatting inputs...Skip in lazy mode")
-        self.tokenizer: transformers.PreTrainedTokenizer = tokenizer
+        self.tokenizer: transformers.PreTrainedTokenizer = processor.tokenizer
+        self.image_processor: BaseImageProcessor = processor.image_processor
         self.list_data_dict: list[Any] = list_data_dict
         self.data_args: DataArguments = data_args
 
@@ -538,7 +538,6 @@ class LazySupervisedDataset(Dataset):
         if "image" in sources[0]:
             image_file = self.list_data_dict[i]["image"]
             image_folder = self.data_args.image_folder
-            processor: BaseImageProcessor = self.data_args.image_preprocessor  # pyright: ignore
             image_path = os.path.join(image_folder, image_file)
             try:
                 image = Image.open(image_path).convert("RGB")
@@ -546,7 +545,9 @@ class LazySupervisedDataset(Dataset):
                 log.warning(
                     f"Unexpected error processing image {image_path}: {e}. Using a placeholder."
                 )
-                crop_size = getattr(processor, "crop_size", {"height": 224, "width": 224})
+                crop_size = getattr(
+                    self.image_processor, "crop_size", {"height": 224, "width": 224}
+                )
                 image = Image.new("RGB", (crop_size["width"], crop_size["height"]), (255, 255, 255))
 
             if self.data_args.image_aspect_ratio == "pad":
@@ -564,10 +565,16 @@ class LazySupervisedDataset(Dataset):
                         result.paste(pil_img, ((height - width) // 2, 0))
                         return result
 
-                image = expand2square(image, tuple(int(x * 255) for x in processor.image_mean))
-                image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
+                image = expand2square(
+                    image, tuple(int(x * 255) for x in self.image_processor.image_mean)
+                )
+                image = self.image_processor.preprocess(image, return_tensors="pt")["pixel_values"][
+                    0
+                ]
             else:
-                image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
+                image = self.image_processor.preprocess(image, return_tensors="pt")["pixel_values"][
+                    0
+                ]
             sources = preprocess_multimodal(  # pyright: ignore
                 copy.deepcopy([e["conversations"] for e in sources]), self.data_args
             )
@@ -587,7 +594,7 @@ class LazySupervisedDataset(Dataset):
             data_dict["image"] = image  # pyright: ignore
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
-            crop_size = self.data_args.image_preprocessor.crop_size  # pyright: ignore
+            crop_size = self.image_processor.crop_size  # pyright: ignore
             data_dict["image"] = torch.zeros(3, crop_size["height"], crop_size["width"])
         return data_dict
 
@@ -597,43 +604,65 @@ class DataCollatorForSupervisedDataset:
     """Collate examples for supervised fine-tuning."""
 
     tokenizer: transformers.PreTrainedTokenizer
-    data_args: DataArguments
+    ignore_index: int = -100
+
+    def pad_sequence(
+        self, input_ids: torch.Tensor | list[torch.Tensor], batch_first: bool, padding_value: int
+    ):
+        if self.tokenizer.padding_side == "left":
+            input_ids = [torch.flip(_input_ids, [0]) for _input_ids in input_ids]
+        input_ids = torch.nn.utils.rnn.pad_sequence(
+            input_ids, batch_first=batch_first, padding_value=padding_value
+        )
+        if self.tokenizer.padding_side == "left":
+            input_ids = torch.flip(input_ids, [1])
+        return input_ids
 
     def __call__(self, instances: Sequence[dict]) -> dict[str, torch.Tensor]:
         input_ids, labels = tuple(
             [instance[key] for instance in instances] for key in ("input_ids", "labels")
         )
-        input_ids = torch.nn.utils.rnn.pad_sequence(
+        input_ids = [_input_ids[: self.tokenizer.model_max_length] for _input_ids in input_ids]
+        labels = [_labels[: self.tokenizer.model_max_length] for _labels in labels]
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = 0  # This gets the best result. Don't know why.
+        input_ids = self.pad_sequence(
             input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
         )
-        labels = torch.nn.utils.rnn.pad_sequence(
-            labels, batch_first=True, padding_value=self.data_args.ignore_index
-        )
-        input_ids = input_ids[:, : self.tokenizer.model_max_length]
-        labels = labels[:, : self.tokenizer.model_max_length]
+        labels = self.pad_sequence(labels, batch_first=True, padding_value=self.ignore_index)
         batch = dict(
             input_ids=input_ids,
-            labels=labels,
+            labels=labels.long() if labels.dtype == torch.int32 else labels,
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
         )
 
         if "image" in instances[0]:
             images = [instance["image"] for instance in instances]
+
+            # batch["image_sizes"] = [im[1] for im_list in images for im in im_list]
+            # batch["modalities"] = [im[2] for im_list in images for im in im_list]
+            # images = [im[0] for im_list in images for im in im_list]
+
             if all(x is not None and x.shape == images[0].shape for x in images):
                 batch["images"] = torch.stack(images)
             else:
                 batch["images"] = images
 
+        # if "prompt" in instances[0]:
+        #     batch["prompts"] = [instance["prompt"] for instance in instances]
+
         return batch
 
 
 def make_supervised_data_module(
-    tokenizer: transformers.PreTrainedTokenizer,
+    processor: VLMProcessor,
     data_args: DataArguments,
 ) -> dict:
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = LazySupervisedDataset(
-        tokenizer=tokenizer, data_path=data_args.data_path, data_args=data_args
+        processor=processor, data_path=data_args.data_path, data_args=data_args
     )
-    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer, data_args=data_args)
+    data_collator = DataCollatorForSupervisedDataset(
+        tokenizer=processor.tokenizer, ignore_index=data_args.ignore_index
+    )
     return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)

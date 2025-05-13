@@ -32,7 +32,7 @@ def train(model: Any, training_args: TrainingArguments, data_module: Any, proces
     log.info("Using gradient checkpointing")
     if training_args.gradient_checkpointing:
 
-        def make_inputs_require_grad(module: nn.Module, input: Any, output: Any) -> None:  # pyright: ignore
+        def make_inputs_require_grad(module: nn.Module, input: Any, output: Any) -> None:
             output.requires_grad_(True)
 
         model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
@@ -59,7 +59,6 @@ def train(model: Any, training_args: TrainingArguments, data_module: Any, proces
 
     log.info("Saving state")
     trainer.save_state()
-    data_module.image_processor.save_pretrained(training_args.output_dir)
     model.config.use_cache = True
 
     log.info("Saving model")

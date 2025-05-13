@@ -1,7 +1,5 @@
 from dataclasses import dataclass, field
 
-from transformers import BaseImageProcessor
-
 from ..config import DatasetConfig, ModelConfig
 
 
@@ -19,15 +17,10 @@ class DataArguments:
     image_patch_token: str = "<im_patch>"
     ignore_index: int = -100
     image_token_index: int = -200
-    image_preprocessor: BaseImageProcessor | None = field(
-        default=None, metadata={"help": "Image preprocessor for the visual encoder."}
-    )
     image_aspect_ratio: str = "square"
 
 
-def get_data_args(
-    data_config: DatasetConfig, trainer_config: ModelConfig, image_processor: BaseImageProcessor
-) -> DataArguments:
+def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> DataArguments:
     return DataArguments(
         data_path=data_config.path,
         lazy_preprocess=data_config.lazy_preprocess,
@@ -41,6 +34,5 @@ def get_data_args(
         image_patch_token=trainer_config.language_model.image_patch_token,
         ignore_index=trainer_config.language_model.ignore_index,
         image_token_index=trainer_config.language_model.image_token_index,
-        image_preprocessor=image_processor,
         image_aspect_ratio=data_config.image_aspect_ratio,
     )

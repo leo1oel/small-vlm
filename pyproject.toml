@@ -69,7 +69,7 @@ dev = [
 
 [project.scripts]
 # Add script entry points here:
-small-vlm = "vlm:main"
+small-vlm = "vlm:main_cli"
 
 
 # ---- Build system ----

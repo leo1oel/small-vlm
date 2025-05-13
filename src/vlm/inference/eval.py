@@ -16,7 +16,7 @@ def eval_model(
     temperature: float = 0.0,
     top_p: float = 1.0,
     num_beams: int = 1,
-    max_new_tokens: int = 512,
+    max_new_tokens: int = 100,
     bf16: bool = True,
     fp16: bool = False,
     attn_implementation: str = "triton",
@@ -53,7 +53,7 @@ def eval_model(
         else:
             query = image_token + "\n" + query
 
-    conv_mode = "llava_v1"
+    conv_mode = "v1"
 
     conv = conv_templates[conv_mode].copy()
     conv.append_message(conv.roles[0], query)
@@ -72,15 +72,6 @@ def eval_model(
         .cuda()
     )
     with torch.inference_mode():
-        print("input_ids", input_ids)
-        print("images_tensor", images_tensor)
-        print("image_sizes", image_sizes)
-        forward_output = model(
-            input_ids=input_ids,
-            attention_mask=input_ids.ne(tokenizer.pad_token_id),
-            images=images_tensor,
-        )
-        print("forward_output", forward_output)
         output_ids = model.generate(
             input_ids,
             images=images_tensor,
@@ -92,7 +83,6 @@ def eval_model(
             max_new_tokens=max_new_tokens,
             use_cache=True,
         )
-        print("output_ids", output_ids)
 
     outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
     print(outputs)

@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import sys
 from pathlib import Path
 
 import hydra
@@ -174,11 +175,9 @@ def vlm(cfg: AppConfig) -> None:
         training_args = get_training_args(cfg.trainer)
         model, processor = load_model(cfg.model, cfg.trainer)
         model.to(training_args.device)
-        data_args = get_data_args(cfg.dataset, cfg.model, processor.image_processor)
+        data_args = get_data_args(cfg.dataset, cfg.model)
         log.info("Creating data module")
-        data_module = make_supervised_data_module(
-            tokenizer=processor.tokenizer, data_args=data_args
-        )
+        data_module = make_supervised_data_module(processor=processor, data_args=data_args)
         train(model, training_args, data_module, processor)
 
 
@@ -194,5 +193,16 @@ def main(cfg: AppConfig) -> None:
 
 register_configs()
 
-if __name__ == "__main__":
+
+def main_cli():
+    i = 0
+    while i < len(sys.argv):
+        if sys.argv[i].startswith("--local_rank="):
+            sys.argv.pop(i)
+        else:
+            i += 1
     main()
+
+
+if __name__ == "__main__":
+    main_cli()
