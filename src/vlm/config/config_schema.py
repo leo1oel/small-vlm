@@ -8,10 +8,6 @@ from omegaconf import MISSING  # pyright: ignore
 class VisualEncoderConfig:
     name: str = MISSING
     hf_name: str = MISSING
-    type: str = "hf_visual_encoder"
-    hidden_size: int | None = None
-    img_size: int | None = None
-    patch_size: int | None = None
     output_layer: int | None = None
     use_cls_token: bool = False
 

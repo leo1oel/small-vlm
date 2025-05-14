@@ -64,11 +64,4 @@ def create_dynamic_vlm_config_class(
             # Initialize the base language model configuration part
             super().__init__(**kwargs)
 
-    base_model_type_str = getattr(
-        BaseLMConfigClass, "model_type", BaseLMConfigClass.__name__.replace("Config", "")
-    )
-    dynamic_class_name = f"VLMWith{base_model_type_str.capitalize()}BaseConfig"
-    DynamicVLMConfig.__name__ = dynamic_class_name
-    DynamicVLMConfig.__qualname__ = dynamic_class_name  # For better representation
-
     return DynamicVLMConfig

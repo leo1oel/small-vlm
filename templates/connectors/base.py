@@ -1,24 +1,19 @@
-import logging
 from abc import ABC, abstractmethod
-from typing import override
+from typing import Any, override
 
 import torch.nn as nn
 from torch import Tensor
-
-from ...config.config_schema import ConnectorConfig
-
-log: logging.Logger = logging.getLogger(name=__name__)
 
 
 class Connector(nn.Module, ABC):
     def __init__(
         self,
-        config: ConnectorConfig,
+        config: Any,
         image_hidden_size: int,
         text_hidden_size: int,
     ) -> None:
         super().__init__()
-        self.config: ConnectorConfig = config
+        self.config: Any = config
         self.name: str = self.config.name
 
         self.image_hidden_size: int = image_hidden_size

@@ -1,122 +1,42 @@
-import json
-import logging
-from pathlib import Path
 from typing import Any, override
 
 import torch
 import torch.nn as nn
 from torch import FloatTensor, LongTensor, Tensor
-from transformers import AutoConfig, AutoModel, PreTrainedModel
-from transformers.models.auto.modeling_auto import (
-    MODEL_FOR_CAUSAL_LM_MAPPING,
-    MODEL_MAPPING,
-)
+from transformers import AutoModel, {{ casual_parent_class }}, {{ parent_class }}
 
-from .configuration_vlm import create_dynamic_vlm_config_class
+from .configuration_vlm import VLMConfig
 from .connectors import Connector, connector_map
-
-log: logging.Logger = logging.getLogger(name=__name__)
-
-
-def get_dynamic_vlm_class(
-    base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
-):
-    # Determine the base LLM's actual config class and model class
-    try:
-        base_language_model_actual_config = AutoConfig.from_pretrained(
-            base_language_model_name_or_path, trust_remote_code=True
-        )
-        base_language_model_config_class = base_language_model_actual_config.__class__
-    except Exception as _:
-        config_file = Path(base_language_model_name_or_path) / "config.json"
-        try:
-            data = json.loads(config_file.read_text())
-            base_language_model_name_or_path = data["hf_name"]
-            base_language_model_actual_config = AutoConfig.from_pretrained(
-                base_language_model_name_or_path, trust_remote_code=True
-            )
-            base_language_model_config_class = base_language_model_actual_config.__class__
-        except Exception as e:
-            raise e
-
-    if base_language_model_config_class not in MODEL_FOR_CAUSAL_LM_MAPPING:
-        raise ValueError(
-            f"Config class {base_language_model_config_class.__name__} for LLM {base_language_model_name_or_path} "
-            f"not in MODEL_FOR_CAUSAL_LM_MAPPING. Cannot determine parent CausalLM class."
-        )
-    ParentLLMClass = MODEL_MAPPING[base_language_model_config_class]
-    ParentCasualLLMClass = MODEL_FOR_CAUSAL_LM_MAPPING[base_language_model_config_class]
-    log.info(
-        f"Determined ParentLLMClass and ParentCasualLLMClass for VLM: {ParentLLMClass.__name__} and {ParentCasualLLMClass.__name__} (from {base_language_model_name_or_path})"
-    )
-    return ParentLLMClass, ParentCasualLLMClass, base_language_model_name_or_path
+from .visual_encoders import HFVisualEncoder
 
 
-def create_dynamic_vlm_class(
-    base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
-    config_class: Any,
-    ParentLLMClass: Any,
-):
+class VLM({{ parent_class }}):
+    config_class = VLMConfig
     @override
-    def __init__(self: Any, config):  # pyright: ignore
-        super(self.__class__, self).__init__(config)
-        if not config.lazy_load:
-            self.vision_model = self._build_connector(self.config)
-            self.connector = self._build_connector(config)
-        log.info(f"DynamicVLM class {self.__class__.__name__} initialized.")
+    def __init__(self, config):
+        super().__init__(config)
+        self.vision_model = HFVisualEncoder(config.vision_config)
+        self.connector = self._build_connector(config)
 
-    def init_other_components(self: Any) -> None:
-        self.vision_model = self._build_connector(self.config)
-        self.connector = self._build_connector(self.config)
-
-    def _build_vision_model(self: Any, config: Any) -> PreTrainedModel:
-        vision_config = config.vision_config
-        visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
-            vision_config.hf_name,
-            trust_remote_code=True,
-        )
-        if getattr(visual_encoder, "vision_model", None):
-            visual_encoder = visual_encoder.vision_model  # pyright: ignore
-        return visual_encoder
-
-    def _build_connector(self: Any, config: Any) -> Connector:
-        connector_config = config.connector_config
-        connector_class = connector_map.get(connector_config.type)
+    def _build_connector(self, config) -> Connector:
+        connector_class = connector_map.get(config.type)
         if not connector_class:
-            raise ValueError(f"Unsupported connector type: {connector_config.type}")
+            raise ValueError(f"Unsupported connector type: {config.type}")
         return connector_class(
-            connector_config,
-            self.config.vision_config.hidden_size,
+            config,
+            self.vision_model.hidden_size,
             config.hidden_size,
         )
 
-    DynamicVLMClass = type(
-        "VLM",
-        (ParentLLMClass,),  # Inherit from the specific LLM class
-        {
-            "config_class": config_class,
-            "__init__": __init__,
-            "init_other_components": init_other_components,
-            "_build_connector": _build_connector,
-            "_build_vision_model": _build_vision_model,
-        },
-    )
-    return DynamicVLMClass
 
-
-def create_dynamic_casual_vlm_class(
-    base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
-    pretrain_class: Any,
-    config_class: Any,
-    ParentCasualLLMClass: Any,
-):
+class VLMForCausalLM({{ casual_parent_class }}):
+    config_class = VLMConfig
     @override
-    def __init__(self: Any, config):  # pyright: ignore
-        super(self.__class__, self).__init__(config)
-        self.model = pretrain_class(config)
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = VLM(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.post_init()
-        log.info(f"DynamicCasualVLM class {self.__class__.__name__} initialized.")
 
     @override
     def forward(
@@ -145,7 +65,7 @@ def create_dynamic_casual_vlm_class(
                     images,
                 )
             )
-        return super(self.__class__, self).forward(
+        return super().forward(
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -185,7 +105,7 @@ def create_dynamic_casual_vlm_class(
         else:
             inputs_embeds = self.get_input_embeddings()(inputs)
 
-        return super(self.__class__, self).generate(
+        return super().generate(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -215,31 +135,8 @@ def create_dynamic_casual_vlm_class(
             inputs["image_sizes"] = image_sizes
         return inputs
 
-    def encode_images(self: Any, images: list[Tensor] | Tensor) -> list[Tensor] | Tensor:
-        if type(images) is list:
-            image_features: list[Tensor] | Tensor = []
-            for image in images:
-                outputs = self.vision_model(
-                    image.unsqueeze(0),
-                    output_hidden_states=True,
-                )
-                hidden_states: Tensor = outputs.hidden_states[self.output_layer].to(image.dtype)
-                if not self.config.vision_config.use_cls_token:
-                    image_features.append(hidden_states[:, 1:])
-                else:
-                    image_features.append(hidden_states)
-        else:
-            outputs = self.vision_model(
-                images,
-                output_hidden_states=True,
-            )
-            hidden_states = outputs.hidden_states[self.config.vision_config.output_layer].to(
-                images.dtype
-            )
-            if not self.config.vision_config.use_cls_token:
-                image_features = hidden_states[:, 1:]
-            else:
-                image_features = hidden_states
+    def encode_images(self: Any, images: Tensor) -> tuple[Tensor, ...]:
+        image_features = self.model.vision_model(images)
         image_features = self.model.connector(image_features)
 
         return image_features
@@ -291,17 +188,17 @@ def create_dynamic_casual_vlm_class(
         LongTensor | None,
     ]:
         vision_model = self.model.vision_model
-        if vision_model is None or images is None or input_ids.shape[1] == 1:  # pyright: ignore
+        if vision_model is None or images is None or input_ids.shape[1] == 1:
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
 
         if isinstance(images, list) or images.ndim == 5:
             if isinstance(images, list):
-                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]  # pyright: ignore
-            concat_images = torch.cat([image for image in images], dim=0)  # pyright: ignore
+                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
+            concat_images = torch.cat([image for image in images], dim=0)
             image_features = self.encode_images(concat_images)
-            split_sizes = [image.shape[0] for image in images]  # pyright: ignore
-            image_features: tuple[Tensor, ...] = torch.split(image_features, split_sizes, dim=0)  # pyright: ignore
-            image_features = [x.flatten(0, 1) for x in image_features]  # pyright: ignore
+            split_sizes = [image.shape[0] for image in images]
+            image_features: tuple[Tensor, ...] = torch.split(image_features, split_sizes, dim=0)
+            image_features = [x.flatten(0, 1) for x in image_features]
         else:
             image_features = self.encode_images(images)
 
@@ -319,23 +216,23 @@ def create_dynamic_casual_vlm_class(
         if position_ids is None:
             position_ids = torch.arange(
                 0,
-                input_ids.shape[1],  # pyright: ignore
+                input_ids.shape[1],
                 dtype=torch.long,
-                device=input_ids.device,  # pyright: ignore
+                device=input_ids.device,
             )
         if labels is None:
-            labels = torch.full_like(input_ids, self.config.ignore_index)  # pyright: ignore
+            labels = torch.full_like(input_ids, self.config.ignore_index)
 
         # remove the padding using attention_mask -- FIXME
         _input_ids = input_ids
         input_ids = [
             cur_input_ids[cur_attention_mask]
             for cur_input_ids, cur_attention_mask in zip(input_ids, attention_mask, strict=False)
-        ]  # pyright: ignore
+        ]
         labels = [
             cur_labels[cur_attention_mask]
             for cur_labels, cur_attention_mask in zip(labels, attention_mask, strict=False)
-        ]  # pyright: ignore
+        ]
 
         new_input_embeds = []
         new_labels = []
@@ -347,7 +244,7 @@ def create_dynamic_casual_vlm_class(
                 cur_input_embeds_1 = self.get_input_embeddings()(cur_input_ids)
                 cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
                 new_input_embeds.append(cur_input_embeds)
-                new_labels.append(labels[batch_idx])  # pyright: ignore
+                new_labels.append(labels[batch_idx])
                 cur_image_idx += 1
                 continue
 
@@ -357,7 +254,7 @@ def create_dynamic_casual_vlm_class(
                 + [cur_input_ids.shape[0]]
             )
             cur_input_ids_noim = []
-            cur_labels = labels[batch_idx]  # pyright: ignore
+            cur_labels = labels[batch_idx]
             cur_labels_noim = []
             for i in range(len(image_token_indices) - 1):
                 cur_input_ids_noim.append(
@@ -418,9 +315,9 @@ def create_dynamic_casual_vlm_class(
         )
         position_ids = torch.zeros(
             (batch_size, max_len),
-            dtype=position_ids.dtype,  # pyright: ignore
-            device=position_ids.device,  # pyright: ignore
-        )  # pyright: ignore
+            dtype=position_ids.dtype,
+            device=position_ids.device,
+        )
 
         for i, (cur_new_embed, cur_new_labels) in enumerate(
             zip(new_input_embeds, new_labels, strict=False)
@@ -443,11 +340,11 @@ def create_dynamic_casual_vlm_class(
                 if cur_len > 0:
                     new_labels_padded[i, -cur_len:] = cur_new_labels
                     attention_mask[i, -cur_len:] = True
-                    position_ids[i, -cur_len:] = torch.arange(  # pyright: ignore
+                    position_ids[i, -cur_len:] = torch.arange(
                         0,
                         cur_len,
-                        dtype=position_ids.dtype,  # pyright: ignore
-                        device=position_ids.device,  # pyright: ignore
+                        dtype=position_ids.dtype,
+                        device=position_ids.device,
                     )
             else:
                 new_input_embeds_padded.append(
@@ -466,11 +363,11 @@ def create_dynamic_casual_vlm_class(
                 if cur_len > 0:
                     new_labels_padded[i, :cur_len] = cur_new_labels
                     attention_mask[i, :cur_len] = True
-                    position_ids[i, :cur_len] = torch.arange(  # pyright: ignore
+                    position_ids[i, :cur_len] = torch.arange(
                         0,
                         cur_len,
-                        dtype=position_ids.dtype,  # pyright: ignore
-                        device=position_ids.device,  # pyright: ignore
+                        dtype=position_ids.dtype,
+                        device=position_ids.device,
                     )
 
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
@@ -488,38 +385,7 @@ def create_dynamic_casual_vlm_class(
         if _position_ids is None:
             position_ids = None
 
-        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels  # pyright: ignore
-
-    DynamicCasualVLMClass = type(
-        "VLMForCausalLM",
-        (ParentCasualLLMClass,),  # Inherit from the specific LLM class
-        {
-            "config_class": config_class,
-            "__init__": __init__,
-            "forward": forward,
-            "generate": generate,
-            "prepare_inputs_for_generation": prepare_inputs_for_generation,
-            "encode_images": encode_images,
-            "unpad_image": unpad_image,
-            "prepare_inputs_labels_for_multimodal": prepare_inputs_labels_for_multimodal,
-        },
-    )
-
-    return DynamicCasualVLMClass
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
 
 
-def get_dynamic_vlm(
-    base_language_model_name_or_path: str,
-):
-    ParentLLMClass, ParentCasualLLMClass, base_language_model_name_or_path = get_dynamic_vlm_class(
-        base_language_model_name_or_path
-    )
-    VLMConfig = create_dynamic_vlm_config_class(base_language_model_name_or_path)
-    VLM = create_dynamic_vlm_class(base_language_model_name_or_path, VLMConfig, ParentLLMClass)
-    VLMForCausalLM = create_dynamic_casual_vlm_class(
-        base_language_model_name_or_path,
-        VLM,
-        VLMConfig,
-        ParentCasualLLMClass,
-    )
-    return VLMForCausalLM, VLMConfig
+AutoModel.register(VLMConfig, VLMForCasualLM)

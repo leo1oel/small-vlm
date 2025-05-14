@@ -1,15 +1,10 @@
-import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import cast, override
+from typing import Any, cast, override
 
 import torch.nn as nn
 from torch import Tensor
 from transformers import PretrainedConfig, PreTrainedModel
-
-from ...config.config_schema import VisualEncoderConfig
-
-log: logging.Logger = logging.getLogger(name=__name__)
 
 
 @dataclass
@@ -20,9 +15,9 @@ class VisualModelConfig:
 
 
 class VisualEncoder(nn.Module, ABC):
-    def __init__(self, config: VisualEncoderConfig) -> None:
+    def __init__(self, config: Any) -> None:
         super().__init__()
-        self.config: VisualEncoderConfig = config
+        self.config: Any = config
         self.name: str = self.config.name
         self.hf_name: str = self.config.hf_name
         self.model_type: str = self.config.type
@@ -36,11 +31,9 @@ class VisualEncoder(nn.Module, ABC):
 
         # output layer
         self.output_layer: int = getattr(self.config, "output_layer", -1)
-        log.info(f"Using {self.output_layer} layer as output layer")
 
         # use cls token
         self.use_cls_token: bool = getattr(self.config, "use_cls_token", False)
-        log.info(f"Use cls token: {self.use_cls_token}")
 
         self.initialize_components()
 
@@ -117,23 +110,21 @@ class VisualEncoder(nn.Module, ABC):
         capitalized_key = key.capitalize()
 
         if model_value is None and config_value is None:
-            log.warning(f"Visual Encoder: {capitalized_key} not found in config for {self.hf_name}")
+            print(f"Visual Encoder: {capitalized_key} not found in config for {self.hf_name}")
         elif model_value is not None and config_value is None:
             setattr(self, key, int(model_value))
             if hasattr(self.config, key):
                 setattr(self.config, key, int(model_value))
-            log.info(
+            print(
                 f"Visual Encoder: {capitalized_key} not found in config, using hf config: {model_value}"
             )
         elif model_value is None and config_value is not None:
-            log.warning(
-                f"Visual Encoder: {capitalized_key} not found in hf config for {self.hf_name}"
-            )
+            print(f"Visual Encoder: {capitalized_key} not found in hf config for {self.hf_name}")
         elif model_value is not None and config_value is not None:
             if model_value != config_value:
                 error_msg = f"Visual Encoder: {capitalized_key} mismatch: hf config: {model_value} != config: {config_value}"
-                log.warning(error_msg)
+                print(error_msg)
             else:
-                log.info(
+                print(
                     f"Visual Encoder: {capitalized_key} verified: hf config: {model_value} == config: {config_value}"
                 )

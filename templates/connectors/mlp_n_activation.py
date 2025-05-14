@@ -1,14 +1,10 @@
-import logging
 import re
 from typing import Any, override
 
 import torch.nn as nn
 from torch import Tensor
 
-from ...config.config_schema import ConnectorConfig
 from .base import Connector
-
-log = logging.getLogger(__name__)
 
 
 class MLPConnector(Connector):
@@ -23,7 +19,7 @@ class MLPConnector(Connector):
     @override
     def __init__(
         self,
-        config: ConnectorConfig,
+        config: Any,
         image_hidden_size: int,
         text_hidden_size: int,
     ) -> None:
@@ -49,9 +45,6 @@ class MLPConnector(Connector):
 
         activation_class = self.ACTIVATION_MAP.get(self.activation_name)
         if activation_class is None:
-            log.error(
-                f"Unsupported activation: {self.activation_name}.\nSupported activations: {list(self.ACTIVATION_MAP.keys())}"
-            )
             raise ValueError(
                 f"Unsupported activation: {self.activation_name}.\nSupported activations: {list(self.ACTIVATION_MAP.keys())}"
             )

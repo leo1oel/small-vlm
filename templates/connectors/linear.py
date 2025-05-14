@@ -1,16 +1,15 @@
-from typing import override
+from typing import Any, override
 
 import torch.nn as nn
 from torch import Tensor
 
-from ...config.config_schema import ConnectorConfig
 from .base import Connector
 
 
 class LinearConnector(Connector):
     def __init__(
         self,
-        config: ConnectorConfig,
+        config: Any,
         image_hidden_size: int,
         text_hidden_size: int,
     ) -> None:

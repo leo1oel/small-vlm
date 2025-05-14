@@ -1,19 +1,19 @@
 deepspeed: /pasteur/u/yiming/small-vlm/src/vlm/config/deepspeed/zero3.json
 version: v1
 bf16: True
-tf32: False
-per_device_train_batch_size: 2
+tf32: True
+per_device_train_batch_size: 6
 gradient_accumulation_steps: 8
 warmup_ratio: 0.03
 lr_scheduler_type: cosine
 gradient_checkpointing: True
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 report_to: wandb
 # resume_from_checkpoint: /pasteur/u/yiming/small-vlm/outputs/2025-05-10/02-31-41/checkpoint-2
 from_pretrained: /pasteur/u/yiming/small-vlm/outputs/2025-05-12/06-25-38/checkpoint-2180
-attn_implementation: eager
+# attn_implementation: eager
 group_by_modality_length: True
-save_steps: 100
+save_steps: 1000
 
 defaults:
   - unfreeze: finetune

@@ -1,14 +1,11 @@
 import logging
-import os
-import random
 import sys
 from pathlib import Path
 
 import hydra
-import numpy as np
 import torch
 from omegaconf import OmegaConf
-from transformers import PreTrainedTokenizer
+from transformers import AutoConfig, PreTrainedTokenizer, set_seed
 
 from vlm.config.config_schema import LanguageModelConfig
 
@@ -19,15 +16,6 @@ from .train import get_training_args, train
 
 log: logging.Logger = logging.getLogger(name=__name__)
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"
-
-
-def seed_everything(seed: int) -> None:
-    log.info(f"Global seed set to {seed}")
-    os.environ["PL_GLOBAL_SEED"] = str(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
 
 
 def print_model(cfg: ModelConfig) -> None:
@@ -129,7 +117,9 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             attn_implementation=trainer_cfg.attn_implementation,
         )
     else:
-        vision_config = OmegaConf.to_container(model_cfg.visual_encoder)
+        vision_config = AutoConfig.from_pretrained(
+            model_cfg.visual_encoder.hf_name
+        ).to_dict() | OmegaConf.to_container(model_cfg.visual_encoder)
         connector_config = OmegaConf.to_container(model_cfg.connector)
         processor = VLMProcessor.from_names(
             model_cfg.visual_encoder.hf_name,
@@ -169,7 +159,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
 
 
 def vlm(cfg: AppConfig) -> None:
-    seed_everything(cfg.trainer.seed)
+    set_seed(cfg.trainer.seed)
     if cfg.mode.is_training:
         log.info("Training mode")
         training_args = get_training_args(cfg.trainer)

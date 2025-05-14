@@ -1,17 +1,13 @@
-import logging
-from typing import cast, override
+from typing import Any, cast, override
 
 from torch import Tensor
 from transformers import AutoConfig, AutoModel, PretrainedConfig, PreTrainedModel
 
-from ...config.config_schema import VisualEncoderConfig
 from .base import VisualEncoder
-
-log: logging.Logger = logging.getLogger(name=__name__)
 
 
 class HFVisualEncoder(VisualEncoder):
-    def __init__(self, config: VisualEncoderConfig) -> None:
+    def __init__(self, config: Any) -> None:
         super().__init__(config)
 
     @override
