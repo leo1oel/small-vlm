@@ -61,12 +61,12 @@ def create_dynamic_vlm_class(
     def __init__(self: Any, config):  # pyright: ignore
         super(self.__class__, self).__init__(config)
         if not config.lazy_load:
-            self.vision_model = self._build_connector(self.config)
+            self.vision_model = self._build_vision_model(config)
             self.connector = self._build_connector(config)
         log.info(f"DynamicVLM class {self.__class__.__name__} initialized.")
 
     def init_other_components(self: Any) -> None:
-        self.vision_model = self._build_connector(self.config)
+        self.vision_model = self._build_vision_model(self.config)
         self.connector = self._build_connector(self.config)
 
     def _build_vision_model(self: Any, config: Any) -> PreTrainedModel:
@@ -219,7 +219,7 @@ def create_dynamic_casual_vlm_class(
         if type(images) is list:
             image_features: list[Tensor] | Tensor = []
             for image in images:
-                outputs = self.vision_model(
+                outputs = self.model.vision_model(
                     image.unsqueeze(0),
                     output_hidden_states=True,
                 )
@@ -229,7 +229,7 @@ def create_dynamic_casual_vlm_class(
                 else:
                     image_features.append(hidden_states)
         else:
-            outputs = self.vision_model(
+            outputs = self.model.vision_model(
                 images,
                 output_hidden_states=True,
             )

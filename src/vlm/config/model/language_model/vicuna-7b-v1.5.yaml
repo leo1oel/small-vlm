@@ -1,6 +1,0 @@
-name: vicuna-7b-v1.5
-hf_name: lmsys/vicuna-7b-v1.5
-system_token: null
-user_token: null
-assistant_token: <s>
-max_seq_length: 2048

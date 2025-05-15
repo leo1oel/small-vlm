@@ -6,7 +6,6 @@ from omegaconf import MISSING  # pyright: ignore
 
 @dataclass
 class VisualEncoderConfig:
-    name: str = MISSING
     hf_name: str = MISSING
     output_layer: int | None = None
     use_cls_token: bool = False
@@ -14,9 +13,7 @@ class VisualEncoderConfig:
 
 @dataclass
 class LanguageModelConfig:
-    name: str = MISSING
     hf_name: str = MISSING
-    type: str = "hf_language_model"
     max_seq_length: int | None = None
     image_token: str = "<image>"
     use_start_end_tokens: bool = False
@@ -26,7 +23,7 @@ class LanguageModelConfig:
     image_patch_token: str = "<im_patch>"
     system_token: str | None = None
     user_token: str | None = None
-    assistant_token: str = MISSING
+    assistant_token: str | None = None
     ignore_index: int = -100
     image_token_index: int = -200
     padding_side: str = "left"
@@ -113,11 +110,6 @@ class TrainerConfig:
 
 
 @dataclass
-class ModeConfig:
-    is_training: bool = True
-
-
-@dataclass
 class InferenceConfig:
     checkpoint_path: str = MISSING
     num_inference_samples: int | None = None
@@ -126,7 +118,7 @@ class InferenceConfig:
 
 @dataclass
 class AppConfig:
-    mode: ModeConfig = field(default_factory=ModeConfig)
+    is_training: bool = True
     model: ModelConfig = field(default_factory=ModelConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)

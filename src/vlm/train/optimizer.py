@@ -117,21 +117,17 @@ def get_module_param_groups(
     groups = []
 
     if param_groups[module_name]["decay"]:
-        groups.append(
-            {
-                "params": param_groups[module_name]["decay"],
-                "weight_decay": weight_decay,
-                "lr": learning_rate,
-            }
-        )
+        groups.append({
+            "params": param_groups[module_name]["decay"],
+            "weight_decay": weight_decay,
+            "lr": learning_rate,
+        })
 
     if param_groups[module_name]["no_decay"]:
-        groups.append(
-            {
-                "params": param_groups[module_name]["no_decay"],
-                "weight_decay": 0.0,
-                "lr": learning_rate,
-            }
-        )
+        groups.append({
+            "params": param_groups[module_name]["no_decay"],
+            "weight_decay": 0.0,
+            "lr": learning_rate,
+        })
 
     return groups

@@ -26,12 +26,6 @@ class VLMTrainer(Trainer):
 
     @override
     def create_optimizer(self):
-        """
-        Setup the optimizer.
-
-        We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
-        Trainer's init through `optimizers`, or subclass and override this method in a subclass.
-        """
         opt_model = self.model
 
         if self.optimizer is None:

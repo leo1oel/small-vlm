@@ -1,6 +1,5 @@
 defaults:
   - cfg
-  - mode: train
   - model: llava-7b
   - trainer: finetune
   - inference: default

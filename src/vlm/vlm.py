@@ -18,37 +18,6 @@ log: logging.Logger = logging.getLogger(name=__name__)
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"
 
 
-def print_model(cfg: ModelConfig) -> None:
-    components = {
-        "model": {"name": cfg.name, "path": CONFIG_PATH / "model" / f"{cfg.name}.yaml"},
-        "visual_encoder": {
-            "name": cfg.visual_encoder.name,
-            "path": CONFIG_PATH / "model" / "visual_encoder" / f"{cfg.visual_encoder.name}.yaml",
-        },
-        "language_model": {
-            "name": cfg.language_model.name,
-            "path": CONFIG_PATH / "model" / "language_model" / f"{cfg.language_model.name}.yaml",
-        },
-        "connector": {
-            "name": cfg.connector.name,
-            "path": CONFIG_PATH / "model" / "connector" / f"{cfg.connector.name}.yaml",
-        },
-    }
-
-    log.info(
-        f"Loading model: [bold red][link=file://{components['model']['path']}]{components['model']['name']}[/link][/bold red]"
-    )
-    log.info(
-        f"Visual encoder: [bold cyan][link=file://{components['visual_encoder']['path']}]{components['visual_encoder']['name']}[/link][/bold cyan]"
-    )
-    log.info(
-        f"Language model: [bold blue][link=file://{components['language_model']['path']}]{components['language_model']['name']}[/link][/bold blue]"
-    )
-    log.info(
-        f"Connector: [bold yellow][link=file://{components['connector']['path']}]{components['connector']['name']}[/link][/bold yellow]"
-    )
-
-
 def add_special_tokens(tokenizer: PreTrainedTokenizer, config: LanguageModelConfig) -> None:
     """Adds special tokens to the tokenizer if they don't exist."""
     # Create a mapping of tokens to their attribute names
@@ -60,7 +29,7 @@ def add_special_tokens(tokenizer: PreTrainedTokenizer, config: LanguageModelConf
         "image_end_token": getattr(config, "image_end_token", "<im_end>"),
         "system_token": getattr(config, "system_token", None),
         "user_token": getattr(config, "user_token", None),
-        "assistant_token": getattr(config, "assistant_token", "<|assistant|>"),
+        "assistant_token": getattr(config, "assistant_token", None),
     }
     token_mapping = {
         token_config["system_token"]: "system_token_id",
@@ -96,9 +65,10 @@ def add_special_tokens(tokenizer: PreTrainedTokenizer, config: LanguageModelConf
 
 
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
-    log.info("Loading model")
+    log.info(
+        f"Loading model: [bold red][link=file://{CONFIG_PATH / 'model' / f'{model_cfg.name}.yaml'}]{model_cfg.name}[/link][/bold red]"
+    )
 
-    # Load model
     if trainer_cfg.from_pretrained:
         log.info("Loading processor from pretrained: {trainer_cfg.from_pretrained}")
         processor = VLMProcessor.from_pretrained(
@@ -117,10 +87,15 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             attn_implementation=trainer_cfg.attn_implementation,
         )
     else:
-        vision_config = AutoConfig.from_pretrained(
-            model_cfg.visual_encoder.hf_name
-        ).to_dict() | OmegaConf.to_container(model_cfg.visual_encoder)
+        hf_config = AutoConfig.from_pretrained(model_cfg.visual_encoder.hf_name)
+        if getattr(hf_config, "vision_config", None):
+            hf_config = hf_config.vision_config
+        vision_config = hf_config.to_dict() | OmegaConf.to_container(model_cfg.visual_encoder)
         connector_config = OmegaConf.to_container(model_cfg.connector)
+        hf_config = AutoConfig.from_pretrained(model_cfg.language_model.hf_name)
+        if model_cfg.language_model.max_seq_length is None:
+            model_cfg.language_model.max_seq_length = hf_config.max_position_embeddings
+        language_config = hf_config.to_dict() | OmegaConf.to_container(model_cfg.language_model)
         processor = VLMProcessor.from_names(
             model_cfg.visual_encoder.hf_name,
             model_cfg.language_model.hf_name,
@@ -130,14 +105,15 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             padding_side=model_cfg.language_model.padding_side,
         )
         add_special_tokens(processor.tokenizer, model_cfg.language_model)
-        VLMForCauslLM, VLMConfig = get_dynamic_vlm(model_cfg.language_model.hf_name)
+        VLMForCausalLM, VLMConfig = get_dynamic_vlm(model_cfg.language_model.hf_name)
         config = VLMConfig(
             vision_config=vision_config,
             connector_config=connector_config,
             lazy_load=True,
-            **OmegaConf.to_container(model_cfg.language_model),
+            **language_config,
         )
-        model = VLMForCauslLM.from_pretrained(
+        log.info(config)
+        model = VLMForCausalLM.from_pretrained(
             model_cfg.language_model.hf_name,
             config=config,
             low_cpu_mem_usage=True,
@@ -160,7 +136,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
 
 def vlm(cfg: AppConfig) -> None:
     set_seed(cfg.trainer.seed)
-    if cfg.mode.is_training:
+    if cfg.is_training:
         log.info("Training mode")
         training_args = get_training_args(cfg.trainer)
         model, processor = load_model(cfg.model, cfg.trainer)

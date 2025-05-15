@@ -57,14 +57,13 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.3.5",
-    "ruff>=0.11.8",
+    "pytest-sugar>=1.0.0",
+    "ruff>=0.11.9",
     "codespell>=2.4.1",
-    "rich>=13.9.4",
+    "rich>=14.0.0",
     "basedpyright>=1.29.1",
-    "funlog>=0.2.0",
-    "icecream>=2.1.4",
+    "funlog>=0.2.1",
     "ipykernel>=6.29.5",
-    "uv>=0.7.2",
 ]
 
 [project.scripts]

@@ -1,6 +1,17 @@
 defaults:
-  - language_model: vicuna-7b-v1.5
-  - visual_encoder: clip-vit-large-patch14-336
-  - connector: mlp-2-gelu
+  - _self_
+
+language_model:
+  hf_name: lmsys/vicuna-7b-v1.5
+  max_seq_length: 2048
+
+visual_encoder:
+  hf_name: openai/clip-vit-large-patch14-336
+  output_layer: -2
+  use_cls_token: False
+
+connector:
+  name: mlp_2_gelu
+  type: mlp
 
 name: llava-7b
