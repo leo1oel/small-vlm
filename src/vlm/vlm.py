@@ -55,6 +55,7 @@ def add_special_tokens(tokenizer: PreTrainedTokenizer, config: LanguageModelConf
             log.info(f"Token '{token}' exists in tokenizer, ID: {token_id}")
 
     # Add all new tokens at once if any
+    log.info(f"Tokens to add: {tokens_to_add}")
     if tokens_to_add:
         log.info(f"Adding tokens: {tokens_to_add}")
         tokenizer.add_tokens(tokens_to_add, special_tokens=True)
@@ -75,8 +76,8 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             trainer_cfg.from_pretrained,
         )
         log.info(f"Loading model from pretrained: {trainer_cfg.from_pretrained}")
-        VLMForCasualLM, VLMConfig = get_dynamic_vlm(model_cfg.language_model.hf_name)
-        model: VLMForCasualLM = VLMForCasualLM.from_pretrained(
+        VLMForCausalLM, VLMConfig = get_dynamic_vlm(model_cfg.language_model.hf_name)
+        model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
             trainer_cfg.from_pretrained,
             low_cpu_mem_usage=True,
             torch_dtype=torch.bfloat16
@@ -112,7 +113,6 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             lazy_load=True,
             **language_config,
         )
-        log.info(config)
         model = VLMForCausalLM.from_pretrained(
             model_cfg.language_model.hf_name,
             config=config,
@@ -125,7 +125,8 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             else torch.float32,
             attn_implementation=trainer_cfg.attn_implementation,
         )
-        model.model.resize_token_embeddings(len(processor.tokenizer))
+        if model.config.vocab_size < len(processor.tokenizer):
+            model.model.resize_token_embeddings(len(processor.tokenizer))
         model.model.init_other_components()
         model.config.lazy_load = False
 
@@ -168,6 +169,12 @@ def main_cli():
         else:
             i += 1
     main()
+
+
+def push_to_hub():
+    from .utils import push_vlm_to_hub
+
+    push_vlm_to_hub()
 
 
 if __name__ == "__main__":

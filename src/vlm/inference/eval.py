@@ -24,8 +24,8 @@ def eval_model(
     processor = VLMProcessor.from_pretrained(
         pretrained,
     )
-    VLMForCasualLM, _ = get_dynamic_vlm(pretrained)
-    model: VLMForCasualLM = VLMForCasualLM.from_pretrained(
+    VLMForCausalLM, _ = get_dynamic_vlm(pretrained)
+    model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
         pretrained,
         low_cpu_mem_usage=True,
         torch_dtype=torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,

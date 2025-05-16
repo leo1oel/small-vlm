@@ -45,11 +45,11 @@ def get_dynamic_vlm_class(
             f"not in MODEL_FOR_CAUSAL_LM_MAPPING. Cannot determine parent CausalLM class."
         )
     ParentLLMClass = MODEL_MAPPING[base_language_model_config_class]
-    ParentCasualLLMClass = MODEL_FOR_CAUSAL_LM_MAPPING[base_language_model_config_class]
+    ParentCausalLLMClass = MODEL_FOR_CAUSAL_LM_MAPPING[base_language_model_config_class]
     log.info(
-        f"Determined ParentLLMClass and ParentCasualLLMClass for VLM: {ParentLLMClass.__name__} and {ParentCasualLLMClass.__name__} (from {base_language_model_name_or_path})"
+        f"Determined ParentLLMClass and ParentCausalLLMClass for VLM: {ParentLLMClass.__name__} and {ParentCausalLLMClass.__name__} (from {base_language_model_name_or_path})"
     )
-    return ParentLLMClass, ParentCasualLLMClass, base_language_model_name_or_path
+    return ParentLLMClass, ParentCausalLLMClass, base_language_model_name_or_path
 
 
 def create_dynamic_vlm_class(
@@ -104,11 +104,11 @@ def create_dynamic_vlm_class(
     return DynamicVLMClass
 
 
-def create_dynamic_casual_vlm_class(
+def create_dynamic_causal_vlm_class(
     base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
     pretrain_class: Any,
     config_class: Any,
-    ParentCasualLLMClass: Any,
+    ParentCausalLLMClass: Any,
 ):
     @override
     def __init__(self: Any, config):  # pyright: ignore
@@ -116,7 +116,7 @@ def create_dynamic_casual_vlm_class(
         self.model = pretrain_class(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.post_init()
-        log.info(f"DynamicCasualVLM class {self.__class__.__name__} initialized.")
+        log.info(f"DynamicCausalVLM class {self.__class__.__name__} initialized.")
 
     @override
     def forward(
@@ -490,9 +490,9 @@ def create_dynamic_casual_vlm_class(
 
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels  # pyright: ignore
 
-    DynamicCasualVLMClass = type(
+    DynamicCausalVLMClass = type(
         "VLMForCausalLM",
-        (ParentCasualLLMClass,),  # Inherit from the specific LLM class
+        (ParentCausalLLMClass,),  # Inherit from the specific LLM class
         {
             "config_class": config_class,
             "__init__": __init__,
@@ -505,21 +505,21 @@ def create_dynamic_casual_vlm_class(
         },
     )
 
-    return DynamicCasualVLMClass
+    return DynamicCausalVLMClass
 
 
 def get_dynamic_vlm(
     base_language_model_name_or_path: str,
 ):
-    ParentLLMClass, ParentCasualLLMClass, base_language_model_name_or_path = get_dynamic_vlm_class(
+    ParentLLMClass, ParentCausalLLMClass, base_language_model_name_or_path = get_dynamic_vlm_class(
         base_language_model_name_or_path
     )
     VLMConfig = create_dynamic_vlm_config_class(base_language_model_name_or_path)
     VLM = create_dynamic_vlm_class(base_language_model_name_or_path, VLMConfig, ParentLLMClass)
-    VLMForCausalLM = create_dynamic_casual_vlm_class(
+    VLMForCausalLM = create_dynamic_causal_vlm_class(
         base_language_model_name_or_path,
         VLM,
         VLMConfig,
-        ParentCasualLLMClass,
+        ParentCausalLLMClass,
     )
     return VLMForCausalLM, VLMConfig

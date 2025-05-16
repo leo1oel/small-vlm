@@ -3,14 +3,13 @@ version: plain
 bf16: True
 tf32: True
 per_device_train_batch_size: 16
-gradient_accumulation_steps: 4
+gradient_accumulation_steps: 2
 warmup_ratio: 0.03
 lr_scheduler_type: cosine
 gradient_checkpointing: True
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 report_to: wandb
-resume_from_checkpoint: /pasteur/u/yiming/small-vlm/outputs/2025-05-15/00-43-33/checkpoint-3
-save_steps: 3
+save_steps: 24000
 
 defaults:
   - unfreeze: pretrain

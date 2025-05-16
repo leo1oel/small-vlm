@@ -1,0 +1,17 @@
+defaults:
+  - _self_
+
+language_model:
+  hf_name: Qwen/Qwen3-8B
+  # max_seq_length: 2048
+
+visual_encoder:
+  hf_name: openai/clip-vit-large-patch14-336
+  output_layer: -2
+  use_cls_token: False
+
+connector:
+  name: mlp_2_gelu
+  type: mlp
+
+name: qwen3-8b

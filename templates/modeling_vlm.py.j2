@@ -3,11 +3,10 @@ from typing import Any, override
 import torch
 import torch.nn as nn
 from torch import FloatTensor, LongTensor, Tensor
-from transformers import AutoModel, {{ casual_parent_class }}, {{ parent_class }}
+from transformers import AutoModel, PreTrainedModel, {{ causal_parent_class }}, {{ parent_class }}
 
 from .configuration_vlm import VLMConfig
 from .connectors import Connector, connector_map
-from .visual_encoders import HFVisualEncoder
 
 
 class VLM({{ parent_class }}):
@@ -15,21 +14,32 @@ class VLM({{ parent_class }}):
     @override
     def __init__(self, config):
         super().__init__(config)
-        self.vision_model = HFVisualEncoder(config.vision_config)
+        self.vision_model = self._build_vision_model(config)
         self.connector = self._build_connector(config)
 
-    def _build_connector(self, config) -> Connector:
-        connector_class = connector_map.get(config.type)
+    def _build_vision_model(self, config: Any) -> PreTrainedModel:
+        vision_config = config.vision_config
+        visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
+            vision_config.hf_name,
+            trust_remote_code=True,
+        )
+        if getattr(visual_encoder, "vision_model", None):
+            visual_encoder = visual_encoder.vision_model  # pyright: ignore
+        return visual_encoder
+
+    def _build_connector(self, config: Any) -> Connector:
+        connector_config = config.connector_config
+        connector_class = connector_map.get(connector_config.type)
         if not connector_class:
-            raise ValueError(f"Unsupported connector type: {config.type}")
+            raise ValueError(f"Unsupported connector type: {connector_config.type}")
         return connector_class(
-            config,
-            self.vision_model.hidden_size,
+            connector_config,
+            self.config.vision_config.hidden_size,
             config.hidden_size,
         )
 
 
-class VLMForCausalLM({{ casual_parent_class }}):
+class VLMForCausalLM({{ causal_parent_class }}):
     config_class = VLMConfig
     @override
     def __init__(self, config):
@@ -388,4 +398,4 @@ class VLMForCausalLM({{ casual_parent_class }}):
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
 
 
-AutoModel.register(VLMConfig, VLMForCasualLM)
+AutoModel.register(VLMConfig, VLMForCausalLM)
