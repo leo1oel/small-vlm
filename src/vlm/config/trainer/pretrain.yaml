@@ -3,11 +3,11 @@ version: plain
 bf16: True
 tf32: True
 per_device_train_batch_size: 16
-gradient_accumulation_steps: 2
+gradient_accumulation_steps: 1
 warmup_ratio: 0.03
 lr_scheduler_type: cosine
 gradient_checkpointing: True
-dataloader_num_workers: 8
+dataloader_num_workers: 4
 report_to: wandb
 save_steps: 24000
 
