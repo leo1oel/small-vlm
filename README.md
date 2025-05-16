@@ -86,6 +86,8 @@ You can refer to `src/vlm/inference/eval.py`
 | scienceqa      | exact_match          | 0.6977 ± 0.0071                                                                     | 0.6572 ± 0.0073                                             |
 | seedbench      | seed_image           | 0.6593 ± N/A                                                                        | 0.6616 ± N/A                                                |
 | textvqa_val    | exact_match          | 0.4902 ± 0.0068                                                                     | 0.4600 ± 0.0068                                             |
+| mmmu_val       | mmmu_acc             | 0.3789 ± N/A                                                                        | 0.3611 ± N/A                                                |
+| ai2d           | exact_match          | 0.5379 ± 0.009                                                                      | 0.5518 ± 0.009                                              |
 
 ## Pushing Models to Hugging Face Hub
 

@@ -1,8 +1,10 @@
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
+from huggingface_hub import HfApi
 from jinja2 import Environment, FileSystemLoader
 from rich.console import Console
 from rich.panel import Panel
@@ -54,6 +56,8 @@ def push_to_hub(pretrained: str, repo_name: str, force: bool = False) -> bool:
     pretrained_path = Path(pretrained)
     templates_path = Path("templates")
 
+    generated_files = []
+
     # Create progress bar
     with Progress(
         SpinnerColumn(),
@@ -63,7 +67,7 @@ def push_to_hub(pretrained: str, repo_name: str, force: bool = False) -> bool:
         console=console,
     ) as progress:
         # Main task and subtasks
-        main_task = progress.add_task("[cyan]Pushing to Hub...", total=4, state="initializing")
+        main_task = progress.add_task("[cyan]Pushing to Hub...", total=5, state="initializing")
 
         # Step 1: Validate paths
         progress.update(main_task, description="Validating paths", state="checking")
@@ -95,18 +99,22 @@ def push_to_hub(pretrained: str, repo_name: str, force: bool = False) -> bool:
         # Step 3: Apply templates and update config
         progress.update(main_task, description="Applying templates", state="templating")
         try:
-            _apply_templates(
+            file_list = _apply_templates(
                 pretrained_path, parent_llm_class, parent_causal_llm_class, base_model_path
             )
-            _update_config(pretrained_path)
+            generated_files.extend(file_list)
+            config_files = _update_config(pretrained_path)
+            generated_files.extend(config_files)
             progress.update(main_task, advance=1, state="templates applied")
         except Exception as e:
             progress.update(main_task, state="failed")
             console.print(f"[red]Failed to apply templates: {e}[/red]")
             return False
 
-        # Step 4: Push to hub
-        progress.update(main_task, description="Pushing to Hub", state="pushing")
+        # Step 4: Push to hub (model and processor)
+        progress.update(
+            main_task, description="Pushing model and processor to Hub", state="pushing"
+        )
         try:
             model = AutoModel.from_pretrained(
                 pretrained_path,
@@ -119,24 +127,54 @@ def push_to_hub(pretrained: str, repo_name: str, force: bool = False) -> bool:
                 torch_dtype="auto",
             )
 
-            # Push to hub with appropriate options
             model.push_to_hub(repo_name, force=force)
             processor.push_to_hub(repo_name, force=force)
+
+            progress.update(main_task, advance=1, state="model pushed")
+
+        except Exception as e:
+            progress.update(main_task, state="failed")
+            console.print(f"[red]Failed to push model to Hub: {e}[/red]")
+            return False
+
+        # Step 5: Push custom files to hub
+        progress.update(main_task, description="Pushing custom files to Hub", state="pushing files")
+        try:
+            api = HfApi()
+            token = os.environ.get("HF_TOKEN")
+
+            if not token:
+                console.print("[yellow]Warning: HF_TOKEN environment variable not set.[/yellow]")
+                console.print("[yellow]Will attempt to use cached credentials.[/yellow]")
+
+            for file_path in generated_files:
+                relative_path = file_path.relative_to(pretrained_path)
+                console.print(f"[blue]Uploading {relative_path}...[/blue]")
+
+                api.upload_file(
+                    path_or_fileobj=str(file_path),
+                    path_in_repo=str(relative_path),
+                    repo_id=repo_name,
+                    token=token,
+                    repo_type="model",
+                    create_pr=False,
+                )
+                console.print(f"[green]✓[/green] Uploaded {relative_path}")
 
             progress.update(main_task, advance=1, state="complete")
 
         except Exception as e:
             progress.update(main_task, state="failed")
-            console.print(f"[red]Failed to push to Hub: {e}[/red]")
+            console.print(f"[red]Failed to push custom files to Hub: {e}[/red]")
             return False
 
-    console.print(f"[green]Successfully pushed model to {repo_name}![/green]")
+    console.print(f"[green]Successfully pushed model and all custom files to {repo_name}![/green]")
     return True
 
 
 def _apply_templates(
     pretrained_path: Path, parent_llm_class: Any, parent_causal_llm_class: Any, base_model_path: str
-) -> None:
+) -> list[Path]:
     """
     Apply Jinja2 templates to generate model files.
 
@@ -145,13 +183,19 @@ def _apply_templates(
         parent_llm_class: Parent LLM class
         parent_causal_llm_class: Parent causal LLM class
         base_model_path: Path to the base model
+
+    Returns:
+        List of generated file paths
     """
+    generated_files = []
+
     try:
         env = Environment(loader=FileSystemLoader("templates"))
 
         console.print("[bold green]Rendering templates...[/bold green]")
 
         # Render modeling template
+        modeling_file = pretrained_path / "modeling_vlm.py"
         _render_template(
             env,
             "modeling_vlm.py.j2",
@@ -159,16 +203,21 @@ def _apply_templates(
                 "parent_class": parent_llm_class.__name__,
                 "causal_parent_class": parent_causal_llm_class.__name__,
             },
-            pretrained_path / "modeling_vlm.py",
+            modeling_file,
         )
+        generated_files.append(modeling_file)
         console.print("[green]✓[/green] Generated modeling_vlm.py")
 
         # Render processing template
-        _render_template(env, "processing_vlm.py.j2", {}, pretrained_path / "processing_vlm.py")
+        processing_file = pretrained_path / "processing_vlm.py"
+        _render_template(env, "processing_vlm.py.j2", {}, processing_file)
+        generated_files.append(processing_file)
         console.print("[green]✓[/green] Generated processing_vlm.py")
 
         # Render connectors template
-        _render_template(env, "connectors.py.j2", {}, pretrained_path / "connectors.py")
+        connectors_file = pretrained_path / "connectors.py"
+        _render_template(env, "connectors.py.j2", {}, connectors_file)
+        generated_files.append(connectors_file)
         console.print("[green]✓[/green] Generated connectors.py")
 
         # Get parent config class and render configuration template
@@ -176,15 +225,19 @@ def _apply_templates(
             base_model_path, trust_remote_code=True
         ).__class__
 
+        config_file = pretrained_path / "configuration_vlm.py"
         _render_template(
             env,
             "configuration_vlm.py.j2",
             {
                 "parent_class": parent_config_class.__name__,
             },
-            pretrained_path / "configuration_vlm.py",
+            config_file,
         )
+        generated_files.append(config_file)
         console.print("[green]✓[/green] Generated configuration_vlm.py")
+
+        return generated_files
 
     except Exception as e:
         console.print(f"[red]Failed to apply templates: {e}[/red]")
@@ -216,13 +269,18 @@ def _render_template(
         raise
 
 
-def _update_config(pretrained_path: Path) -> None:
+def _update_config(pretrained_path: Path) -> list[Path]:
     """
     Update the model configuration files.
 
     Args:
         pretrained_path: Path to the pretrained model
+
+    Returns:
+        List of updated config file paths
     """
+    updated_files = []
+
     config_path = pretrained_path / "config.json"
 
     if not config_path.exists():
@@ -243,6 +301,7 @@ def _update_config(pretrained_path: Path) -> None:
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
 
+        updated_files.append(config_path)
         console.print("[green]✓[/green] Updated config.json")
 
         # Create processor config
@@ -255,7 +314,10 @@ def _update_config(pretrained_path: Path) -> None:
         with open(processor_config_path, "w") as f:
             json.dump(processor_config, f, indent=2)
 
+        updated_files.append(processor_config_path)
         console.print("[green]✓[/green] Created processor_config.json")
+
+        return updated_files
 
     except Exception as e:
         console.print(f"[red]Failed to update config: {e}[/red]")
@@ -303,12 +365,23 @@ def push_vlm_to_hub():
         "[cyan]Force push if repository already exists?[/cyan]", default=False, console=console
     )
 
+    token = os.environ.get("HF_TOKEN")
+    if not token:
+        console.print("[yellow]Warning: HF_TOKEN environment variable not set[/yellow]")
+        console.print("[yellow]Will attempt to use cached credentials or prompt for login[/yellow]")
+        if Confirm.ask("[cyan]Would you like to set HF_TOKEN now?[/cyan]", default=True):
+            token = Prompt.ask("[cyan]Enter your Hugging Face token[/cyan]", password=True)
+            os.environ["HF_TOKEN"] = token
+
     # Display summary and confirm
     console.print("\n[bold]Summary:[/bold]")
     console.print(f"  Model path: [green]{pretrained}[/green]")  # pyright: ignore
     console.print(f"  Repository: [green]{repo_name}[/green]")  # pyright: ignore
     console.print(
         f"  Force push: [{'green' if force else 'yellow'}]{force}[/{'green' if force else 'yellow'}]"
+    )
+    console.print(
+        f"  HF Token: [{'green' if token else 'yellow'}]{'Set' if token else 'Not set'}[/{'green' if token else 'yellow'}]"
     )
 
     # Final confirmation

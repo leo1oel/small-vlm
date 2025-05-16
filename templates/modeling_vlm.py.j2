@@ -132,7 +132,7 @@ class VLMForCausalLM({{ causal_parent_class }}):
     ):
         images = kwargs.pop("images", None)
         image_sizes = kwargs.pop("image_sizes", None)
-        inputs = super(self.__class__, self).prepare_inputs_for_generation(
+        inputs = super().prepare_inputs_for_generation(
             input_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
@@ -145,8 +145,31 @@ class VLMForCausalLM({{ causal_parent_class }}):
             inputs["image_sizes"] = image_sizes
         return inputs
 
-    def encode_images(self: Any, images: Tensor) -> tuple[Tensor, ...]:
-        image_features = self.model.vision_model(images)
+    def encode_images(self: Any, images: list[Tensor] | Tensor) -> list[Tensor] | Tensor:
+        if type(images) is list:
+            image_features: list[Tensor] | Tensor = []
+            for image in images:
+                outputs = self.model.vision_model(
+                    image.unsqueeze(0),
+                    output_hidden_states=True,
+                )
+                hidden_states: Tensor = outputs.hidden_states[self.output_layer].to(image.dtype)
+                if not self.config.vision_config.use_cls_token:
+                    image_features.append(hidden_states[:, 1:])
+                else:
+                    image_features.append(hidden_states)
+        else:
+            outputs = self.model.vision_model(
+                images,
+                output_hidden_states=True,
+            )
+            hidden_states = outputs.hidden_states[self.config.vision_config.output_layer].to(
+                images.dtype
+            )
+            if not self.config.vision_config.use_cls_token:
+                image_features = hidden_states[:, 1:]
+            else:
+                image_features = hidden_states
         image_features = self.model.connector(image_features)
 
         return image_features
