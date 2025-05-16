@@ -74,20 +74,20 @@ You can refer to `src/vlm/inference/eval.py`
 
 ## LLaVA Reproduction Results (Using [lmms-eval](https://github.com/EvolvingLMMs-Lab/lmms-eval))
 
-| Task           | Metric               | [Reproduced LLaVA](https://huggingface.co/Leonardo6/llava-7b-v1.5) (Value ± Stderr) | [Original LLaVA](liuhaotian/llava-v1.5-7b) (Value ± Stderr) |
-| -------------- | -------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| gqa            | exact_match          | 0.6201 ± 0.0043                                                                     | 0.6192 ± 0.0043                                             |
-| mmbench_cn_cc  | gpt_eval_score       | 25.2941 ± N/A                                                                       | 23.5294 ± N/A                                               |
-| mmbench_cn_dev | gpt_eval_score       | 54.8969 ± N/A                                                                       | 55.6701 ± N/A                                               |
-| mmbench_en_dev | gpt_eval_score       | 66.0653 ± N/A                                                                       | 64.0893 ± N/A                                               |
-| mmbench_ru_dev | gpt_eval_score       | 54.9282 ± N/A                                                                       | 53.0144 ± N/A                                               |
-| mme            | mme_cognition_score  | 321.4286 ± N/A                                                                      | 355.7143 ± N/A                                              |
-| mme            | mme_perception_score | 1505.4650 ± N/A                                                                     | 1509.1289 ± N/A                                             |
-| scienceqa      | exact_match          | 0.6977 ± 0.0071                                                                     | 0.6572 ± 0.0073                                             |
-| seedbench      | seed_image           | 0.6593 ± N/A                                                                        | 0.6616 ± N/A                                                |
-| textvqa_val    | exact_match          | 0.4902 ± 0.0068                                                                     | 0.4600 ± 0.0068                                             |
-| mmmu_val       | mmmu_acc             | 0.3789 ± N/A                                                                        | 0.3611 ± N/A                                                |
-| ai2d           | exact_match          | 0.5379 ± 0.009                                                                      | 0.5518 ± 0.009                                              |
+| Task           | Metric               | [Reproduced LLaVA](https://huggingface.co/Leonardo6/llava-7b) (Value ± Stderr) | [Original LLaVA](liuhaotian/llava-v1.5-7b) (Value ± Stderr) |
+| -------------- | -------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| gqa            | exact_match          | 0.6201 ± 0.0043                                                                | 0.6192 ± 0.0043                                             |
+| mmbench_cn_cc  | gpt_eval_score       | 25.2941 ± N/A                                                                  | 23.5294 ± N/A                                               |
+| mmbench_cn_dev | gpt_eval_score       | 54.8969 ± N/A                                                                  | 55.6701 ± N/A                                               |
+| mmbench_en_dev | gpt_eval_score       | 66.0653 ± N/A                                                                  | 64.0893 ± N/A                                               |
+| mmbench_ru_dev | gpt_eval_score       | 54.9282 ± N/A                                                                  | 53.0144 ± N/A                                               |
+| mme            | mme_cognition_score  | 321.4286 ± N/A                                                                 | 355.7143 ± N/A                                              |
+| mme            | mme_perception_score | 1505.4650 ± N/A                                                                | 1509.1289 ± N/A                                             |
+| scienceqa      | exact_match          | 0.6977 ± 0.0071                                                                | 0.6572 ± 0.0073                                             |
+| seedbench      | seed_image           | 0.6593 ± N/A                                                                   | 0.6616 ± N/A                                                |
+| textvqa_val    | exact_match          | 0.4902 ± 0.0068                                                                | 0.4600 ± 0.0068                                             |
+| mmmu_val       | mmmu_acc             | 0.3789 ± N/A                                                                   | 0.3611 ± N/A                                                |
+| ai2d           | exact_match          | 0.5379 ± 0.009                                                                 | 0.5518 ± 0.009                                              |
 
 ## Pushing Models to Hugging Face Hub
 
