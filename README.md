@@ -84,7 +84,6 @@ You can refer to `src/vlm/inference/eval.py`
 | mme            | mme_cognition_score  | 321.4286 ± N/A                                                                      | 355.7143 ± N/A                                              |
 | mme            | mme_perception_score | 1505.4650 ± N/A                                                                     | 1509.1289 ± N/A                                             |
 | scienceqa      | exact_match          | 0.6977 ± 0.0071                                                                     | 0.6572 ± 0.0073                                             |
-| seedbench      | seed_all             | 0.5299 ± N/A                                                                        | 0.5359 ± N/A                                                |
 | seedbench      | seed_image           | 0.6593 ± N/A                                                                        | 0.6616 ± N/A                                                |
 | textvqa_val    | exact_match          | 0.4902 ± 0.0068                                                                     | 0.4600 ± 0.0068                                             |
 
