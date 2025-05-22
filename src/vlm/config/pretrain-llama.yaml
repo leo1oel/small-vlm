@@ -1,9 +1,9 @@
 defaults:
   - cfg
-  - model: qwen3-1.7b
-  - trainer: finetune
+  - model: llama3.2-3b
+  - trainer: pretrain
   - inference: default
-  - dataset: llava-finetune
+  - dataset: llava-pretrain
   - override hydra/job_logging: rich
   - _self_
 

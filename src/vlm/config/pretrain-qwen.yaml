@@ -1,6 +1,6 @@
 defaults:
   - cfg
-  - model: qwen3-8b
+  - model: qwen3-1.7b
   - trainer: pretrain
   - inference: default
   - dataset: llava-pretrain

@@ -22,25 +22,12 @@ def add_special_tokens(tokenizer: PreTrainedTokenizer, config: LanguageModelConf
     """Adds special tokens to the tokenizer if they don't exist."""
     # Create a mapping of tokens to their attribute names
 
-    token_config: dict = {
-        "image_token": getattr(config, "image_token", "<image>"),
-        "image_patch_token": getattr(config, "image_patch_token", "<im_patch>"),
-        "image_start_token": getattr(config, "image_start_token", "<im_start>"),
-        "image_end_token": getattr(config, "image_end_token", "<im_end>"),
-        "system_token": getattr(config, "system_token", None),
-        "user_token": getattr(config, "user_token", None),
-        "assistant_token": getattr(config, "assistant_token", None),
-    }
-    token_mapping = {
-        token_config["system_token"]: "system_token_id",
-        token_config["user_token"]: "user_token_id",
-        token_config["assistant_token"]: "assistant_token_id",
-    }
+    token_mapping = []
     if config.use_image_patch_token:
-        token_mapping[token_config["image_patch_token"]] = "image_patch_token_id"
+        token_mapping.append(config.image_patch_token)
     if config.use_start_end_tokens:
-        token_mapping[token_config["image_start_token"]] = "image_start_token_id"
-        token_mapping[token_config["image_end_token"]] = "image_end_token_id"
+        token_mapping.append(config.image_start_token)
+        token_mapping.append(config.image_end_token)
 
     # Identify which tokens need to be added
     tokens_to_add: list[str] = []
@@ -60,10 +47,6 @@ def add_special_tokens(tokenizer: PreTrainedTokenizer, config: LanguageModelConf
         log.info(f"Adding tokens: {tokens_to_add}")
         tokenizer.add_tokens(tokens_to_add, special_tokens=True)
 
-        # Now set the IDs for newly added tokens
-        for token in tokens_to_add:
-            token_id = tokenizer.convert_tokens_to_ids(token)
-
 
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
     log.info(
@@ -76,6 +59,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             trainer_cfg.from_pretrained,
         )
         log.info(f"Loading model from pretrained: {trainer_cfg.from_pretrained}")
+        add_special_tokens(processor.tokenizer, model_cfg.language_model)
         VLMForCausalLM, VLMConfig = get_dynamic_vlm(model_cfg.language_model.hf_name)
         model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
             trainer_cfg.from_pretrained,
@@ -87,6 +71,11 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             else torch.float32,
             attn_implementation=trainer_cfg.attn_implementation,
         )
+        if model_cfg.language_model.max_seq_length is not None:
+            processor.tokenizer.model_max_length = model_cfg.language_model.max_seq_length
+            model.config.max_seq_length = model_cfg.language_model.max_seq_length
+        if model.config.vocab_size < len(processor.tokenizer):
+            model.model.resize_token_embeddings(len(processor.tokenizer))
     else:
         hf_config = AutoConfig.from_pretrained(model_cfg.visual_encoder.hf_name)
         if getattr(hf_config, "vision_config", None):

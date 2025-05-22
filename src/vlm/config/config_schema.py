@@ -15,15 +15,11 @@ class VisualEncoderConfig:
 class LanguageModelConfig:
     hf_name: str = MISSING
     max_seq_length: int | None = None
-    image_token: str = "<image>"
     use_start_end_tokens: bool = False
     use_image_patch_token: bool = False
     image_start_token: str = "<im_start>"
     image_end_token: str = "<im_end>"
     image_patch_token: str = "<im_patch>"
-    system_token: str | None = None
-    user_token: str | None = None
-    assistant_token: str | None = None
     ignore_index: int = -100
     image_token_index: int = -200
     padding_side: str = "left"
@@ -50,8 +46,10 @@ class DatasetConfig:
     type: str = "json"
     lazy_preprocess: bool = True
     is_multimodal: bool = True
+    early_mix_text: bool = False
     image_folder: str = MISSING
     image_aspect_ratio: str = "square"
+    image_token: str = "<image>"
 
 
 @dataclass

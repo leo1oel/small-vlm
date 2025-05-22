@@ -124,4 +124,4 @@ This project provides a script to easily upload your trained models and processo
 ---
 
 _This project was built from
-[simple-modern-uv](https://github.com/jlevy/simple-modern-uv) and [LLaVa](https://github.com/haotian-liu/LLaVA)._
+[simple-modern-uv](https://github.com/jlevy/simple-modern-uv), [LLaVA](https://github.com/haotian-liu/LLaVA), [LLaVA-NEXT](https://github.com/LLaVA-VL/LLaVA-NeXT)_

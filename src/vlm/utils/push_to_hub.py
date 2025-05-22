@@ -13,52 +13,58 @@ from rich.prompt import Confirm, Prompt
 from rich.text import Text
 from transformers import AutoConfig, AutoModel, AutoProcessor
 
+from ..models import get_dynamic_vlm_class
+
 console = Console()
 
 
-# Import dynamically to avoid circular imports
-def get_dynamic_vlm_class(path: str) -> tuple:
-    """Import function dynamically to avoid circular imports."""
-    try:
-        from ..models import get_dynamic_vlm_class
-
-        return get_dynamic_vlm_class(path)
-    except Exception as e:
-        console.print(f"[red]Error importing get_dynamic_vlm_class: {e}[/red]")
-        raise ImportError(f"Failed to import dynamic VLM class: {e}") from e
-
-
-def push_to_hub(pretrained: str, repo_name: str, force: bool = False) -> bool:
+def push_to_hub(pretrained: str, repo_id: str | None = None, force: bool = False) -> bool:
     """
-    Push a VLM model to the Hugging Face Hub.
+    Process a VLM model and optionally push it to the Hugging Face Hub.
 
     Args:
         pretrained: Path to the pretrained model
-        repo_name: Name of the repository on the Hub
-        force: Whether to force push if the repository already exists
+        repo_id: Name of the repository on the Hub (e.g., 'username/repo_name').
+                     If None, only local processing will be done.
+        force: Whether to force push if the repository already exists (only if repo_id is provided).
 
     Returns:
-        True if the model was successfully pushed, False otherwise
+        True if the model was successfully processed (and optionally pushed), False otherwise.
     """
+    should_upload = repo_id is not None
+
+    action_verb = (
+        "Pushing model to Hugging Face Hub" if should_upload else "Processing model locally"
+    )
+    panel_title = "VLM Hub Push" if should_upload else "VLM Local Processing"
+    progress_task_description = (
+        f"{action_verb}: {repo_id}" if should_upload else "Processing VLM locally..."
+    )
+
     console.print(
         Panel(
-            Text(f"Pushing model to Hugging Face Hub: {repo_name}", style="bold green"),
-            title="VLM Hub Push",
+            Text(f"{action_verb}{f': {repo_id}' if should_upload else ''}", style="bold green"),
+            title=panel_title,
             border_style="green",
         )
     )
 
-    # Validate inputs
-    if not repo_name or "/" not in repo_name:
-        console.print("[red]Invalid repository name. Format should be 'username/repo_name'[/red]")
-        return False
+    # Validate inputs specific to uploading
+    if should_upload:
+        if not repo_id or "/" not in repo_id:  # repo_id will not be None here
+            console.print(
+                "[red]Invalid repository name. Format should be 'username/repo_name'[/red]"
+            )
+            return False
 
     pretrained_path = Path(pretrained)
     templates_path = Path("templates")
 
     generated_files = []
 
-    # Create progress bar
+    # Determine total steps for progress bar
+    total_progress_steps = 5 if should_upload else 3
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -66,22 +72,22 @@ def push_to_hub(pretrained: str, repo_name: str, force: bool = False) -> bool:
         TextColumn("[bold]{task.fields[state]}"),
         console=console,
     ) as progress:
-        # Main task and subtasks
-        main_task = progress.add_task("[cyan]Pushing to Hub...", total=5, state="initializing")
+        main_task = progress.add_task(
+            progress_task_description, total=total_progress_steps, state="initializing"
+        )
 
         # Step 1: Validate paths
         progress.update(main_task, description="Validating paths", state="checking")
-
         if not pretrained_path.exists():
             progress.update(main_task, state="failed")
             console.print(f"[red]Model path not found: {pretrained_path}[/red]")
             return False
-
         if not templates_path.exists():
             progress.update(main_task, state="failed")
-            console.print(f"[red]Templates path not found: {templates_path}[/red]")
+            console.print(
+                f"[red]Templates path not found: {templates_path} (current dir: {Path.cwd()})[/red]"
+            )
             return False
-
         progress.update(main_task, advance=1, state="paths validated")
 
         # Step 2: Get dynamic VLM class
@@ -97,100 +103,119 @@ def push_to_hub(pretrained: str, repo_name: str, force: bool = False) -> bool:
             return False
 
         # Step 3: Apply templates and update config
-        progress.update(main_task, description="Applying templates", state="templating")
+        progress.update(
+            main_task, description="Applying templates & updating config", state="templating"
+        )
         try:
+            # Ensure templates_path is used by _apply_templates if it's not hardcoded there
             file_list = _apply_templates(
-                pretrained_path, parent_llm_class, parent_causal_llm_class, base_model_path
+                pretrained_path,
+                parent_llm_class,
+                parent_causal_llm_class,
+                base_model_path,
+                templates_path,
             )
             generated_files.extend(file_list)
             config_files = _update_config(pretrained_path)
             generated_files.extend(config_files)
-            progress.update(main_task, advance=1, state="templates applied")
+            progress.update(main_task, advance=1, state="templates applied & config updated")
         except Exception as e:
             progress.update(main_task, state="failed")
-            console.print(f"[red]Failed to apply templates: {e}[/red]")
+            console.print(f"[red]Failed to apply templates or update config: {e}[/red]")
             return False
 
-        # Step 4: Push to hub (model and processor)
-        progress.update(
-            main_task, description="Pushing model and processor to Hub", state="pushing"
-        )
-        try:
-            model = AutoModel.from_pretrained(
-                pretrained_path,
-                trust_remote_code=True,
-                torch_dtype="auto",
+        if should_upload and repo_id:  # repo_id is checked for None again for type safety
+            # Step 4: Push to hub (model and processor)
+            progress.update(
+                main_task, description="Pushing model and processor to Hub", state="pushing"
             )
-            processor = AutoProcessor.from_pretrained(
-                pretrained_path,
-                trust_remote_code=True,
-                torch_dtype="auto",
-            )
-
-            model.push_to_hub(repo_name, force=force)
-            processor.push_to_hub(repo_name, force=force)
-
-            progress.update(main_task, advance=1, state="model pushed")
-
-        except Exception as e:
-            progress.update(main_task, state="failed")
-            console.print(f"[red]Failed to push model to Hub: {e}[/red]")
-            return False
-
-        # Step 5: Push custom files to hub
-        progress.update(main_task, description="Pushing custom files to Hub", state="pushing files")
-        try:
-            api = HfApi()
-            token = os.environ.get("HF_TOKEN")
-
-            if not token:
-                console.print("[yellow]Warning: HF_TOKEN environment variable not set.[/yellow]")
-                console.print("[yellow]Will attempt to use cached credentials.[/yellow]")
-
-            for file_path in generated_files:
-                relative_path = file_path.relative_to(pretrained_path)
-                console.print(f"[blue]Uploading {relative_path}...[/blue]")
-
-                api.upload_file(
-                    path_or_fileobj=str(file_path),
-                    path_in_repo=str(relative_path),
-                    repo_id=repo_name,
-                    token=token,
-                    repo_type="model",
-                    create_pr=False,
+            try:
+                model = AutoModel.from_pretrained(
+                    pretrained_path,
+                    trust_remote_code=True,
+                    torch_dtype="auto",
                 )
-                console.print(f"[green]✓[/green] Uploaded {relative_path}")
+                processor = AutoProcessor.from_pretrained(
+                    pretrained_path,
+                    trust_remote_code=True,
+                    torch_dtype="auto",
+                )
 
-            progress.update(main_task, advance=1, state="complete")
+                model.push_to_hub(
+                    repo_id, create_pr=False, safe_serialization=True
+                )  # Added safe_serialization and create_pr
+                processor.push_to_hub(repo_id, create_pr=False)  # Added create_pr
 
-        except Exception as e:
-            progress.update(main_task, state="failed")
-            console.print(f"[red]Failed to push custom files to Hub: {e}[/red]")
-            return False
+                progress.update(main_task, advance=1, state="model pushed")
 
-    console.print(f"[green]Successfully pushed model and all custom files to {repo_name}![/green]")
+            except Exception as e:
+                progress.update(main_task, state="failed")
+                console.print(f"[red]Failed to push model/processor to Hub: {e}[/red]")
+                return False
+
+            # Step 5: Push custom files to hub
+            progress.update(
+                main_task, description="Pushing custom files to Hub", state="pushing files"
+            )
+            try:
+                api = HfApi()
+                token = os.environ.get("HF_TOKEN")  # Token already handled in CLI part
+
+                for file_path in generated_files:
+                    # Ensure file exists before uploading
+                    if not file_path.exists():
+                        console.print(
+                            f"[yellow]Warning: File {file_path} not found, skipping upload.[/yellow]"
+                        )
+                        continue
+
+                    relative_path = file_path.relative_to(pretrained_path)
+                    console.print(f"[blue]Uploading {relative_path}...[/blue]")
+
+                    api.upload_file(
+                        path_or_fileobj=str(file_path),
+                        path_in_repo=str(relative_path),
+                        repo_id=repo_id,
+                        token=token,  # Token will be None if not set, HfApi handles this
+                        repo_type="model",
+                        create_pr=False,
+                    )
+                    console.print(f"[green]✓[/green] Uploaded {relative_path}")
+
+                progress.update(main_task, advance=1, state="custom files pushed")
+            except Exception as e:
+                progress.update(main_task, state="failed")
+                console.print(f"[red]Failed to push custom files to Hub: {e}[/red]")
+                return False
+
+            progress.update(main_task, state="complete")  # Ensure it's marked complete
+            console.print(
+                f"[green]Successfully processed and pushed model and all custom files to {repo_id}![/green]"
+            )
+        else:  # Not uploading
+            progress.update(main_task, state="complete")  # Mark as complete after step 3
+            console.print(
+                "[green]Successfully processed model locally. No upload was requested.[/green]"
+            )
+            console.print(f"Generated/updated files are in: {pretrained_path}")
+
     return True
 
 
 def _apply_templates(
-    pretrained_path: Path, parent_llm_class: Any, parent_causal_llm_class: Any, base_model_path: str
+    pretrained_path: Path,
+    parent_llm_class: Any,
+    parent_causal_llm_class: Any,
+    base_model_path: str,
+    templates_dir: Path,
 ) -> list[Path]:
     """
     Apply Jinja2 templates to generate model files.
-
-    Args:
-        pretrained_path: Path to the pretrained model
-        parent_llm_class: Parent LLM class
-        parent_causal_llm_class: Parent causal LLM class
-        base_model_path: Path to the base model
-
-    Returns:
-        List of generated file paths
+    ... (templates_dir added)
     """
     generated_files = []
-
     try:
-        env = Environment(loader=FileSystemLoader("templates"))
+        env = Environment(loader=FileSystemLoader(templates_dir))  # Use templates_dir
 
         console.print("[bold green]Rendering templates...[/bold green]")
 
@@ -206,19 +231,19 @@ def _apply_templates(
             modeling_file,
         )
         generated_files.append(modeling_file)
-        console.print("[green]✓[/green] Generated modeling_vlm.py")
+        console.print(f"[green]✓[/green] Generated {modeling_file.name}")
 
         # Render processing template
         processing_file = pretrained_path / "processing_vlm.py"
         _render_template(env, "processing_vlm.py.j2", {}, processing_file)
         generated_files.append(processing_file)
-        console.print("[green]✓[/green] Generated processing_vlm.py")
+        console.print(f"[green]✓[/green] Generated {processing_file.name}")
 
         # Render connectors template
         connectors_file = pretrained_path / "connectors.py"
         _render_template(env, "connectors.py.j2", {}, connectors_file)
         generated_files.append(connectors_file)
-        console.print("[green]✓[/green] Generated connectors.py")
+        console.print(f"[green]✓[/green] Generated {connectors_file.name}")
 
         # Get parent config class and render configuration template
         parent_config_class = AutoConfig.from_pretrained(
@@ -235,7 +260,7 @@ def _apply_templates(
             config_file,
         )
         generated_files.append(config_file)
-        console.print("[green]✓[/green] Generated configuration_vlm.py")
+        console.print(f"[green]✓[/green] Generated {config_file.name}")
 
         return generated_files
 
@@ -249,20 +274,13 @@ def _render_template(
 ) -> None:
     """
     Render a Jinja2 template and write it to a file.
-
-    Args:
-        env: Jinja2 environment
-        template_name: Name of the template
-        context: Template context variables
-        output_path: Path to write the output file
+    ... (no changes needed here) ...
     """
     try:
         template = env.get_template(template_name)
         output = template.render(**context)
-
         output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:  # Added encoding
             f.write(output)
     except Exception as e:
         console.print(f"[red]Failed to render template {template_name}: {e}[/red]")
@@ -272,53 +290,40 @@ def _render_template(
 def _update_config(pretrained_path: Path) -> list[Path]:
     """
     Update the model configuration files.
-
-    Args:
-        pretrained_path: Path to the pretrained model
-
-    Returns:
-        List of updated config file paths
+    ... (no changes needed here) ...
     """
     updated_files = []
-
     config_path = pretrained_path / "config.json"
-
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
     try:
         console.print("[bold green]Updating model config...[/bold green]")
-
-        # Update model config
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:  # Added encoding
             config = json.load(f)
-
         config["auto_map"] = {
             "AutoConfig": "configuration_vlm.VLMConfig",
             "AutoModel": "modeling_vlm.VLMForCausalLM",
         }
+        # Ensure trust_remote_code is true if custom code is used
+        config["trust_remote_code"] = True
 
-        with open(config_path, "w") as f:
+        with open(config_path, "w", encoding="utf-8") as f:  # Added encoding
             json.dump(config, f, indent=2)
-
         updated_files.append(config_path)
-        console.print("[green]✓[/green] Updated config.json")
+        console.print(f"[green]✓[/green] Updated {config_path.name}")
 
-        # Create processor config
         processor_config_path = pretrained_path / "processor_config.json"
         processor_config = {
             "auto_map": {"AutoProcessor": "processing_vlm.VLMProcessor"},
             "processor_class": "VLMProcessor",
         }
-
-        with open(processor_config_path, "w") as f:
+        with open(processor_config_path, "w", encoding="utf-8") as f:  # Added encoding
             json.dump(processor_config, f, indent=2)
-
         updated_files.append(processor_config_path)
-        console.print("[green]✓[/green] Created processor_config.json")
+        console.print(f"[green]✓[/green] Created {processor_config_path.name}")
 
         return updated_files
-
     except Exception as e:
         console.print(f"[red]Failed to update config: {e}[/red]")
         raise
@@ -326,69 +331,110 @@ def _update_config(pretrained_path: Path) -> list[Path]:
 
 def push_vlm_to_hub():
     """Main function for CLI execution with interactive prompts."""
-    # Print banner
     console.print(
         Panel.fit(
             Text("VLM Hub Tool", style="bold cyan"),
             border_style="cyan",
         )
     )
-
-    # Interactive input using Rich's Prompt
     console.print("[bold]Please provide the following information:[/bold]")
 
-    # Get model path with input validation
     valid_path = False
+    pretrained_model_path_str = ""  # Initialize
     while not valid_path:
-        pretrained = Prompt.ask("[cyan]Path to pretrained model[/cyan]", console=console)
-        if Path(pretrained).exists():
+        pretrained_model_path_str = Prompt.ask(
+            "[cyan]Path to pretrained model[/cyan]", console=console
+        )
+        if Path(pretrained_model_path_str).exists() and Path(pretrained_model_path_str).is_dir():
             valid_path = True
         else:
-            console.print(f"[red]Path does not exist: {pretrained}[/red]")
-
-    # Get repository name with format validation
-    valid_repo = False
-    while not valid_repo:
-        repo_name = Prompt.ask(
-            "[cyan]Repository name on Hub[/cyan] [dim](format: username/repo_name)[/dim]",
-            console=console,
-        )
-        if "/" in repo_name:
-            valid_repo = True
-        else:
             console.print(
-                "[red]Invalid repository name. Format should be 'username/repo_name'[/red]"
+                f"[red]Path does not exist or is not a directory: {pretrained_model_path_str}[/red]"
             )
 
-    # Force push option
-    force = Confirm.ask(
-        "[cyan]Force push if repository already exists?[/cyan]", default=False, console=console
+    # Ask if user wants to upload
+    should_upload_to_hub = Confirm.ask(
+        "[cyan]Do you want to upload the processed model to Hugging Face Hub?[/cyan]",
+        default=True,
+        console=console,
     )
 
-    token = os.environ.get("HF_TOKEN")
-    if not token:
-        console.print("[yellow]Warning: HF_TOKEN environment variable not set[/yellow]")
-        console.print("[yellow]Will attempt to use cached credentials or prompt for login[/yellow]")
-        if Confirm.ask("[cyan]Would you like to set HF_TOKEN now?[/cyan]", default=True):
-            token = Prompt.ask("[cyan]Enter your Hugging Face token[/cyan]", password=True)
-            os.environ["HF_TOKEN"] = token
+    repo_id_for_upload: str | None = None
+    force_push_flag = False
+    token_is_set_or_provided = False  # For summary
+
+    if should_upload_to_hub:
+        valid_repo = False
+        while not valid_repo:
+            repo_id_for_upload = Prompt.ask(
+                "[cyan]Repository ID on Hub[/cyan] [dim](format: username/repo_name or orgname/repo_name)[/dim]",
+                console=console,
+            )
+            if repo_id_for_upload and "/" in repo_id_for_upload:
+                valid_repo = True
+            else:
+                console.print(
+                    "[red]Invalid repository ID. Format should be 'username/repo_name' or 'orgname/repo_name'[/red]"
+                )
+
+        force_push_flag = Confirm.ask(
+            "[cyan]Force push if repository already exists?[/cyan]", default=False, console=console
+        )
+
+        # Token handling only if uploading
+        token = os.environ.get("HF_TOKEN")
+        if not token:
+            console.print("[yellow]Warning: HF_TOKEN environment variable not set.[/yellow]")
+            console.print(
+                "[yellow]Will attempt to use cached credentials or prompt for login if needed by huggingface_hub library.[/yellow]"
+            )
+            if Confirm.ask(
+                "[cyan]Would you like to set HF_TOKEN for this session (recommended for uploads)?[/cyan]",
+                default=True,
+            ):
+                token = Prompt.ask(
+                    "[cyan]Enter your Hugging Face token (will not be stored permanently)[/cyan]",
+                    password=True,
+                )
+                if token:
+                    os.environ["HF_TOKEN"] = token  # Set for current process
+                    token_is_set_or_provided = True
+                else:
+                    console.print(
+                        "[yellow]No token entered. Proceeding without explicitly set token for this session.[/yellow]"
+                    )
+            else:
+                console.print(
+                    "[yellow]Proceeding without explicitly set HF_TOKEN for this session.[/yellow]"
+                )
+        else:
+            token_is_set_or_provided = True  # Token was already in env
 
     # Display summary and confirm
     console.print("\n[bold]Summary:[/bold]")
-    console.print(f"  Model path: [green]{pretrained}[/green]")  # pyright: ignore
-    console.print(f"  Repository: [green]{repo_name}[/green]")  # pyright: ignore
-    console.print(
-        f"  Force push: [{'green' if force else 'yellow'}]{force}[/{'green' if force else 'yellow'}]"
-    )
-    console.print(
-        f"  HF Token: [{'green' if token else 'yellow'}]{'Set' if token else 'Not set'}[/{'green' if token else 'yellow'}]"
-    )
+    console.print(f"  Model path: [green]{pretrained_model_path_str}[/green]")
 
-    # Final confirmation
+    if should_upload_to_hub:
+        console.print("  Upload to Hub: [green]Yes[/green]")
+        console.print(f"  Repository ID: [green]{repo_id_for_upload}[/green]")
+        console.print(
+            f"  Force push: [{'green' if force_push_flag else 'yellow'}]{force_push_flag}[/{'green' if force_push_flag else 'yellow'}]"
+        )
+        console.print(
+            f"  HF Token: [{'green' if token_is_set_or_provided else 'yellow'}]"
+            f"{'Set/Provided' if token_is_set_or_provided else 'Not explicitly set for session (will use cache/login if needed)'}"
+            f"[/{'green' if token_is_set_or_provided else 'yellow'}]"
+        )
+    else:
+        console.print("  Upload to Hub: [yellow]No (local processing only)[/yellow]")
+
     if Confirm.ask(
         "\n[bold yellow]Proceed with these settings?[/bold yellow]", default=True, console=console
     ):
-        success = push_to_hub(pretrained, repo_name, force)  # pyright: ignore
+        # Pass repo_id_for_upload (which will be None if not uploading)
+        success = push_to_hub(
+            pretrained_model_path_str, repo_id=repo_id_for_upload, force=force_push_flag
+        )
         sys.exit(0 if success else 1)
     else:
         console.print("[yellow]Operation cancelled by user[/yellow]")

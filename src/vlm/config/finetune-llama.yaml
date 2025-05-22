@@ -1,6 +1,6 @@
 defaults:
   - cfg
-  - model: qwen3-1.7b
+  - model: llama3.2-3b
   - trainer: finetune
   - inference: default
   - dataset: llava-finetune

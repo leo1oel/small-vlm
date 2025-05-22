@@ -1,11 +1,13 @@
 import base64
 import dataclasses
+import re
 from collections.abc import Callable
 from enum import Enum, auto
 from io import BytesIO
 from typing import Any
 
 from PIL import Image
+from transformers import AutoTokenizer
 
 
 class SeparatorStyle(Enum):
@@ -15,7 +17,11 @@ class SeparatorStyle(Enum):
     TWO = auto()
     MPT = auto()
     PLAIN = auto()
+    CHATML = auto()
     LLAMA_2 = auto()
+    LLAMA_3 = auto()
+    QWEN = auto()
+    GEMMA = auto()
 
 
 @dataclasses.dataclass
@@ -31,6 +37,13 @@ class Conversation:
     sep2: str | None = None
     version: str = "Unknown"
 
+    tokenizer_id: str = ""
+    tokenizer: Any = None
+    # Stop criteria (the default one is EOS token)
+    stop_str: str | list[str] | None = None
+    # Stops generation if meeting any token in this list
+    stop_token_ids: list[int] | None = None
+
     skip_next: bool = False
 
     def get_prompt(self):
@@ -38,13 +51,17 @@ class Conversation:
         if len(messages) > 0 and isinstance(messages[0][1], tuple):
             messages = self.messages.copy()
             init_role, init_msg = messages[0].copy()
-            init_msg = init_msg[0].replace("<image>", "").strip()
+            init_msg = init_msg[0]
             if "mmtag" in self.version:
+                init_msg = init_msg.replace("<image>", "").strip()
                 messages[0] = (init_role, init_msg)
                 messages.insert(0, (self.roles[0], "<Image><image></Image>"))
                 messages.insert(1, (self.roles[1], "Received."))
-            else:
+            elif not init_msg.startswith("<image>"):
+                init_msg = init_msg.replace("<image>", "").strip()
                 messages[0] = (init_role, "<image>\n" + init_msg)
+            else:
+                messages[0] = (init_role, init_msg)
 
         if self.sep_style == SeparatorStyle.SINGLE:
             ret = self.system + self.sep
@@ -55,6 +72,7 @@ class Conversation:
                     ret += role + ": " + message + self.sep
                 else:
                     ret += role + ":"
+
         elif self.sep_style == SeparatorStyle.TWO:
             seps = [self.sep, self.sep2]
             ret = self.system + seps[0]
@@ -65,6 +83,47 @@ class Conversation:
                     ret += role + ": " + message + seps[i % 2]
                 else:
                     ret += role + ":"
+
+        elif self.sep_style == SeparatorStyle.CHATML:
+            ret = "" if self.system == "" else self.system + self.sep + "\n"
+            for role, message in messages:
+                if message:
+                    if isinstance(message, tuple):
+                        message, images, _ = message
+                        message = "<image>" * len(images) + message
+                    ret += role + "\n" + message + self.sep + "\n"
+                else:
+                    ret += role + "\n"
+            return ret
+
+        elif self.sep_style == SeparatorStyle.LLAMA_3:
+            if self.tokenizer is None:
+                raise ValueError(
+                    "Llama 3 tokenizer is not available. Make sure you have the necessary permissions."
+                )
+            chat_template_messages = [{"role": "system", "content": self.system}]
+            for role, message in messages:
+                if message:
+                    if isinstance(message, tuple):
+                        message, images = message
+                        message = "<image>" * len(images) + message
+                    chat_template_messages.append({"role": role, "content": message})
+
+            # print(chat_template_messages)
+            return self.tokenizer.apply_chat_template(
+                chat_template_messages, tokenize=False, add_generation_prompt=True
+            )
+            # ret = "" if self.system == "" else self.system + self.sep + "\n"
+            # for role, message in messages:
+            #     if message:
+            #         if type(message) is tuple:
+            #             message, images = message
+            #             message = "<image>" * len(images) + message
+            #         ret += role + "\n" + message + self.sep + "\n"
+            #     else:
+            #         ret += role + "\n"
+            # return ret
+
         elif self.sep_style == SeparatorStyle.MPT:
             ret = self.system + self.sep
             for role, message in messages:
@@ -74,6 +133,20 @@ class Conversation:
                     ret += role + message + self.sep
                 else:
                     ret += role
+
+        elif self.sep_style == SeparatorStyle.GEMMA:
+            ret = ""
+            for i, (role, message) in enumerate(messages):
+                assert role == self.roles[i % 2], (
+                    "Conversation should alternate user/assistant/user/assistant/..."
+                )
+                if message:
+                    if isinstance(message, tuple):
+                        message, _, _ = message
+                    ret += role + message + self.sep
+                else:
+                    ret += role
+
         elif self.sep_style == SeparatorStyle.LLAMA_2:
             wrap_sys: Callable[[str | Any], str] = (
                 lambda msg: f"<<SYS>>\n{msg}\n<</SYS>>\n\n" if len(msg) > 0 else msg
@@ -98,6 +171,7 @@ class Conversation:
                 else:
                     ret += ""
             ret = ret.lstrip(self.sep)
+
         elif self.sep_style == SeparatorStyle.PLAIN:
             seps = [self.sep, self.sep2]
             ret = self.system
@@ -122,8 +196,6 @@ class Conversation:
         image_process_mode: str,
         return_pil: bool = False,
         image_format: str = "PNG",
-        max_len: int = 1344,
-        min_len: int = 672,
     ):
         if image_process_mode == "Pad":
 
@@ -149,17 +221,21 @@ class Conversation:
             image = image.resize((336, 336))
         else:
             raise ValueError(f"Invalid image_process_mode: {image_process_mode}")
-        if max(image.size) > max_len:
-            max_hw, min_hw = max(image.size), min(image.size)
-            aspect_ratio = max_hw / min_hw
-            shortest_edge = int(min(max_len / aspect_ratio, min_len, min_hw))
-            longest_edge = int(shortest_edge * aspect_ratio)
-            w, h = image.size
-            if h > w:
-                h, w = longest_edge, shortest_edge
-            else:
-                h, w = shortest_edge, longest_edge
-            image = image.resize((w, h))
+
+        if type(image) is not Image.Image:
+            image = Image.open(image).convert("RGB")
+
+        max_hw, min_hw = max(image.size), min(image.size)
+        aspect_ratio = max_hw / min_hw
+        max_len, min_len = 672, 448
+        shortest_edge = int(min(max_len / aspect_ratio, min_len, min_hw))
+        longest_edge = int(shortest_edge * aspect_ratio)
+        w, h = image.size
+        if h > w:
+            h, w = longest_edge, shortest_edge
+        else:
+            h, w = shortest_edge, longest_edge
+        image = image.resize((w, h))
         if return_pil:
             return image
         else:
@@ -168,15 +244,28 @@ class Conversation:
             img_b64_str = base64.b64encode(buffered.getvalue()).decode()
             return img_b64_str
 
-    def get_images(self, return_pil: bool = False):
+    def get_images(self, return_pil: bool = False, return_path: str = False):
         images = []
         for i, (_, msg) in enumerate(self.messages[self.offset :]):
             if i % 2 == 0:
                 if isinstance(msg, tuple):
                     msg, image, image_process_mode = msg
-                    image = self.process_image(image, image_process_mode, return_pil=return_pil)
-                    images.append(image)
+                    if not isinstance(image, list):
+                        image = [image]
+                    for img in image:
+                        if not return_path and self.is_image_file(img):
+                            img = self.process_image(img, image_process_mode, return_pil=return_pil)
+                        else:
+                            images.append(img)
         return images
+
+    def is_image_file(self, filename: str):
+        image_extensions = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"]
+        return any(filename.lower().endswith(ext) for ext in image_extensions)
+
+    def is_video_file(self, filename: str):
+        video_extensions = [".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".mpeg", ".mpg"]
+        return any(filename.lower().endswith(ext) for ext in video_extensions)
 
     def to_gradio_chatbot(self):
         ret = []
@@ -184,12 +273,34 @@ class Conversation:
             if i % 2 == 0:
                 if isinstance(msg, tuple):
                     msg, image, _ = msg
-                    img_b64_str = self.process_image(
-                        image, "Default", return_pil=False, image_format="JPEG"
-                    )
-                    img_str = f'<img src="data:image/jpeg;base64,{img_b64_str}" alt="user upload image" />'
-                    msg = img_str + msg.replace("<image>", "").strip()
-                    ret.append([msg, None])
+                    if not isinstance(image, list):
+                        image = [image]
+                    if len(image) == 1:
+                        msg = "<image>\n" + msg.replace("<image>", "").strip()
+                    else:
+                        msg = re.sub(r"(<image>)\n(?=<image>)", r"\1 ", msg)
+
+                    img_str_list = []
+                    for img in image:
+                        if self.is_image_file(img):
+                            img_b64_str = self.process_image(
+                                img, "Default", return_pil=False, image_format="JPEG"
+                            )
+                            img_str = f'<img src="data:image/jpeg;base64,{img_b64_str}" style="max-width: 256px; max-height: 256px; width: auto; height: auto; object-fit: contain;"/>'
+                            img_str_list.append(img_str)
+                        elif self.is_video_file(img):
+                            ret.append(((img,), None))
+
+                    msg = msg.strip()
+                    img_place_holder = ""
+                    for img_str in img_str_list:
+                        img_place_holder += f"{img_str}\n\n"
+
+                    if len(img_str_list) > 0:
+                        msg = f"{img_place_holder}\n\n{msg}"
+
+                    if len(msg) > 0:
+                        ret.append([msg, None])
                 else:
                     ret.append([msg, None])
             else:
@@ -232,12 +343,12 @@ conv_vicuna_v0 = Conversation(
     system="A chat between a curious human and an artificial intelligence assistant. "
     "The assistant gives helpful, detailed, and polite answers to the human's questions.",
     roles=("Human", "Assistant"),
-    messages=(
-        (
+    messages=[
+        [
             "Human",
             "What are the key differences between renewable and non-renewable energy sources?",
-        ),
-        (
+        ],
+        [
             "Assistant",
             "Renewable energy sources are those that can be replenished naturally in a relatively "
             "short amount of time, such as solar, wind, hydro, geothermal, and biomass. "
@@ -257,8 +368,8 @@ conv_vicuna_v0 = Conversation(
             "situations and needs, while non-renewable sources are more rigid and inflexible.\n"
             "6. Sustainability: Renewable energy sources are more sustainable over the long term, while "
             "non-renewable sources are not, and their depletion can lead to economic and social instability.\n",
-        ),
-    ),
+        ],
+    ],
     offset=2,
     sep_style=SeparatorStyle.SINGLE,
     sep="###",
@@ -269,7 +380,7 @@ conv_vicuna_v1 = Conversation(
     "The assistant gives helpful, detailed, and polite answers to the user's questions.",
     roles=("USER", "ASSISTANT"),
     version="v1",
-    messages=(),
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.TWO,
     sep=" ",
@@ -282,7 +393,7 @@ conv_llama_2 = Conversation(
 If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information.""",
     roles=("USER", "ASSISTANT"),
     version="llama_v2",
-    messages=(),
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.LLAMA_2,
     sep="<s>",
@@ -295,7 +406,64 @@ conv_llava_llama_2 = Conversation(
     "and assist the user with a variety of tasks using natural language.",
     roles=("USER", "ASSISTANT"),
     version="llama_v2",
-    messages=(),
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.LLAMA_2,
+    sep="<s>",
+    sep2="</s>",
+)
+
+
+def safe_load_tokenizer(tokenizer_id: str):
+    try:
+        return AutoTokenizer.from_pretrained(tokenizer_id)
+    except Exception:
+        return None
+
+
+conv_llava_llama_3 = Conversation(
+    system="You are a helpful language and vision assistant. "
+    "You are able to understand the visual content that the user provides, "
+    "and assist the user with a variety of tasks using natural language.",
+    roles=("user", "assistant"),
+    version="llama_v3",
+    messages=[],
+    offset=0,
+    sep="<|eot_id|>",
+    sep_style=SeparatorStyle.LLAMA_3,
+    tokenizer_id="meta-llama/Meta-Llama-3-8B-Instruct",
+    tokenizer=safe_load_tokenizer("meta-llama/Meta-Llama-3-8B-Instruct"),
+    stop_token_ids=[128009],
+)
+
+conv_mistral_instruct = Conversation(
+    system="",
+    roles=("USER", "ASSISTANT"),
+    version="llama_v2",
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.LLAMA_2,
+    sep="",
+    sep2="</s>",
+)
+
+conv_llava_llama_2_simple = Conversation(
+    system="Answer the questions about the visual content that the user provides.",
+    roles=("USER", "ASSISTANT"),
+    version="llama_v2",
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.LLAMA_2,
+    sep="<s>",
+    sep2="</s>",
+)
+
+conv_llava_llama_2_mmtag = Conversation(
+    system="Answer the questions about the visual content that the user provides."
+    "The visual content will be provided with the following format: <Image>visual content</Image>.",
+    roles=("USER", "ASSISTANT"),
+    version="llama_v2_mmtag",
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.LLAMA_2,
     sep="<s>",
@@ -304,19 +472,51 @@ conv_llava_llama_2 = Conversation(
 
 conv_mpt = Conversation(
     system="""<|im_start|>system
-A conversation between a user and an LanguageModel-based AI assistant. The assistant gives helpful and honest answers.""",
+A conversation between a user and an LLM-based AI assistant. The assistant gives helpful and honest answers.""",
     roles=("<|im_start|>user\n", "<|im_start|>assistant\n"),
     version="mpt",
-    messages=(),
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.MPT,
     sep="<|im_end|>",
 )
 
+conv_qwen = Conversation(
+    system="""<|im_start|>system
+You are a helpful assistant.""",
+    roles=("<|im_start|>user", "<|im_start|>assistant"),
+    version="qwen",
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.CHATML,
+    sep="<|im_end|>",
+)
+
+conv_qwen_2_5 = Conversation(
+    system="""<|im_start|>system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.""",
+    roles=("<|im_start|>user", "<|im_start|>assistant"),
+    version="qwen",
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.CHATML,
+    sep="<|im_end|>",
+)
+
+conv_gemma_instruct = Conversation(
+    system="",
+    roles=("<start_of_turn>user\n", "<start_of_turn>model\n"),
+    version="gemma",
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.GEMMA,
+    sep="<end_of_turn>\n",
+)
+
 conv_llava_plain = Conversation(
     system="",
     roles=("", ""),
-    messages=(),
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.PLAIN,
     sep="\n",
@@ -326,7 +526,7 @@ conv_llava_v0 = Conversation(
     system="A chat between a curious human and an artificial intelligence assistant. "
     "The assistant gives helpful, detailed, and polite answers to the human's questions.",
     roles=("Human", "Assistant"),
-    messages=(),
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.SINGLE,
     sep="###",
@@ -337,7 +537,7 @@ conv_llava_v0_mmtag = Conversation(
     "The assistant is able to understand the visual content that the user provides, and assist the user with a variety of tasks using natural language."
     "The visual content will be provided with the following format: <Image>visual content</Image>.",
     roles=("Human", "Assistant"),
-    messages=(),
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.SINGLE,
     sep="###",
@@ -349,7 +549,7 @@ conv_llava_v1 = Conversation(
     "The assistant gives helpful, detailed, and polite answers to the human's questions.",
     roles=("USER", "ASSISTANT"),
     version="v1",
-    messages=(),
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.TWO,
     sep=" ",
@@ -361,7 +561,7 @@ conv_llava_v1_mmtag = Conversation(
     "The assistant is able to understand the visual content that the user provides, and assist the user with a variety of tasks using natural language."
     "The visual content will be provided with the following format: <Image>visual content</Image>.",
     roles=("USER", "ASSISTANT"),
-    messages=(),
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.TWO,
     sep=" ",
@@ -369,15 +569,37 @@ conv_llava_v1_mmtag = Conversation(
     version="v1_mmtag",
 )
 
-conv_mistral_instruct = Conversation(
-    system="",
-    roles=("USER", "ASSISTANT"),
-    version="llama_v2",
-    messages=(),
+conv_mistral_orca = Conversation(
+    system="""<|im_start|>system
+You are MistralOrca, a large language model trained by Alignment Lab AI. Write out your reasoning step-by-step to be sure you get the right answers!""",
+    roles=("<|im_start|>user\n", "<|im_start|>assistant\n"),
+    version="mpt",
+    messages=[],
     offset=0,
-    sep_style=SeparatorStyle.LLAMA_2,
-    sep="",
-    sep2="</s>",
+    sep_style=SeparatorStyle.MPT,
+    sep="<|im_end|>",
+)
+
+conv_mistral_zephyr = Conversation(
+    system="""<|system|>
+You are a helpful AI assistant.""",
+    roles=("<|user|>\n", "<|assistant|>\n"),
+    version="mpt",
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.MPT,
+    sep="</s>",
+)
+
+conv_mistral_direct = Conversation(
+    system="""<|im_start|>system
+Answer the questions.""",
+    roles=("<|im_start|>user\n", "<|im_start|>assistant\n"),
+    version="mpt",
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.MPT,
+    sep="<|im_end|>",
 )
 
 conv_chatml_direct = Conversation(
@@ -385,13 +607,13 @@ conv_chatml_direct = Conversation(
 Answer the questions.""",
     roles=("<|im_start|>user\n", "<|im_start|>assistant\n"),
     version="mpt",
-    messages=(),
+    messages=[],
     offset=0,
     sep_style=SeparatorStyle.MPT,
     sep="<|im_end|>",
 )
 
-default_conversation = conv_vicuna_v1
+default_conversation = conv_vicuna_v0
 conv_templates = {
     "default": conv_vicuna_v0,
     "v0": conv_vicuna_v0,
@@ -399,16 +621,26 @@ conv_templates = {
     "vicuna_v1": conv_vicuna_v1,
     "llama_2": conv_llama_2,
     "mistral_instruct": conv_mistral_instruct,
-    "chatml_direct": conv_chatml_direct,
-    "mistral_direct": conv_chatml_direct,
+    "mistral_orca": conv_mistral_orca,
+    "mistral_zephyr": conv_mistral_zephyr,
+    "mistral_direct": conv_mistral_direct,
     "plain": conv_llava_plain,
     "v0_plain": conv_llava_plain,
+    "chatml_direct": conv_chatml_direct,
     "llava_v0": conv_llava_v0,
-    "v0_mmtag": conv_llava_v0_mmtag,
+    "llava_v0_mmtag": conv_llava_v0_mmtag,
     "llava_v1": conv_llava_v1,
-    "v1_mmtag": conv_llava_v1_mmtag,
+    "llava_v1_mmtag": conv_llava_v1_mmtag,
     "llava_llama_2": conv_llava_llama_2,
+    "llava_llama_3": conv_llava_llama_3,
+    "llava_llama_2_simple": conv_llava_llama_2_simple,
+    "llava_llama_2_mmtag": conv_llava_llama_2_mmtag,
+    "llava_mistral_instruct": conv_mistral_instruct,
     "mpt": conv_mpt,
+    "qwen_1_5": conv_qwen,
+    "qwen_2": conv_qwen,
+    "qwen_2_5": conv_qwen_2_5,
+    "gemma_instruct": conv_gemma_instruct,
 }
 
 
