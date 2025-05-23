@@ -3,6 +3,7 @@ defaults:
 
 language_model:
   hf_name: Qwen/Qwen3-1.7B
+  max_seq_length: 4096
 
 visual_encoder:
   hf_name: google/siglip2-base-patch16-256

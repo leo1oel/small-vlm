@@ -12,7 +12,7 @@ report_to: wandb
 # resume_from_checkpoint: resume_model_path
 from_pretrained: /pasteur/u/yiming/small-vlm/outputs/2025-05-21/22-24-16
 group_by_modality_length: True
-save_steps: 50000
+save_steps: 5000
 
 defaults:
   - unfreeze: unfrozen
