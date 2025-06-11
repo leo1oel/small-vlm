@@ -16,10 +16,10 @@ lint:
 	uv run python devtools/lint.py
 
 test:
-	uv run pytest -vv -s
+	uv run pytest
 
 upgrade:
-	uv sync --upgrade
+	uv sync --upgrade --all-extras --dev
 	uv pip install flash-attn --no-build-isolation
 
 build:
