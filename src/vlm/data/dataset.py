@@ -172,7 +172,7 @@ def preprocess_llama_2(
     if has_image:
         input_ids = torch.stack(
             [
-                tokenizer_image_token(prompt, tokenizer, return_tensors="pt")
+                tokenizer_image_token(prompt, tokenizer, return_tensors="pt", data_args=data_args)
                 for prompt in conversations
             ],
             dim=0,

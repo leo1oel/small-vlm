@@ -1,5 +1,5 @@
 deepspeed: /pasteur/u/yiming/small-vlm/src/vlm/config/deepspeed/zero3.json
-version: qwen_2
+version: plain
 bf16: True
 tf32: True
 per_device_train_batch_size: 4
@@ -10,9 +10,9 @@ gradient_checkpointing: True
 dataloader_num_workers: 4
 report_to: wandb
 # resume_from_checkpoint: resume_model_path
-from_pretrained: /pasteur/u/yiming/small-vlm/outputs/2025-05-21/22-24-16
+from_pretrained: /pasteur/u/yiming/small-vlm/outputs/2025-06-11/05-14-08
 group_by_modality_length: True
-save_steps: 5000
+save_steps: 100
 
 defaults:
   - unfreeze: unfrozen
