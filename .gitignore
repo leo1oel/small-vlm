@@ -196,3 +196,6 @@ debug.ipynb
 
 # slurm output
 *.out
+
+# claude
+CLAUDE.md

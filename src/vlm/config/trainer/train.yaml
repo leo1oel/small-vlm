@@ -1,5 +1,5 @@
 deepspeed: /pasteur/u/yiming/small-vlm/src/vlm/config/deepspeed/zero2.json
-version: plain
+version: v1
 bf16: True
 tf32: True
 per_device_train_batch_size: 4
@@ -8,10 +8,11 @@ warmup_ratio: 0.03
 lr_scheduler_type: cosine
 gradient_checkpointing: True
 dataloader_num_workers: 8
+from_pretrained: /pasteur/u/yiming/small-vlm/outputs/2025-07-01/11-35-48/checkpoint-8720
 report_to: wandb
-save_steps: 8000
+save_steps: 2000
 
 defaults:
-  - unfreeze: pretrain
-  - learning_rate: llava-pretrain
+  - unfreeze: unfrozen
+  - learning_rate: llava-finetune
   - weight_decay: default

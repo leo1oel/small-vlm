@@ -239,7 +239,7 @@ def create_dynamic_causal_vlm_class(
             if not self.config.vision_config.use_cls_token:
                 image_features = hidden_states[:, 1:]
             else:
-                image_features = hidden_states
+                image_features = hidden_states[:, 0:1]
         image_features = self.model.connector(image_features)
 
         return image_features

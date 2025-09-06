@@ -39,7 +39,7 @@ def eval_model(
     image_token_index = model.config.image_token_index
     image_start_token = model.config.image_start_token
     image_end_token = model.config.image_end_token
-    image_token = model.config.image_token
+    image_token = getattr(model.config, "image_token", "<image>")
     image_placeholder = "<image-placeholder>"
     image_token_se = image_start_token + image_token + image_end_token
     if image_placeholder in query:
@@ -57,23 +57,34 @@ def eval_model(
 
     conv = conv_templates[conv_mode].copy()
     conv.append_message(conv.roles[0], query)
-    conv.append_message(conv.roles[1], None)
+    conv.append_message(conv.roles[1], "")
     prompt = conv.get_prompt()
 
     images = Image.open(image_path).convert("RGB")
     image_sizes = [images.size]
     images_tensor = process_images(
         [images], image_processor, SimpleNamespace(image_aspect_ratio="pad")
-    ).to(model.device, dtype=model.config.torch_dtype)
-
-    input_ids = (
-        tokenizer_image_token(prompt, tokenizer, image_token_index, return_tensors="pt")
-        .unsqueeze(0)
-        .cuda()
     )
+    # Ensure it's a tensor
+    if isinstance(images_tensor, list):
+        images_tensor = torch.stack(images_tensor, dim=0)
+    images_tensor = images_tensor.to(model.device, dtype=model.config.torch_dtype)
+
+    input_ids = tokenizer_image_token(prompt, tokenizer, image_token_index, return_tensors="pt")
+    if isinstance(input_ids, list):
+        input_ids = torch.tensor(input_ids, dtype=torch.long)
+    input_ids = input_ids.unsqueeze(0).cuda()
+
+    # Create attention mask and set pad_token_id
+    attention_mask = torch.ones_like(input_ids)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
     with torch.inference_mode():
         output_ids = model.generate(
             input_ids,
+            attention_mask=attention_mask,
+            pad_token_id=tokenizer.pad_token_id,
             images=images_tensor,
             image_sizes=image_sizes,
             do_sample=True if temperature > 0 else False,

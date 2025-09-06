@@ -2,11 +2,11 @@ defaults:
   - _self_
 
 language_model:
-  hf_name: lmsys/vicuna-7b-v1.5
-  max_seq_length: 2048
+  hf_name: Qwen/Qwen2.5-7B-Instruct
+  max_seq_length: 4096
 
 visual_encoder:
-  hf_name: openai/clip-vit-large-patch14-336
+  hf_name: google/siglip2-so400m-patch14-384
   output_layer: -1
   use_cls_token: True
 
@@ -14,4 +14,4 @@ connector:
   name: mlp_2_gelu
   type: mlp
 
-name: llava-7b
+name: qwen2.5-7b

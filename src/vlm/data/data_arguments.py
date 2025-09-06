@@ -27,7 +27,7 @@ def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> Da
         lazy_preprocess=data_config.lazy_preprocess,
         is_multimodal=data_config.is_multimodal,
         image_folder=data_config.image_folder,
-        image_token=data_config.image_token,
+        image_token=trainer_config.language_model.image_token,
         early_mix_text=data_config.early_mix_text,
         use_start_end_tokens=trainer_config.language_model.use_start_end_tokens,
         use_image_patch_token=trainer_config.language_model.use_image_patch_token,

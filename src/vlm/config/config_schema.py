@@ -20,6 +20,7 @@ class LanguageModelConfig:
     image_start_token: str = "<im_start>"
     image_end_token: str = "<im_end>"
     image_patch_token: str = "<im_patch>"
+    image_token: str = "<image>"
     ignore_index: int = -100
     image_token_index: int = -200
     padding_side: str = "left"
