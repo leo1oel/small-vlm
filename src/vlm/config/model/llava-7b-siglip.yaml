@@ -6,12 +6,13 @@ language_model:
   max_seq_length: 2048
 
 visual_encoder:
-  hf_name: openai/clip-vit-base-patch32
-  output_layer: -2
+  hf_name: google/siglip-so400m-patch14-384
+  output_layer: -1
+  use_all_tokens: False
   use_cls_token: True
 
 connector:
   name: mlp_2_gelu
   type: mlp
 
-name: llava-7b
+name: llava-7b-siglip

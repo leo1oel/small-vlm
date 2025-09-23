@@ -1,4 +1,5 @@
 import re
+import warnings
 from types import SimpleNamespace
 
 import torch
@@ -7,6 +8,89 @@ from PIL import Image
 from ..models import VLMProcessor, get_dynamic_vlm
 from ..utils import conv_templates
 from .generator import process_images, tokenizer_image_token
+
+
+def _auto_detect_conv_mode(model_path: str):
+    """Auto-detect conversation mode based on model path"""
+    model_path_lower = model_path.lower()
+
+    # Check for specific model types in order of specificity
+    if "llama-3" in model_path_lower or "llama3" in model_path_lower:
+        return "llava_llama_3"
+    elif "llama-2" in model_path_lower or "llama2" in model_path_lower:
+        return "llava_llama_2"
+    elif "llama" in model_path_lower:
+        return "llava_llama_2"  # Default for llama models
+    elif "qwen2.5" in model_path_lower or "qwen-2.5" in model_path_lower:
+        return "qwen_2_5"
+    elif "qwen2" in model_path_lower or "qwen-2" in model_path_lower:
+        return "qwen_2"
+    elif "qwen1.5" in model_path_lower or "qwen-1.5" in model_path_lower:
+        return "qwen_1_5"
+    elif "qwen" in model_path_lower:
+        return "qwen_1_5"  # Default for qwen models
+    elif "mistral" in model_path_lower and "instruct" in model_path_lower:
+        return "mistral_instruct"
+    elif "mistral" in model_path_lower and "orca" in model_path_lower:
+        return "mistral_orca"
+    elif "mistral" in model_path_lower and "zephyr" in model_path_lower:
+        return "mistral_zephyr"
+    elif "mistral" in model_path_lower:
+        return "mistral_instruct"  # Default for mistral models
+    elif "gemma" in model_path_lower and "instruct" in model_path_lower:
+        return "gemma_instruct"
+    elif "vicuna" in model_path_lower:
+        return "vicuna_v1"
+    elif "mpt" in model_path_lower:
+        return "mpt"
+    elif "llava" in model_path_lower and "v0" in model_path_lower:
+        return "llava_v0"
+    elif "llava" in model_path_lower:
+        return "llava_v1"  # Default for llava models
+    else:
+        # Default fallback
+        warnings.warn(f"Could not auto-detect conv_mode for {model_path}, using 'v1' as default")
+        return "v1"
+
+
+def load_model(
+    pretrained: str,
+    bf16: bool = True,
+    fp16: bool = False,
+    attn_implementation: str = "eager",
+):
+    """
+    Load VLM model and processor for inference.
+
+    Args:
+        pretrained: Path to pretrained model
+        bf16: Use bfloat16 precision
+        fp16: Use float16 precision
+        attn_implementation: Attention implementation type
+
+    Returns:
+        Tuple of (model, processor, config_dict)
+    """
+    processor = VLMProcessor.from_pretrained(pretrained)
+    VLMForCausalLM, _ = get_dynamic_vlm(pretrained)
+    model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
+        pretrained,
+        low_cpu_mem_usage=True,
+        torch_dtype=torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,
+        attn_implementation=attn_implementation,
+    )
+    model.cuda()
+    model.eval()
+
+    config_dict = {
+        "image_token_index": model.config.image_token_index,
+        "image_start_token": model.config.image_start_token,
+        "image_end_token": model.config.image_end_token,
+        "image_token": getattr(model.config, "image_token", "<image>"),
+        "use_start_end_tokens": model.config.use_start_end_tokens,
+    }
+
+    return model, processor, config_dict
 
 
 def eval_model(
@@ -19,41 +103,33 @@ def eval_model(
     max_new_tokens: int = 100,
     bf16: bool = True,
     fp16: bool = False,
-    attn_implementation: str = "triton",
+    attn_implementation: str = "eager",
 ):
-    processor = VLMProcessor.from_pretrained(
-        pretrained,
+    model, processor, config = load_model(
+        pretrained, bf16=bf16, fp16=fp16, attn_implementation=attn_implementation
     )
-    VLMForCausalLM, _ = get_dynamic_vlm(pretrained)
-    model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
-        pretrained,
-        low_cpu_mem_usage=True,
-        torch_dtype=torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,
-        attn_implementation=attn_implementation,
-    )
-    model.cuda()
-    model.eval()
+
     tokenizer = processor.tokenizer
     image_processor = processor.image_processor
 
-    image_token_index = model.config.image_token_index
-    image_start_token = model.config.image_start_token
-    image_end_token = model.config.image_end_token
-    image_token = getattr(model.config, "image_token", "<image>")
+    image_token_index = config["image_token_index"]
+    image_start_token = config["image_start_token"]
+    image_end_token = config["image_end_token"]
+    image_token = config["image_token"]
     image_placeholder = "<image-placeholder>"
     image_token_se = image_start_token + image_token + image_end_token
     if image_placeholder in query:
-        if model.config.use_start_end_tokens:
+        if config["use_start_end_tokens"]:
             query = re.sub(image_placeholder, image_token_se, query)
         else:
             query = re.sub(image_placeholder, image_token, query)
     else:
-        if model.config.use_start_end_tokens:
+        if config["use_start_end_tokens"]:
             query = image_token_se + "\n" + query
         else:
             query = image_token + "\n" + query
 
-    conv_mode = "v1"
+    conv_mode = _auto_detect_conv_mode(pretrained)
 
     conv = conv_templates[conv_mode].copy()
     conv.append_message(conv.roles[0], query)

@@ -19,6 +19,20 @@ class DataArguments:
     ignore_index: int = -100
     image_token_index: int = -200
     image_aspect_ratio: str = "square"
+    clip_data_path: str | None = field(default=None)
+    clip_image_folder: str | None = field(default=None)
+    clip_webdataset_urls: str | None = field(
+        default=None, metadata={"help": "WebDataset URLs for CLIP data"}
+    )
+    clip_data_type: str = field(
+        default="json", metadata={"help": "CLIP data type: 'json' or 'webdataset'"}
+    )
+    clip_dataset_size: int | None = field(
+        default=None,
+        metadata={"help": "Number of samples in CLIP dataset (required for webdataset)"},
+    )
+    vlm_batch_size: int | None = field(default=None)
+    clip_batch_size: int | None = field(default=None)
 
 
 def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> DataArguments:
@@ -37,4 +51,11 @@ def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> Da
         ignore_index=trainer_config.language_model.ignore_index,
         image_token_index=trainer_config.language_model.image_token_index,
         image_aspect_ratio=data_config.image_aspect_ratio,
+        clip_data_path=data_config.clip_data_path,
+        clip_image_folder=data_config.clip_image_folder,
+        clip_webdataset_urls=data_config.clip_webdataset_urls,
+        clip_data_type=data_config.clip_data_type,
+        clip_dataset_size=data_config.clip_dataset_size,
+        vlm_batch_size=data_config.vlm_batch_size,
+        clip_batch_size=data_config.clip_batch_size,
     )

@@ -5,10 +5,27 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+def format_param_count(count: int) -> str:
+    """Format parameter count with M/B units"""
+    if count >= 1_000_000_000:
+        return f"{count / 1_000_000_000:.1f}B"
+    elif count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    elif count >= 1_000:
+        return f"{count / 1_000:.1f}K"
+    else:
+        return str(count)
+
+
 def format_param_stats(trainable: int, total: int) -> str:
     if total == 0:
         return f"{trainable:,} (0.00% of 0)"
-    return f"{trainable:,} ({trainable / total:.2%} of {total:,})"
+
+    trainable_str = format_param_count(trainable)
+    total_str = format_param_count(total)
+    percentage = trainable / total * 100
+
+    return f"{trainable_str} ({percentage:.1f}% of {total_str})"
 
 
 def count_params(params_list: list):
@@ -60,17 +77,22 @@ def log_trainable_params_detailed(model: Any):
         param_stats["components"][component] = {"": (trainable, total)}
 
     if total_params > 0:
-        log.info(f"Trainable parameters: {format_param_stats(total_trainable, total_params)}")
+        log.info("Training parameters overview:")
+        log.info(f"  Total parameters: {format_param_count(total_params)}")
+        log.info(f"  Trainable: {format_param_stats(total_trainable, total_params)}")
 
+        log.info("Component breakdown:")
         for component_name, stats in param_stats["components"].items():
             main_stat = stats[""]
             trainable, total = main_stat
             if total > 0:
-                log.info(f" - {component_name}: {format_param_stats(*main_stat)}")
+                status = "trainable" if trainable > 0 else "frozen"
+                log.info(f"  • {component_name}: {format_param_stats(*main_stat)} [{status}]")
 
                 for subname, substats in stats.items():
                     if subname != "" and substats[1] > 0:
-                        log.info(f"   - {subname}: {format_param_stats(*substats)}")
+                        sub_status = "trainable" if substats[0] > 0 else "frozen"
+                        log.info(f"    - {subname}: {format_param_stats(*substats)} [{sub_status}]")
 
     return param_stats
 

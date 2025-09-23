@@ -230,7 +230,9 @@ class TrainingArguments(transformers.TrainingArguments):
     language_model_lr: float | None = None
     connector_lr: float | None = None
     visual_encoder_lr: float | None = None
+    group_by_length: bool = False
     group_by_modality_length: bool = False
+    sequential_sampling: bool = False
     language_model_wd: float | None = None
     connector_wd: float | None = None
     visual_encoder_wd: float | None = None
@@ -246,6 +248,7 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         save_strategy=config.save_strategy,
         save_steps=config.save_steps,
         save_total_limit=config.save_total_limit,
+        save_only_model=config.save_only_model,
         learning_rate=config.learning_rate.default_lr,
         weight_decay=config.weight_decay.default_wd,
         warmup_ratio=config.warmup_ratio,
@@ -255,6 +258,7 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         bf16=config.bf16,
         fp16=config.fp16,
         dataloader_num_workers=config.dataloader_num_workers,
+        dataloader_prefetch_factor=config.dataloader_prefetch_factor,
         report_to=config.report_to,
         per_device_train_batch_size=config.per_device_train_batch_size,
         per_device_eval_batch_size=config.per_device_eval_batch_size,
@@ -266,6 +270,8 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         connector_lr=config.learning_rate.connector_learning_rate,
         visual_encoder_lr=config.learning_rate.visual_encoder_learning_rate,
         group_by_modality_length=config.group_by_modality_length,
+        group_by_length=config.group_by_length,
+        sequential_sampling=config.sequential_sampling,
         language_model_wd=config.weight_decay.language_model_weight_decay,
         connector_wd=config.weight_decay.connector_weight_decay,
         visual_encoder_wd=config.weight_decay.visual_encoder_weight_decay,

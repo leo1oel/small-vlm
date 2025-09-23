@@ -37,18 +37,22 @@ classifiers = [
 
 dependencies = [
     "accelerate==1.6.0",
-    "blobfile==3.0.0",
+    "blobfile",
+    "datasets",
     "deepspeed==0.16.7",
-    "hydra-core==1.3.2",
-    "pillow==11.2.1",
+    "hydra-core",
+    "libcst",
+    "open-clip-torch>=3.2.0",
+    "pillow",
     "protobuf==6.30.2",
-    "rich==14.0.0",
+    "rich",
     "sentencepiece==0.2.0",
     "tiktoken==0.9.0",
     "torch==2.6.0",
     "torchvision==0.21.0",
-    "transformers==4.51.3",
-    "wandb==0.19.10",
+    "transformers",
+    "wandb",
+    "webdataset>=1.0.2",
 ]
 
 
@@ -56,14 +60,15 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3.5",
-    "pytest-sugar>=1.0.0",
-    "ruff>=0.11.9",
-    "codespell>=2.4.1",
-    "rich>=14.0.0",
-    "basedpyright>=1.29.1",
-    "funlog>=0.2.1",
-    "ipykernel>=6.29.5",
+    "pytest",
+    "pytest-sugar",
+    "ruff",
+    "codespell",
+    "rich",
+    "basedpyright",
+    "funlog",
+    "ipykernel",
+    "ipywidgets>=8.1.7",
 ]
 
 [project.scripts]
@@ -90,7 +95,7 @@ source = "uv-dynamic-versioning"
 [tool.uv-dynamic-versioning]
 vcs = "git"
 style = "pep440"
-bump = "true"
+bump = true
 
 [tool.hatch.build.targets.wheel]
 # The source location for the package.

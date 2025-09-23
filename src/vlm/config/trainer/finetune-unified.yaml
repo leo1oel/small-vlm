@@ -8,12 +8,12 @@ lr_scheduler_type: cosine
 gradient_checkpointing: True
 dataloader_num_workers: 4
 dataloader_prefetch_factor: 2
+save_only_model: True
 report_to: wandb
 # resume_from_checkpoint: resume_model_path
-from_pretrained: /pasteur2/u/yiming/small-vlm/outputs/llava-7b-siglip/pretrain/llava-pretrain/2025-09-17_19-44-55
-group_by_modality_length: True
-save_steps: 2000
-save_only_model: True
+from_pretrained: /pasteur2/u/yiming/small-vlm/outputs/llava-7b-unified/pretrain/unified-pretrain/2025-09-06_09-52-22
+# sequential_sampling: True
+save_steps: 1000
 
 defaults:
   - unfreeze: finetune

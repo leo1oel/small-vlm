@@ -1,4 +1,4 @@
-from .inference import process_images, tokenizer_image_token
+from .inference import eval_model, load_model, process_images, tokenizer_image_token
 from .models import VLMProcessor, get_dynamic_vlm
 from .utils import conv_templates
 from .vlm import main_cli, push_to_hub
@@ -11,4 +11,6 @@ __all__ = [
     "conv_templates",
     "push_to_hub",
     "main_cli",
+    "load_model",
+    "eval_model",
 ]

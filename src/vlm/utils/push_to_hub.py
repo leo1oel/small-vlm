@@ -2,7 +2,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
 
 from huggingface_hub import HfApi
 from jinja2 import Environment, FileSystemLoader
@@ -58,8 +57,6 @@ def push_to_hub(pretrained: str, repo_id: str | None = None, force: bool = False
             return False
 
     pretrained_path = Path(pretrained)
-    templates_path = Path("templates")
-
     generated_files = []
 
     # Determine total steps for progress bar
@@ -82,46 +79,55 @@ def push_to_hub(pretrained: str, repo_id: str | None = None, force: bool = False
             progress.update(main_task, state="failed")
             console.print(f"[red]Model path not found: {pretrained_path}[/red]")
             return False
-        if not templates_path.exists():
-            progress.update(main_task, state="failed")
-            console.print(
-                f"[red]Templates path not found: {templates_path} (current dir: {Path.cwd()})[/red]"
-            )
-            return False
         progress.update(main_task, advance=1, state="paths validated")
 
-        # Step 2: Get dynamic VLM class
-        progress.update(main_task, description="Loading model classes", state="loading")
+        # Step 2: Resolve base model path from local config
+        progress.update(main_task, description="Resolving base model", state="loading")
         try:
-            parent_llm_class, parent_causal_llm_class, base_model_path = get_dynamic_vlm_class(
-                str(pretrained_path)
+            cfg_path = pretrained_path / "config.json"
+            if not cfg_path.exists():
+                raise FileNotFoundError(f"Missing config.json in {pretrained_path}")
+            import json as _json
+
+            with open(cfg_path, encoding="utf-8") as _f:
+                _cfg = _json.load(_f)
+            base_model_path = _cfg.get("hf_name") or _cfg.get("base_model_name_or_path")
+            if not base_model_path:
+                raise ValueError(
+                    "config.json must contain 'hf_name' (or 'base_model_name_or_path') to locate the base LLM"
+                )
+            # Resolve parent classes for static generation
+            parent_llm_class, parent_causal_llm_class, _ = get_dynamic_vlm_class(base_model_path)
+            parent_config_class = AutoConfig.from_pretrained(
+                base_model_path, trust_remote_code=True
+            ).__class__
+            parent_names = (
+                parent_llm_class.__name__,
+                parent_causal_llm_class.__name__,
+                parent_config_class.__name__,
             )
-            progress.update(main_task, advance=1, state="classes loaded")
+            progress.update(main_task, advance=1, state="base resolved")
         except Exception as e:
             progress.update(main_task, state="failed")
-            console.print(f"[red]Failed to get dynamic VLM class: {e}[/red]")
+            console.print(f"[red]Failed to resolve base model: {e}[/red]")
             return False
 
-        # Step 3: Apply templates and update config
+        # Step 3: Generate hub files from source models and update config
         progress.update(
-            main_task, description="Applying templates & updating config", state="templating"
+            main_task, description="Generating hub files & updating config", state="generating"
         )
         try:
-            # Ensure templates_path is used by _apply_templates if it's not hardcoded there
-            file_list = _apply_templates(
-                pretrained_path,
-                parent_llm_class,
-                parent_causal_llm_class,
-                base_model_path,
-                templates_path,
-            )
+            # Copy processing/connectors from source
+            file_list = _copy_from_models(pretrained_path)
+            # Render modeling/config with static parent class names (offline-friendly)
+            file_list += _render_template_files(pretrained_path, *parent_names)
             generated_files.extend(file_list)
-            config_files = _update_config(pretrained_path)
+            config_files = _update_config(pretrained_path, base_model_path)
             generated_files.extend(config_files)
-            progress.update(main_task, advance=1, state="templates applied & config updated")
+            progress.update(main_task, advance=1, state="hub files generated & config updated")
         except Exception as e:
             progress.update(main_task, state="failed")
-            console.print(f"[red]Failed to apply templates or update config: {e}[/red]")
+            console.print(f"[red]Failed to generate files or update config: {e}[/red]")
             return False
 
         if should_upload and repo_id:  # repo_id is checked for None again for type safety
@@ -202,92 +208,64 @@ def push_to_hub(pretrained: str, repo_id: str | None = None, force: bool = False
     return True
 
 
-def _apply_templates(
+def _copy_from_models(pretrained_path: Path) -> list[Path]:
+    """Copy processing/connectors from src/vlm/models to the model folder."""
+    generated_files: list[Path] = []
+    models_dir = Path(__file__).resolve().parents[1] / "models"
+    sources = {
+        "processing_vlm.py": models_dir / "processing_vlm.py",
+        "connectors.py": models_dir / "connectors.py",
+    }
+
+    console.print(
+        "[bold green]Copying connectors and processing from src/vlm/models...[/bold green]"
+    )
+    for out_name, src_path in sources.items():
+        dst_path = pretrained_path / out_name
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        dst_path.write_text(src_path.read_text(encoding="utf-8"), encoding="utf-8")
+        generated_files.append(dst_path)
+        console.print(f"[green]✓[/green] Generated {dst_path.name}")
+    return generated_files
+
+
+def _render_template_files(
     pretrained_path: Path,
-    parent_llm_class: Any,
-    parent_causal_llm_class: Any,
-    base_model_path: str,
-    templates_dir: Path,
+    parent_llm_class_name: str,
+    parent_causal_llm_class_name: str,
+    parent_config_class_name: str,
 ) -> list[Path]:
-    """
-    Apply Jinja2 templates to generate model files.
-    ... (templates_dir added)
-    """
-    generated_files = []
-    try:
-        env = Environment(loader=FileSystemLoader(templates_dir))  # Use templates_dir
+    """Render modeling_vlm.py and configuration_vlm.py using templates with resolved parent class names."""
+    generated: list[Path] = []
+    templates_dir = Path(__file__).resolve().parents[3] / "templates"
+    env = Environment(loader=FileSystemLoader(templates_dir))
 
-        console.print("[bold green]Rendering templates...[/bold green]")
+    # modeling_vlm.py
+    modeling_file = pretrained_path / "modeling_vlm.py"
+    tmpl = env.get_template("modeling_vlm.py.j2")
+    output = tmpl.render(
+        parent_class=parent_llm_class_name,
+        causal_parent_class=parent_causal_llm_class_name,
+    )
+    modeling_file.write_text(output, encoding="utf-8")
+    generated.append(modeling_file)
+    console.print(f"[green]✓[/green] Generated {modeling_file.name}")
 
-        # Render modeling template
-        modeling_file = pretrained_path / "modeling_vlm.py"
-        _render_template(
-            env,
-            "modeling_vlm.py.j2",
-            {
-                "parent_class": parent_llm_class.__name__,
-                "causal_parent_class": parent_causal_llm_class.__name__,
-            },
-            modeling_file,
-        )
-        generated_files.append(modeling_file)
-        console.print(f"[green]✓[/green] Generated {modeling_file.name}")
+    # configuration_vlm.py
+    config_file = pretrained_path / "configuration_vlm.py"
+    tmpl = env.get_template("configuration_vlm.py.j2")
+    output = tmpl.render(parent_class=parent_config_class_name)
+    config_file.write_text(output, encoding="utf-8")
+    generated.append(config_file)
+    console.print(f"[green]✓[/green] Generated {config_file.name}")
 
-        # Render processing template
-        processing_file = pretrained_path / "processing_vlm.py"
-        _render_template(env, "processing_vlm.py.j2", {}, processing_file)
-        generated_files.append(processing_file)
-        console.print(f"[green]✓[/green] Generated {processing_file.name}")
-
-        # Render connectors template
-        connectors_file = pretrained_path / "connectors.py"
-        _render_template(env, "connectors.py.j2", {}, connectors_file)
-        generated_files.append(connectors_file)
-        console.print(f"[green]✓[/green] Generated {connectors_file.name}")
-
-        # Get parent config class and render configuration template
-        parent_config_class = AutoConfig.from_pretrained(
-            base_model_path, trust_remote_code=True
-        ).__class__
-
-        config_file = pretrained_path / "configuration_vlm.py"
-        _render_template(
-            env,
-            "configuration_vlm.py.j2",
-            {
-                "parent_class": parent_config_class.__name__,
-            },
-            config_file,
-        )
-        generated_files.append(config_file)
-        console.print(f"[green]✓[/green] Generated {config_file.name}")
-
-        return generated_files
-
-    except Exception as e:
-        console.print(f"[red]Failed to apply templates: {e}[/red]")
-        raise
+    return generated
 
 
-def _render_template(
-    env: Environment, template_name: str, context: dict[str, Any], output_path: Path
-) -> None:
-    """
-    Render a Jinja2 template and write it to a file.
-    ... (no changes needed here) ...
-    """
-    try:
-        template = env.get_template(template_name)
-        output = template.render(**context)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:  # Added encoding
-            f.write(output)
-    except Exception as e:
-        console.print(f"[red]Failed to render template {template_name}: {e}[/red]")
-        raise
+# templates used for modeling/config to ensure static parent classes
 
 
-def _update_config(pretrained_path: Path) -> list[Path]:
+def _update_config(pretrained_path: Path, base_model_path: str | None = None) -> list[Path]:
     """
     Update the model configuration files.
     ... (no changes needed here) ...
@@ -307,6 +285,9 @@ def _update_config(pretrained_path: Path) -> list[Path]:
         }
         # Ensure trust_remote_code is true if custom code is used
         config["trust_remote_code"] = True
+        # Record base HF name/path for dynamic resolution if not present
+        if base_model_path and "hf_name" not in config:
+            config["hf_name"] = base_model_path
 
         with open(config_path, "w", encoding="utf-8") as f:  # Added encoding
             json.dump(config, f, indent=2)

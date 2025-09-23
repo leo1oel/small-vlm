@@ -7,8 +7,11 @@ from omegaconf import MISSING  # pyright: ignore
 @dataclass
 class VisualEncoderConfig:
     hf_name: str = MISSING
+    open_clip: bool = False
+    open_clip_model: str | None = None
     output_layer: int | None = None
     use_cls_token: bool = False
+    use_all_tokens: bool = False
 
 
 @dataclass
@@ -38,6 +41,7 @@ class ModelConfig:
     visual_encoder: VisualEncoderConfig = field(default_factory=VisualEncoderConfig)
     language_model: LanguageModelConfig = field(default_factory=LanguageModelConfig)
     connector: ConnectorConfig = field(default_factory=ConnectorConfig)
+    dual_task: bool = False
 
 
 @dataclass
@@ -51,6 +55,13 @@ class DatasetConfig:
     image_folder: str = MISSING
     image_aspect_ratio: str = "square"
     image_token: str = "<image>"
+    clip_data_type: str | None = None
+    clip_dataset_size: int | None = None
+    clip_data_path: str | None = None
+    clip_image_folder: str | None = None
+    clip_webdataset_urls: str | None = None
+    vlm_batch_size: int | None = None
+    clip_batch_size: int | None = None
 
 
 @dataclass
@@ -78,27 +89,33 @@ class WeightDecayConfig:
 
 @dataclass
 class TrainerConfig:
+    name: str = MISSING
     output_dir: str = "."
     unfreeze: UnfreezeConfig = field(default_factory=UnfreezeConfig)
     learning_rate: LearningRateConfig = field(default_factory=LearningRateConfig)
     weight_decay: WeightDecayConfig = field(default_factory=WeightDecayConfig)
     per_device_train_batch_size: int = 16
     per_device_eval_batch_size: int = 4
-    bf16: bool = False
+    # Precision flags: None means auto-detect; True/False means user override
+    bf16: bool | None = None
     fp16: bool = False
-    tf32: bool = False
+    tf32: bool | None = None
     deepspeed: str | None = None
     num_train_epochs: int = 1
     save_strategy: str = "steps"
     save_steps: int = 5000
     save_total_limit: int = 20
+    save_only_model: bool = False
     logging_steps: int = 1
     warmup_ratio: float = 0.0
     lr_scheduler_type: str = "linear"
     gradient_accumulation_steps: int = 1
     report_to: str | None = None
-    dataloader_num_workers: int = 0
+    dataloader_num_workers: int = 4
+    dataloader_prefetch_factor: int | None = None
     version: str = "v0"
+    group_by_length: bool = False
+    sequential_sampling: bool = False
     group_by_modality_length: bool = False
     gradient_checkpointing: bool = False
     run_name: str = "small-vlm"

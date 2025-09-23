@@ -52,6 +52,7 @@ def create_dynamic_vlm_config_class(
             vision_config_args: dict[str, Any] = None,
             connector_config_args: dict[str, Any] = None,
             lazy_load: bool = False,
+            dual_task: bool = False,
             **kwargs: Any,
         ):
             final_vision_args = kwargs.pop("vision_config", vision_config_args)
@@ -60,7 +61,7 @@ def create_dynamic_vlm_config_class(
             self.vision_config: VisionConfig = VisionConfig(**(final_vision_args or {}))
             self.connector_config: ConnectorConfig = ConnectorConfig(**(final_connector_args or {}))
             self.lazy_load: bool = lazy_load
-
+            self.dual_task: bool = dual_task
             # Initialize the base language model configuration part
             super().__init__(**kwargs)
 

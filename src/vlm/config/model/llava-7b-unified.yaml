@@ -6,12 +6,13 @@ language_model:
   max_seq_length: 2048
 
 visual_encoder:
-  hf_name: openai/clip-vit-base-patch32
+  hf_name: openai/clip-vit-base-patch16
   output_layer: -2
-  use_cls_token: True
+  use_cls_token: False
 
 connector:
   name: mlp_2_gelu
   type: mlp
 
-name: llava-7b
+name: llava-7b-unified
+dual_task: True

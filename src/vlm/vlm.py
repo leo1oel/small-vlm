@@ -5,14 +5,15 @@ from pathlib import Path
 import hydra
 import torch
 from omegaconf import OmegaConf
-from transformers import AutoConfig, PreTrainedTokenizer, set_seed
+from transformers import AutoConfig, AutoProcessor, PreTrainedTokenizer, set_seed
 
 from vlm.config.config_schema import LanguageModelConfig
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
-from .data import get_data_args, make_supervised_data_module
+from .data import get_data_args, make_supervised_data_module, make_unified_data_module
 from .models import VLMProcessor, get_dynamic_vlm
 from .train import get_training_args, train
+from .utils.precision import resolve_precision
 
 log: logging.Logger = logging.getLogger(name=__name__)
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"
@@ -64,7 +65,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
             trainer_cfg.from_pretrained,
             low_cpu_mem_usage=True,
-            torch_dtype=torch.bfloat16
+            dtype=torch.bfloat16
             if trainer_cfg.bf16
             else torch.float16
             if trainer_cfg.fp16
@@ -77,10 +78,22 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         if model.config.vocab_size < len(processor.tokenizer):
             model.model.resize_token_embeddings(len(processor.tokenizer))
     else:
-        hf_config = AutoConfig.from_pretrained(model_cfg.visual_encoder.hf_name)
-        if getattr(hf_config, "vision_config", None):
-            hf_config = hf_config.vision_config
-        vision_config = hf_config.to_dict() | OmegaConf.to_container(model_cfg.visual_encoder)
+        if model_cfg.visual_encoder.open_clip:
+            import open_clip
+
+            hf_config = open_clip.get_model_config(model_cfg.visual_encoder.open_clip_model)
+            if hf_config is None:
+                raise ValueError(f"Could not get model config for {model_cfg.visual_encoder.open_clip_model}")
+            # For open_clip, extract vision_cfg and rename width to hidden_size
+            vision_config_dict = hf_config['vision_cfg'].copy()
+            if 'width' in vision_config_dict:
+                vision_config_dict['hidden_size'] = vision_config_dict['width']
+        else:
+            hf_config = AutoConfig.from_pretrained(model_cfg.visual_encoder.hf_name)
+            if getattr(hf_config, "vision_config", None):
+                hf_config = hf_config.vision_config
+            vision_config_dict = hf_config if isinstance(hf_config, dict) else hf_config.to_dict()
+        vision_config = vision_config_dict | OmegaConf.to_container(model_cfg.visual_encoder)
         connector_config = OmegaConf.to_container(model_cfg.connector)
         hf_config = AutoConfig.from_pretrained(model_cfg.language_model.hf_name)
         if model_cfg.language_model.max_seq_length is None:
@@ -89,6 +102,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         processor = VLMProcessor.from_names(
             model_cfg.visual_encoder.hf_name,
             model_cfg.language_model.hf_name,
+            model_cfg.visual_encoder.open_clip_model,
             trust_remote_code=True,
             use_fast=True,
             model_max_length=model_cfg.language_model.max_seq_length,
@@ -100,6 +114,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             vision_config=vision_config,
             connector_config=connector_config,
             lazy_load=True,
+            dual_task=model_cfg.dual_task,
             **language_config,
         )
         model = VLMForCausalLM.from_pretrained(
@@ -107,7 +122,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             config=config,
             low_cpu_mem_usage=True,
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16
+            dtype=torch.bfloat16
             if trainer_cfg.bf16
             else torch.float16
             if trainer_cfg.fp16
@@ -120,6 +135,11 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         model.config.lazy_load = False
 
     log.info(model.config)
+
+    total_params = sum(p.numel() for p in model.parameters())
+    from .train.set_trainable import format_param_count
+
+    log.info(f"Model loaded: {model_cfg.name} ({format_param_count(total_params)} parameters)")
     log.info("Model loaded successfully")
     return model, processor
 
@@ -128,12 +148,28 @@ def vlm(cfg: AppConfig) -> None:
     set_seed(cfg.trainer.seed)
     if cfg.is_training:
         log.info("Training mode")
+        # Resolve precision: user-provided overrides win; otherwise auto-detect.
+        resolved_bf16, resolved_tf32 = resolve_precision(cfg.trainer.bf16, cfg.trainer.tf32)
+        cfg.trainer.bf16 = resolved_bf16
+        cfg.trainer.tf32 = resolved_tf32
         training_args = get_training_args(cfg.trainer)
+        if cfg.model.dual_task:
+            log.info("Dual task mode")
+        else:
+            log.info("Single task mode")
         model, processor = load_model(cfg.model, cfg.trainer)
         model.to(training_args.device)
         data_args = get_data_args(cfg.dataset, cfg.model)
         log.info("Creating data module")
-        data_module = make_supervised_data_module(processor=processor, data_args=data_args)
+        if cfg.model.dual_task:
+            clip_tokenizer = AutoProcessor.from_pretrained(
+                cfg.model.visual_encoder.hf_name, use_fast=True
+            ).tokenizer
+            data_module = make_unified_data_module(
+                processor=processor, clip_tokenizer=clip_tokenizer, data_args=data_args
+            )
+        else:
+            data_module = make_supervised_data_module(processor=processor, data_args=data_args)
         train(model, training_args, data_module, processor)
 
 
@@ -144,6 +180,11 @@ def validate_config(cfg: AppConfig) -> None:
 @hydra.main(version_base=None, config_path=str(CONFIG_PATH), config_name="config")  # pyright: ignore
 def main(cfg: AppConfig) -> None:
     validate_config(cfg)
+
+    if cfg.trainer.run_name == "small-vlm":
+        cfg.trainer.run_name = f"{cfg.model.name}-{cfg.trainer.name}-{cfg.dataset.name}"
+        log.info(f"Setting run_name to: {cfg.trainer.run_name}")
+
     vlm(cfg)
 
 

@@ -13,4 +13,8 @@ hydra:
   job_logging:
     root:
       level: INFO
-
+  run:
+    dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

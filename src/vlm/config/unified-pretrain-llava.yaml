@@ -1,9 +1,9 @@
 defaults:
   - cfg
-  - model: llava-7b-cc12m
+  - model: llava-7b-unified
   - trainer: pretrain
   - inference: default
-  - dataset: llava-pretrain
+  - dataset: unified-pretrain
   - override hydra/job_logging: rich
   - _self_
 

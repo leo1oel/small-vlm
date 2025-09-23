@@ -1,0 +1,17 @@
+defaults:
+  - _self_
+
+language_model:
+  hf_name: Qwen/Qwen2.5-7B-Instruct
+  max_seq_length: 4096
+
+visual_encoder:
+  hf_name: /pasteur2/u/yiming/open_clip/models/ViT-L-14-hf
+  output_layer: -2
+  use_cls_token: False
+
+connector:
+  name: mlp_2_gelu
+  type: mlp
+
+name: qwen2.5-7b-cc12m

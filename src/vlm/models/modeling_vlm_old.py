@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 from torch import FloatTensor, LongTensor, Tensor
 from transformers import AutoConfig, AutoModel, PreTrainedModel
-from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.auto.modeling_auto import (
     MODEL_FOR_CAUSAL_LM_MAPPING,
     MODEL_MAPPING,
@@ -72,19 +71,12 @@ def create_dynamic_vlm_class(
 
     def _build_vision_model(self: Any, config: Any) -> PreTrainedModel:
         vision_config = config.vision_config
-        if not vision_config.open_clip:
-            visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
-                vision_config.hf_name, trust_remote_code=True
-            )
-            if getattr(visual_encoder, "vision_model", None) and not config.dual_task:
-                visual_encoder = visual_encoder.vision_model  # pyright: ignore
-        else:
-            import open_clip
-
-            visual_encoder = open_clip.create_model(
-                vision_config.open_clip_model,
-                pretrained=vision_config.hf_name,
-            )
+        visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
+            vision_config.hf_name,
+            trust_remote_code=True,
+        )
+        if getattr(visual_encoder, "vision_model", None):
+            visual_encoder = visual_encoder.vision_model  # pyright: ignore
         return visual_encoder
 
     def _build_connector(self: Any, config: Any) -> Connector:
@@ -141,65 +133,7 @@ def create_dynamic_causal_vlm_class(
         images: FloatTensor | None = None,
         image_sizes: list[list[int]] | None = None,
         return_dict: bool | None = None,
-        task_modes: list[str] | None = None,
-        # CLIP specific parameters
-        clip_input_ids: LongTensor | None = None,
-        clip_attention_mask: Tensor | None = None,
-        clip_images: FloatTensor | None = None,
-    ) -> tuple | CausalLMOutputWithPast:
-        # Early image encoding - encode all image inputs at the beginning
-        image_features = None
-        if images is not None:
-            image_features, _ = self.encode_images(images)
-        if task_modes is not None and "clip" in task_modes:
-            clip_outputs = None
-            if clip_images is not None:
-                _, clip_outputs = self.encode_images(
-                    clip_images,
-                    input_ids=clip_input_ids,
-                    attention_mask=clip_attention_mask,
-                )
-            if "vlm" in task_modes:
-                if inputs_embeds is None:
-                    (
-                        input_ids,
-                        position_ids,
-                        attention_mask,
-                        past_key_values,
-                        inputs_embeds,
-                        labels,
-                    ) = self.prepare_inputs_labels_for_multimodal(
-                        input_ids,
-                        position_ids,
-                        attention_mask,
-                        past_key_values,
-                        labels,
-                        image_features,
-                    )
-                vlm_outputs = super(self.__class__, self).forward(
-                    input_ids=input_ids,
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    labels=labels,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
-                    return_dict=return_dict,
-                )
-            else:
-                vlm_outputs = {"loss": 0}
-
-            self.report_metrics(
-                clip_loss=clip_outputs.loss,
-                vlm_loss=vlm_outputs.loss,
-            )
-
-            total_loss = clip_outputs.loss + vlm_outputs.loss
-
-            return (total_loss,)
-
+    ) -> torch.Tensor:
         if inputs_embeds is None:
             (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = (
                 self.prepare_inputs_labels_for_multimodal(
@@ -208,7 +142,7 @@ def create_dynamic_causal_vlm_class(
                     attention_mask,
                     past_key_values,
                     labels,
-                    image_features,
+                    images,
                 )
             )
         return super(self.__class__, self).forward(
@@ -238,7 +172,6 @@ def create_dynamic_causal_vlm_class(
             raise NotImplementedError("`inputs_embeds` is not supported")
 
         if images is not None:
-            image_features, _ = self.encode_images(images)
             (_, position_ids, attention_mask, _, inputs_embeds, _) = (
                 self.prepare_inputs_labels_for_multimodal(
                     inputs,
@@ -246,7 +179,7 @@ def create_dynamic_causal_vlm_class(
                     attention_mask,
                     None,
                     None,
-                    image_features,
+                    images,
                 )
             )
         else:
@@ -282,85 +215,36 @@ def create_dynamic_causal_vlm_class(
             inputs["image_sizes"] = image_sizes
         return inputs
 
-    def encode_images_raw(
-        self: Any,
-        images: Tensor,
-        input_ids: LongTensor | None = None,
-        attention_mask: Tensor | None = None,
-    ) -> tuple[list[Tensor] | Tensor, Any]:
-        """Encode images using vision model only, without connector."""
-        if input_ids is not None:
-            outputs = self.model.vision_model(
-                pixel_values=images,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                return_loss=True,
-            )
-            hidden_states = outputs.vision_model_output.hidden_states[
-                self.config.vision_config.output_layer
-            ].to(images.dtype)
-        else:
-            if self.config.vision_config.open_clip:
-                intermediates_dict = self.model.vision_model.forward_intermediates(
-                    images,
-                    image_indices=[self.config.vision_config.output_layer],
-                    intermediates_only=True,
-                    image_output_fmt="NLC",
-                    image_output_extra_tokens=True,
+    def encode_images(self: Any, images: list[Tensor] | Tensor) -> list[Tensor] | Tensor:
+        if type(images) is list:
+            image_features: list[Tensor] | Tensor = []
+            for image in images:
+                outputs = self.model.vision_model(
+                    image.unsqueeze(0),
+                    output_hidden_states=True,
                 )
-                hidden_states = intermediates_dict["image_intermediates"][0]
-                outputs = intermediates_dict
-            else:
-                if self.config.dual_task:
-                    outputs = self.model.vision_model.vision_model(
-                        pixel_values=images,
-                        output_hidden_states=True,
-                    )
+                hidden_states: Tensor = outputs.hidden_states[
+                    self.config.vision_config.output_layer
+                ].to(image.dtype)
+                if not self.config.vision_config.use_cls_token:
+                    image_features.append(hidden_states[:, 1:])
                 else:
-                    outputs = self.model.vision_model(
-                        images,
-                        output_hidden_states=True,
-                    )
-                hidden_states = outputs.hidden_states[self.config.vision_config.output_layer].to(
-                    images.dtype
-                )
-        if self.config.vision_config.use_all_tokens:
-            image_features = hidden_states
-        elif self.config.vision_config.use_cls_token:
-            if "siglip" in self.config.vision_config.hf_name:
-                image_features = outputs.pooler_output.unsqueeze(1)
+                    image_features.append(hidden_states)
+        else:
+            outputs = self.model.vision_model(
+                images,
+                output_hidden_states=True,
+            )
+            hidden_states = outputs.hidden_states[self.config.vision_config.output_layer].to(
+                images.dtype
+            )
+            if not self.config.vision_config.use_cls_token:
+                image_features = hidden_states[:, 1:]
             else:
                 image_features = hidden_states[:, 0:1]
-        else:
-            image_features = hidden_states[:, 1:]
         image_features = self.model.connector(image_features)
-        return image_features, outputs
 
-    def encode_images(
-        self: Any,
-        images: list[Tensor] | Tensor,
-        input_ids: LongTensor | None = None,
-        attention_mask: Tensor | None = None,
-    ):
-        if images is None:
-            image_features = None
-            outputs = None
-            print("Images are None in this batch, training on text only.")
-        elif isinstance(images, list) or images.ndim == 5:
-            if isinstance(images, list):
-                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]  # pyright: ignore
-            concat_images = torch.cat([image for image in images], dim=0)  # pyright: ignore
-            image_features, outputs = self.encode_images_raw(
-                concat_images, input_ids, attention_mask
-            )
-            split_sizes = [image.shape[0] for image in images]  # pyright: ignore
-            image_features: tuple[Tensor, ...] = torch.split(image_features, split_sizes, dim=0)  # pyright: ignore
-            image_features = [x.flatten(0, 1) for x in image_features]  # pyright: ignore
-        else:
-            image_features, outputs = self.encode_images_raw(images, input_ids, attention_mask)
-
-        return image_features, outputs
+        return image_features
 
     def unpad_image(self: Any, tensor: Tensor, original_size: tuple[int, int]) -> Tensor:
         """
@@ -399,7 +283,7 @@ def create_dynamic_causal_vlm_class(
         attention_mask: Tensor | None = None,
         past_key_values: list[FloatTensor] | None = None,
         labels: LongTensor | None = None,
-        image_features: Tensor | None = None,
+        images: FloatTensor | None = None,
     ) -> tuple[
         Tensor | None,
         LongTensor | None,
@@ -408,8 +292,20 @@ def create_dynamic_causal_vlm_class(
         Tensor | None,
         LongTensor | None,
     ]:
-        if image_features is None or input_ids.shape[1] == 1:  # pyright: ignore
+        vision_model = self.model.vision_model
+        if vision_model is None or images is None or input_ids.shape[1] == 1:  # pyright: ignore
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
+
+        if isinstance(images, list) or images.ndim == 5:
+            if isinstance(images, list):
+                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]  # pyright: ignore
+            concat_images = torch.cat([image for image in images], dim=0)  # pyright: ignore
+            image_features = self.encode_images(concat_images)
+            split_sizes = [image.shape[0] for image in images]  # pyright: ignore
+            image_features: tuple[Tensor, ...] = torch.split(image_features, split_sizes, dim=0)  # pyright: ignore
+            image_features = [x.flatten(0, 1) for x in image_features]  # pyright: ignore
+        else:
+            image_features = self.encode_images(images)
 
         # Let's just add dummy tensors if they do not exist,
         # it is a headache to deal with None all the time.
@@ -605,11 +501,9 @@ def create_dynamic_causal_vlm_class(
             "forward": forward,
             "generate": generate,
             "prepare_inputs_for_generation": prepare_inputs_for_generation,
-            "encode_images_raw": encode_images_raw,
             "encode_images": encode_images,
             "unpad_image": unpad_image,
             "prepare_inputs_labels_for_multimodal": prepare_inputs_labels_for_multimodal,
-            "supports_report_metrics": True,
         },
     )
 
