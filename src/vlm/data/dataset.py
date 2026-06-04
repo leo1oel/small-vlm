@@ -230,6 +230,25 @@ def preprocess_llama_2(
     )
 
 
+# Per-process cache: (id(tokenizer), has_image) -> prepared deepcopy.
+# The deepcopy isolation is deliberate — adding '<image>' to the SHARED tokenizer
+# would change len(tokenizer) and trigger an unwanted embedding resize in vlm.py.
+_PREPROCESS_TOKENIZER_CACHE: dict[tuple[int, bool], transformers.PreTrainedTokenizer] = {}
+
+
+def _get_preprocess_tokenizer(
+    tokenizer: transformers.PreTrainedTokenizer, has_image: bool
+) -> transformers.PreTrainedTokenizer:
+    key = (id(tokenizer), has_image)
+    cached = _PREPROCESS_TOKENIZER_CACHE.get(key)
+    if cached is None:
+        cached = copy.deepcopy(tokenizer)
+        if has_image:
+            cached.add_tokens(["<image>"], special_tokens=True)
+        _PREPROCESS_TOKENIZER_CACHE[key] = cached
+    return cached
+
+
 def preprocess_qwen(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
@@ -242,10 +261,7 @@ def preprocess_qwen(
 
     # Add image tokens to tokenizer as a special tokens
     # Use a deepcopy of tokenizer so that we don't modify on the tokenizer
-    tokenizer = copy.deepcopy(tokenizer)
-    # When there is actually an image, we add the image tokens as a special token
-    if has_image:
-        tokenizer.add_tokens(["<image>"], special_tokens=True)
+    tokenizer = _get_preprocess_tokenizer(tokenizer, has_image)
 
     image_token_index = tokenizer.convert_tokens_to_ids("<image>")
     im_start = tokenizer.convert_tokens_to_ids("<|im_start|>")
@@ -323,10 +339,7 @@ def preprocess_llama3(
 
     # Add image tokens to tokenizer as a special tokens
     # Use a deepcopy of tokenizer so that we don't modify on the tokenizer
-    tokenizer = copy.deepcopy(tokenizer)
-    # When there is actually an image, we add the image tokens as a special token
-    if has_image:
-        tokenizer.add_tokens(["<image>"], special_tokens=True)
+    tokenizer = _get_preprocess_tokenizer(tokenizer, has_image)
     image_token_index = tokenizer.convert_tokens_to_ids("<image>")
     # bos_token_id = tokenizer.convert_tokens_to_ids("<|begin_of_text|>")
     # start_header_id = tokenizer.convert_tokens_to_ids("<|start_header_id|>")
