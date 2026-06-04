@@ -76,7 +76,7 @@ def load_model(
     model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
         pretrained,
         low_cpu_mem_usage=True,
-        torch_dtype=torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,
+        dtype=torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,
         attn_implementation=attn_implementation,
     )
     model.cuda()
@@ -144,7 +144,9 @@ def eval_model(
     # Ensure it's a tensor
     if isinstance(images_tensor, list):
         images_tensor = torch.stack(images_tensor, dim=0)
-    images_tensor = images_tensor.to(model.device, dtype=model.config.torch_dtype)
+    images_tensor = images_tensor.to(
+        model.device, dtype=getattr(model.config, "dtype", None) or next(model.parameters()).dtype
+    )
 
     input_ids = tokenizer_image_token(prompt, tokenizer, image_token_index, return_tensors="pt")
     if isinstance(input_ids, list):
