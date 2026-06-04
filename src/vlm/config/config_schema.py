@@ -113,6 +113,7 @@ class TrainerConfig:
     from_pretrained: str | None = None
     seed: int = 42
     attn_implementation: str | None = "flash_attention_2"
+    optim: str = "adamw_torch_fused"
 
 
 @dataclass
