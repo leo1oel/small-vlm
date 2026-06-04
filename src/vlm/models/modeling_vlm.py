@@ -73,7 +73,15 @@ def create_dynamic_vlm_class(
     def _build_vision_model(self: Any, config: Any) -> PreTrainedModel:
         vision_config = config.vision_config
         visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
-            vision_config.hf_name, trust_remote_code=True
+            vision_config.hf_name,
+            trust_remote_code=True,
+            # Pin the vision tower to sdpa explicitly (matches the current
+            # transformers default for these encoders; guards against future
+            # library default changes). Note: a VisionConfig field would NOT
+            # work here — PretrainedConfig.__init__ pops 'attn_implementation'
+            # into the private _attn_implementation, so a schema knob would be
+            # silently dead.
+            attn_implementation="sdpa",
         )
         if getattr(visual_encoder, "vision_model", None):
             visual_encoder = visual_encoder.vision_model  # pyright: ignore
