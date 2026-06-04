@@ -37,6 +37,19 @@ The VLM consists of three main components:
     make install
     ```
 
+### Environment variables
+
+| Variable | Meaning | Example |
+|---|---|---|
+| `VLM_DATA_ROOT` | Root directory for datasets | `/gscratch/krishna/$USER/data` |
+| `VLM_MODEL_ROOT` | Root for locally stored vision encoders | `/gscratch/krishna/$USER/models` |
+| `VLM_PRETRAIN_CKPT` | Stage-1 checkpoint consumed by finetune configs (optional) | `outputs/.../checkpoint-8000` |
+
+DeepSpeed configs in trainer yamls are bare filenames (e.g. `zero3.json`) resolved
+against `src/vlm/config/deepspeed/` automatically. `train.slurm` targets the hyak
+`ckpt-all` partition with `--requeue`; training auto-resumes from the last checkpoint
+in `trainer.output_dir`.
+
 ## Training
 
 Training is managed via Hydra configurations and executed using DeepSpeed.

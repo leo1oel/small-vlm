@@ -7,8 +7,8 @@ import torch
 from PIL import Image
 
 # from transformers import StoppingCriteria
+from transformers import PreTrainedTokenizer
 from transformers.image_processing_utils import BaseImageProcessor
-from transformers.tokenization_utils import PreTrainedTokenizer
 
 # from vlmeval.dataset import DATASET_TYPE
 # from vlmeval.smp import cn_string

@@ -139,12 +139,11 @@ def push_to_hub(pretrained: str, repo_id: str | None = None, force: bool = False
                 model = AutoModel.from_pretrained(
                     pretrained_path,
                     trust_remote_code=True,
-                    torch_dtype="auto",
+                    dtype="auto",
                 )
                 processor = AutoProcessor.from_pretrained(
                     pretrained_path,
                     trust_remote_code=True,
-                    torch_dtype="auto",
                 )
 
                 model.push_to_hub(

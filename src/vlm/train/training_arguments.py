@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 import transformers
 
@@ -239,19 +240,38 @@ class TrainingArguments(transformers.TrainingArguments):
     version: str = "v0"
 
 
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+
+
+def _resolve_deepspeed(ds: str | None) -> str | None:
+    """Resolve a deepspeed config: absolute path as-is; bare filename relative to the
+    packaged config/deepspeed/ directory. Keeps yaml configs host-independent."""
+    if ds is None:
+        return None
+    p = Path(ds)
+    if p.is_file():
+        return str(p)
+    candidate = _CONFIG_DIR / "deepspeed" / p.name
+    if candidate.is_file():
+        return str(candidate)
+    raise FileNotFoundError(f"DeepSpeed config not found: {ds} (also tried {candidate})")
+
+
 def get_training_args(config: TrainerConfig) -> TrainingArguments:
     return TrainingArguments(
         remove_unused_columns=False,
         output_dir=config.output_dir,
         num_train_epochs=config.num_train_epochs,
-        deepspeed=config.deepspeed,
+        deepspeed=_resolve_deepspeed(config.deepspeed),
         save_strategy=config.save_strategy,
         save_steps=config.save_steps,
         save_total_limit=config.save_total_limit,
         save_only_model=config.save_only_model,
         learning_rate=config.learning_rate.default_lr,
         weight_decay=config.weight_decay.default_wd,
-        warmup_ratio=config.warmup_ratio,
+        # v5: warmup_steps accepts a float < 1 (treated as a ratio of total steps);
+        # warmup_ratio is deprecated. Audit point #1.
+        warmup_steps=config.warmup_steps,
         lr_scheduler_type=config.lr_scheduler_type,
         logging_steps=config.logging_steps,
         tf32=config.tf32,
@@ -281,4 +301,5 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         resume_from_checkpoint=config.resume_from_checkpoint,
         seed=config.seed,
         data_seed=config.seed,
+        optim=config.optim,
     )

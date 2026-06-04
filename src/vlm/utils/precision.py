@@ -1,5 +1,4 @@
 import logging
-from typing import Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -19,7 +18,9 @@ def _dist_min_bool(value: bool) -> bool:
     if not dist.is_available() or not dist.is_initialized():
         return value
     try:
-        t = torch.tensor([1 if value else 0], device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        t = torch.tensor(
+            [1 if value else 0], device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
         dist.all_reduce(t, op=dist.ReduceOp.MIN)
         return bool(t.item())
     except Exception:  # best-effort; never crash resolution
@@ -27,9 +28,9 @@ def _dist_min_bool(value: bool) -> bool:
 
 
 def resolve_precision(
-    bf16: Optional[bool],
-    tf32: Optional[bool],
-) -> Tuple[bool, bool]:
+    bf16: bool | None,
+    tf32: bool | None,
+) -> tuple[bool, bool]:
     """Resolve final bf16/tf32 according to the policy:
     - If user provided True/False (not None), honor user choice (even if unsupported), log a warning if conflicting.
     - If None, auto-detect support; in distributed, require all ranks to support (logical AND).
@@ -79,4 +80,3 @@ def resolve_precision(
         pass
 
     return use_bf16, use_tf32
-

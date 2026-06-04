@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from transformers import AutoConfig, PretrainedConfig
 
@@ -7,7 +7,12 @@ log: logging.Logger = logging.getLogger(name=__name__)
 
 
 class VisionConfig(PretrainedConfig):
-    model_type: str = "vision_model"
+    # transformers v5 wraps every PretrainedConfig subclass in
+    # @dataclass(kw_only=True); a plainly-annotated class attribute would become a
+    # dataclass field. The base declares `model_type: ClassVar[str]`
+    # (configuration_utils.py:227), and ClassVar is excluded from dataclass fields,
+    # so this override is safe.
+    model_type: ClassVar[str] = "vision_model"
 
     def __init__(
         self,
@@ -17,7 +22,7 @@ class VisionConfig(PretrainedConfig):
 
 
 class ConnectorConfig(PretrainedConfig):
-    model_type: str = "connector"
+    model_type: ClassVar[str] = "connector"
 
     def __init__(
         self,
@@ -40,19 +45,15 @@ def create_dynamic_vlm_config_class(
         )
 
     class DynamicVLMConfig(BaseLMConfigClass):
-        model_type: str = "vlm"
-
-        _sub_config_classes: dict[str, type[PretrainedConfig]] = {
-            "vision_config": VisionConfig,
-            "connector_config": ConnectorConfig,
-        }
+        # ClassVar: override the base value without creating a dataclass field
+        # (transformers v5 wraps configs in @dataclass(kw_only=True)).
+        model_type: ClassVar[str] = "vlm"
 
         def __init__(
             self,
             vision_config_args: dict[str, Any] = None,
             connector_config_args: dict[str, Any] = None,
             lazy_load: bool = False,
-            dual_task: bool = False,
             **kwargs: Any,
         ):
             final_vision_args = kwargs.pop("vision_config", vision_config_args)
@@ -61,7 +62,6 @@ def create_dynamic_vlm_config_class(
             self.vision_config: VisionConfig = VisionConfig(**(final_vision_args or {}))
             self.connector_config: ConnectorConfig = ConnectorConfig(**(final_connector_args or {}))
             self.lazy_load: bool = lazy_load
-            self.dual_task: bool = dual_task
             # Initialize the base language model configuration part
             super().__init__(**kwargs)
 

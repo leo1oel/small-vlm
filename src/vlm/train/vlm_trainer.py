@@ -4,19 +4,18 @@ from typing import Any, override
 import datasets
 import torch
 from torch.utils.data import RandomSampler, SequentialSampler
-from transformers.trainer import has_length, is_datasets_available
+from transformers.trainer import Trainer, has_length, is_datasets_available
 from transformers.trainer_pt_utils import LengthGroupedSampler
 
 from ..data import MultiModalLengthGroupedSampler
-from .multitask_trainer import MultiTaskTrainer
 from .optimizer import configure_optimizers
 
 log = logging.getLogger(__name__)
 
 
-class VLMTrainer(MultiTaskTrainer):
+class VLMTrainer(Trainer):
     @override
-    def _get_train_sampler(self, train_dataset=None) -> torch.utils.data.Sampler | None:
+    def _get_train_sampler(self, train_dataset: Any = None) -> torch.utils.data.Sampler | None:
         if train_dataset is None:
             train_dataset = self.train_dataset
         if train_dataset is None or not has_length(train_dataset):
@@ -59,8 +58,10 @@ class VLMTrainer(MultiTaskTrainer):
             return RandomSampler(train_dataset)
 
     @override
-    def create_optimizer(self):
-        opt_model = self.model
+    def create_optimizer(self, model: torch.nn.Module | None = None):
+        # v5 Trainer calls create_optimizer(model) in the FSDP delay-creation path
+        # (trainer.py: self.create_optimizer(model)); accept and honor the arg.
+        opt_model = self.model if model is None else model
 
         if self.optimizer is None:
             optimizer_grouped_parameters = configure_optimizers(opt_model, self.args)

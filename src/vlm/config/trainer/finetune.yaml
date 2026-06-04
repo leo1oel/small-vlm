@@ -1,19 +1,19 @@
 name: finetune
-deepspeed: /pasteur/u/yiming/small-vlm/src/vlm/config/deepspeed/zero3.json
+deepspeed: zero3.json
 version: v1
 per_device_train_batch_size: 4
 gradient_accumulation_steps: 4
-warmup_ratio: 0.03
+warmup_steps: 0.03
 lr_scheduler_type: cosine
 gradient_checkpointing: True
 dataloader_num_workers: 4
 dataloader_prefetch_factor: 2
 report_to: wandb
 # resume_from_checkpoint: resume_model_path
-from_pretrained: /pasteur2/u/yiming/small-vlm/outputs/llava-7b-siglip/pretrain/llava-pretrain/2025-09-17_19-44-55
+from_pretrained: ${oc.env:VLM_PRETRAIN_CKPT,null}
 group_by_modality_length: True
 save_steps: 2000
-save_only_model: True
+save_only_model: False  # requeue/auto-resume needs optimizer state in checkpoints
 
 defaults:
   - unfreeze: finetune

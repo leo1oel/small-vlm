@@ -7,8 +7,6 @@ from omegaconf import MISSING  # pyright: ignore
 @dataclass
 class VisualEncoderConfig:
     hf_name: str = MISSING
-    open_clip: bool = False
-    open_clip_model: str | None = None
     output_layer: int | None = None
     use_cls_token: bool = False
     use_all_tokens: bool = False
@@ -41,7 +39,6 @@ class ModelConfig:
     visual_encoder: VisualEncoderConfig = field(default_factory=VisualEncoderConfig)
     language_model: LanguageModelConfig = field(default_factory=LanguageModelConfig)
     connector: ConnectorConfig = field(default_factory=ConnectorConfig)
-    dual_task: bool = False
 
 
 @dataclass
@@ -55,13 +52,6 @@ class DatasetConfig:
     image_folder: str = MISSING
     image_aspect_ratio: str = "square"
     image_token: str = "<image>"
-    clip_data_type: str | None = None
-    clip_dataset_size: int | None = None
-    clip_data_path: str | None = None
-    clip_image_folder: str | None = None
-    clip_webdataset_urls: str | None = None
-    vlm_batch_size: int | None = None
-    clip_batch_size: int | None = None
 
 
 @dataclass
@@ -107,10 +97,14 @@ class TrainerConfig:
     save_total_limit: int = 20
     save_only_model: bool = False
     logging_steps: int = 1
-    warmup_ratio: float = 0.0
+    # transformers v5 deprecated `warmup_ratio` in favor of `warmup_steps`, which
+    # accepts a float < 1 interpreted as a ratio of total training steps.
+    warmup_steps: float = 0.0
     lr_scheduler_type: str = "linear"
     gradient_accumulation_steps: int = 1
-    report_to: str | None = None
+    # transformers v5 default is the string "none"; passing None yields [None] in
+    # post_init (not []), which breaks reporting-integration resolution.
+    report_to: str = "none"
     dataloader_num_workers: int = 4
     dataloader_prefetch_factor: int | None = None
     version: str = "v0"
@@ -123,6 +117,7 @@ class TrainerConfig:
     from_pretrained: str | None = None
     seed: int = 42
     attn_implementation: str | None = "flash_attention_2"
+    optim: str = "adamw_torch_fused"
 
 
 @dataclass
