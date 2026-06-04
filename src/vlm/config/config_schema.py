@@ -7,8 +7,6 @@ from omegaconf import MISSING  # pyright: ignore
 @dataclass
 class VisualEncoderConfig:
     hf_name: str = MISSING
-    open_clip: bool = False
-    open_clip_model: str | None = None
     output_layer: int | None = None
     use_cls_token: bool = False
     use_all_tokens: bool = False
@@ -41,7 +39,6 @@ class ModelConfig:
     visual_encoder: VisualEncoderConfig = field(default_factory=VisualEncoderConfig)
     language_model: LanguageModelConfig = field(default_factory=LanguageModelConfig)
     connector: ConnectorConfig = field(default_factory=ConnectorConfig)
-    dual_task: bool = False
 
 
 @dataclass
@@ -55,13 +52,6 @@ class DatasetConfig:
     image_folder: str = MISSING
     image_aspect_ratio: str = "square"
     image_token: str = "<image>"
-    clip_data_type: str | None = None
-    clip_dataset_size: int | None = None
-    clip_data_path: str | None = None
-    clip_image_folder: str | None = None
-    clip_webdataset_urls: str | None = None
-    vlm_batch_size: int | None = None
-    clip_batch_size: int | None = None
 
 
 @dataclass

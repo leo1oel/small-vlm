@@ -72,19 +72,11 @@ def create_dynamic_vlm_class(
 
     def _build_vision_model(self: Any, config: Any) -> PreTrainedModel:
         vision_config = config.vision_config
-        if not vision_config.open_clip:
-            visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
-                vision_config.hf_name, trust_remote_code=True
-            )
-            if getattr(visual_encoder, "vision_model", None) and not config.dual_task:
-                visual_encoder = visual_encoder.vision_model  # pyright: ignore
-        else:
-            import open_clip
-
-            visual_encoder = open_clip.create_model(
-                vision_config.open_clip_model,
-                pretrained=vision_config.hf_name,
-            )
+        visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
+            vision_config.hf_name, trust_remote_code=True
+        )
+        if getattr(visual_encoder, "vision_model", None):
+            visual_encoder = visual_encoder.vision_model  # pyright: ignore
         return visual_encoder
 
     def _build_connector(self: Any, config: Any) -> Connector:
@@ -141,65 +133,11 @@ def create_dynamic_causal_vlm_class(
         images: FloatTensor | None = None,
         image_sizes: list[list[int]] | None = None,
         return_dict: bool | None = None,
-        task_modes: list[str] | None = None,
-        # CLIP specific parameters
-        clip_input_ids: LongTensor | None = None,
-        clip_attention_mask: Tensor | None = None,
-        clip_images: FloatTensor | None = None,
-    ) -> tuple | CausalLMOutputWithPast:
+    ) -> CausalLMOutputWithPast:
         # Early image encoding - encode all image inputs at the beginning
         image_features = None
         if images is not None:
             image_features, _ = self.encode_images(images)
-        if task_modes is not None and "clip" in task_modes:
-            clip_outputs = None
-            if clip_images is not None:
-                _, clip_outputs = self.encode_images(
-                    clip_images,
-                    input_ids=clip_input_ids,
-                    attention_mask=clip_attention_mask,
-                )
-            if "vlm" in task_modes:
-                if inputs_embeds is None:
-                    (
-                        input_ids,
-                        position_ids,
-                        attention_mask,
-                        past_key_values,
-                        inputs_embeds,
-                        labels,
-                    ) = self.prepare_inputs_labels_for_multimodal(
-                        input_ids,
-                        position_ids,
-                        attention_mask,
-                        past_key_values,
-                        labels,
-                        image_features,
-                    )
-                vlm_outputs = super(self.__class__, self).forward(
-                    input_ids=input_ids,
-                    inputs_embeds=inputs_embeds,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    labels=labels,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    output_hidden_states=output_hidden_states,
-                    return_dict=return_dict,
-                )
-            else:
-                vlm_outputs = {"loss": 0}
-
-            self.report_metrics(
-                clip_loss=clip_outputs.loss,
-                vlm_loss=vlm_outputs.loss,
-            )
-
-            total_loss = clip_outputs.loss + vlm_outputs.loss
-
-            return (total_loss,)
-
         if inputs_embeds is None:
             (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = (
                 self.prepare_inputs_labels_for_multimodal(
@@ -282,49 +220,15 @@ def create_dynamic_causal_vlm_class(
             inputs["image_sizes"] = image_sizes
         return inputs
 
-    def encode_images_raw(
-        self: Any,
-        images: Tensor,
-        input_ids: LongTensor | None = None,
-        attention_mask: Tensor | None = None,
-    ) -> tuple[list[Tensor] | Tensor, Any]:
+    def encode_images_raw(self: Any, images: Tensor) -> tuple[list[Tensor] | Tensor, Any]:
         """Encode images using vision model only, without connector."""
-        if input_ids is not None:
-            outputs = self.model.vision_model(
-                pixel_values=images,
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                return_loss=True,
-            )
-            hidden_states = outputs.vision_model_output.hidden_states[
-                self.config.vision_config.output_layer
-            ].to(images.dtype)
-        else:
-            if self.config.vision_config.open_clip:
-                intermediates_dict = self.model.vision_model.forward_intermediates(
-                    images,
-                    image_indices=[self.config.vision_config.output_layer],
-                    intermediates_only=True,
-                    image_output_fmt="NLC",
-                    image_output_extra_tokens=True,
-                )
-                hidden_states = intermediates_dict["image_intermediates"][0]
-                outputs = intermediates_dict
-            else:
-                if self.config.dual_task:
-                    outputs = self.model.vision_model.vision_model(
-                        pixel_values=images,
-                        output_hidden_states=True,
-                    )
-                else:
-                    outputs = self.model.vision_model(
-                        images,
-                        output_hidden_states=True,
-                    )
-                hidden_states = outputs.hidden_states[self.config.vision_config.output_layer].to(
-                    images.dtype
-                )
+        outputs = self.model.vision_model(
+            images,
+            output_hidden_states=True,
+        )
+        hidden_states = outputs.hidden_states[self.config.vision_config.output_layer].to(
+            images.dtype
+        )
         if self.config.vision_config.use_all_tokens:
             image_features = hidden_states
         elif self.config.vision_config.use_cls_token:
@@ -340,8 +244,6 @@ def create_dynamic_causal_vlm_class(
     def encode_images(
         self: Any,
         images: list[Tensor] | Tensor,
-        input_ids: LongTensor | None = None,
-        attention_mask: Tensor | None = None,
     ):
         if images is None:
             image_features = None
@@ -351,14 +253,12 @@ def create_dynamic_causal_vlm_class(
             if isinstance(images, list):
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]  # pyright: ignore
             concat_images = torch.cat([image for image in images], dim=0)  # pyright: ignore
-            image_features, outputs = self.encode_images_raw(
-                concat_images, input_ids, attention_mask
-            )
+            image_features, outputs = self.encode_images_raw(concat_images)
             split_sizes = [image.shape[0] for image in images]  # pyright: ignore
             image_features: tuple[Tensor, ...] = torch.split(image_features, split_sizes, dim=0)  # pyright: ignore
             image_features = [x.flatten(0, 1) for x in image_features]  # pyright: ignore
         else:
-            image_features, outputs = self.encode_images_raw(images, input_ids, attention_mask)
+            image_features, outputs = self.encode_images_raw(images)
 
         return image_features, outputs
 
@@ -609,7 +509,6 @@ def create_dynamic_causal_vlm_class(
             "encode_images": encode_images,
             "unpad_image": unpad_image,
             "prepare_inputs_labels_for_multimodal": prepare_inputs_labels_for_multimodal,
-            "supports_report_metrics": True,
         },
     )
 

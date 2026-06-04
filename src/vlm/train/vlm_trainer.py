@@ -4,17 +4,16 @@ from typing import Any, override
 import datasets
 import torch
 from torch.utils.data import RandomSampler, SequentialSampler
-from transformers.trainer import has_length, is_datasets_available
+from transformers.trainer import Trainer, has_length, is_datasets_available
 from transformers.trainer_pt_utils import LengthGroupedSampler
 
 from ..data import MultiModalLengthGroupedSampler
-from .multitask_trainer import MultiTaskTrainer
 from .optimizer import configure_optimizers
 
 log = logging.getLogger(__name__)
 
 
-class VLMTrainer(MultiTaskTrainer):
+class VLMTrainer(Trainer):
     @override
     def _get_train_sampler(self, train_dataset=None) -> torch.utils.data.Sampler | None:
         if train_dataset is None:
