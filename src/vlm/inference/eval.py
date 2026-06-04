@@ -75,7 +75,6 @@ def load_model(
     VLMForCausalLM, _ = get_dynamic_vlm(pretrained)
     model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
         pretrained,
-        low_cpu_mem_usage=True,
         dtype=torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,
         attn_implementation=attn_implementation,
     )

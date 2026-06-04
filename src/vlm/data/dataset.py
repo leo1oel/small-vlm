@@ -288,7 +288,12 @@ def preprocess_qwen(
 
         # New version, use apply chat template
         # Build system message for each sentence
-        input_id += tokenizer.apply_chat_template([{"role": "system", "content": system_message}])
+        # transformers v5 defaults apply_chat_template(return_dict=True), which
+        # returns a BatchEncoding; pass return_dict=False to keep the v4 behavior
+        # of returning a plain list[int] that we concatenate below.
+        input_id += tokenizer.apply_chat_template(
+            [{"role": "system", "content": system_message}], return_dict=False
+        )
         target += [data_args.ignore_index] * len(input_id)
 
         for conv in source:
@@ -303,7 +308,7 @@ def preprocess_qwen(
             role = roles.get(role, role)
 
             conv = [{"role": role, "content": content}]
-            encode_id = tokenizer.apply_chat_template(conv)
+            encode_id = tokenizer.apply_chat_template(conv, return_dict=False)
             input_id += encode_id
             if role in ["user", "system"]:
                 target += [data_args.ignore_index] * len(encode_id)
@@ -374,7 +379,12 @@ def preprocess_llama3(
 
         # New version, use apply chat template
         # Build system message for each sentence
-        input_id += tokenizer.apply_chat_template([{"role": "system", "content": system_message}])
+        # transformers v5 defaults apply_chat_template(return_dict=True), which
+        # returns a BatchEncoding; pass return_dict=False to keep the v4 behavior
+        # of returning a plain list[int] that we concatenate below.
+        input_id += tokenizer.apply_chat_template(
+            [{"role": "system", "content": system_message}], return_dict=False
+        )
         target += [data_args.ignore_index] * len(input_id)
 
         for conv in source:
@@ -390,7 +400,7 @@ def preprocess_llama3(
 
             conv = [{"role": role, "content": content}]
             # First is bos token we don't need here
-            encode_id = tokenizer.apply_chat_template(conv)[1:]
+            encode_id = tokenizer.apply_chat_template(conv, return_dict=False)[1:]
             input_id += encode_id
             if role in ["user", "system"]:
                 target += [data_args.ignore_index] * len(encode_id)

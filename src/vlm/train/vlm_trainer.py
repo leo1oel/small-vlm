@@ -58,8 +58,10 @@ class VLMTrainer(Trainer):
             return RandomSampler(train_dataset)
 
     @override
-    def create_optimizer(self):
-        opt_model = self.model
+    def create_optimizer(self, model=None):
+        # v5 Trainer calls create_optimizer(model) in the FSDP delay-creation path
+        # (trainer.py: self.create_optimizer(model)); accept and honor the arg.
+        opt_model = self.model if model is None else model
 
         if self.optimizer is None:
             optimizer_grouped_parameters = configure_optimizers(opt_model, self.args)

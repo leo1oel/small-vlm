@@ -36,21 +36,21 @@ classifiers = [
 # ---- Main dependencies ----
 
 dependencies = [
-    "accelerate==1.6.0",
+    "accelerate>=1.13",
     "blobfile",
-    "datasets",
-    "deepspeed==0.16.7",
+    "datasets>=4.8",
+    "deepspeed>=0.19",
     "hydra-core",
-    "kernels>=0.10,<0.15",
+    "kernels>=0.12,<0.13",
     "libcst",
     "pillow",
-    "protobuf==6.30.2",
+    "protobuf",
     "rich",
-    "sentencepiece==0.2.1",
-    "tiktoken==0.9.0",
-    "torch==2.6.0",
-    "torchvision==0.21.0",
-    "transformers>=4.56,<5",
+    "sentencepiece>=0.2.1",
+    "tiktoken>=0.9.0",
+    "torch>=2.9",
+    "torchvision",
+    "transformers==5.10.1",
     "wandb",
 ]
 

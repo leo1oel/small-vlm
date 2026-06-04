@@ -269,7 +269,9 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         save_only_model=config.save_only_model,
         learning_rate=config.learning_rate.default_lr,
         weight_decay=config.weight_decay.default_wd,
-        warmup_ratio=config.warmup_ratio,
+        # v5: warmup_steps accepts a float < 1 (treated as a ratio of total steps);
+        # warmup_ratio is deprecated. Audit point #1.
+        warmup_steps=config.warmup_steps,
         lr_scheduler_type=config.lr_scheduler_type,
         logging_steps=config.logging_steps,
         tf32=config.tf32,

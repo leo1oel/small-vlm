@@ -7,7 +7,12 @@ log: logging.Logger = logging.getLogger(name=__name__)
 
 
 class VisionConfig(PretrainedConfig):
-    model_type: str = "vision_model"
+    # transformers v5 wraps every PretrainedConfig subclass in
+    # @dataclass(kw_only=True); an *annotated* class attribute becomes a dataclass
+    # field. `model_type` is a ClassVar on the base, so assign it WITHOUT an
+    # annotation (matching v5's own configs, e.g. `model_type = "llava"`) to override
+    # the value rather than create a spurious field.
+    model_type = "vision_model"
 
     def __init__(
         self,
@@ -17,7 +22,7 @@ class VisionConfig(PretrainedConfig):
 
 
 class ConnectorConfig(PretrainedConfig):
-    model_type: str = "connector"
+    model_type = "connector"
 
     def __init__(
         self,
@@ -40,12 +45,9 @@ def create_dynamic_vlm_config_class(
         )
 
     class DynamicVLMConfig(BaseLMConfigClass):
-        model_type: str = "vlm"
-
-        _sub_config_classes: dict[str, type[PretrainedConfig]] = {
-            "vision_config": VisionConfig,
-            "connector_config": ConnectorConfig,
-        }
+        # No annotation: override the base ClassVar value, don't create a dataclass
+        # field (transformers v5 wraps configs in @dataclass(kw_only=True)).
+        model_type = "vlm"
 
         def __init__(
             self,

@@ -97,10 +97,14 @@ class TrainerConfig:
     save_total_limit: int = 20
     save_only_model: bool = False
     logging_steps: int = 1
-    warmup_ratio: float = 0.0
+    # transformers v5 deprecated `warmup_ratio` in favor of `warmup_steps`, which
+    # accepts a float < 1 interpreted as a ratio of total training steps.
+    warmup_steps: float = 0.0
     lr_scheduler_type: str = "linear"
     gradient_accumulation_steps: int = 1
-    report_to: str | None = None
+    # transformers v5 default is the string "none"; passing None yields [None] in
+    # post_init (not []), which breaks reporting-integration resolution.
+    report_to: str = "none"
     dataloader_num_workers: int = 4
     dataloader_prefetch_factor: int | None = None
     version: str = "v0"

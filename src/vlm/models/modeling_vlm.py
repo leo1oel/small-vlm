@@ -72,17 +72,39 @@ def create_dynamic_vlm_class(
 
     def _build_vision_model(self: Any, config: Any) -> PreTrainedModel:
         vision_config = config.vision_config
-        visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
-            vision_config.hf_name,
-            trust_remote_code=True,
-            # Pin the vision tower to sdpa explicitly (matches the current
-            # transformers default for these encoders; guards against future
-            # library default changes). Note: a VisionConfig field would NOT
-            # work here — PretrainedConfig.__init__ pops 'attn_implementation'
-            # into the private _attn_implementation, so a schema knob would be
-            # silently dead.
-            attn_implementation="sdpa",
-        )
+        # transformers v5 instantiates the model under a `torch.device("meta")`
+        # context during `from_pretrained` (modeling_utils: `with torch.device("meta")`).
+        # A nested `from_pretrained` inside that context is explicitly forbidden
+        # (integrations/accelerate.check_and_set_device_map raises). This branch is
+        # hit when RELOADING a saved VLM checkpoint (lazy_load=False -> vision tower
+        # built in __init__): there the vision weights already live in the VLM
+        # checkpoint, so we only need the module *structure* and let the outer
+        # from_pretrained populate the weights. Build with `from_config` (no weight
+        # download) under a meta context; use `from_pretrained` only on the
+        # fresh-build path (init_other_components, run outside any meta context).
+        under_meta = torch.tensor([]).device.type == "meta"
+        if under_meta:
+            hf_vision_config = AutoConfig.from_pretrained(
+                vision_config.hf_name, trust_remote_code=True
+            )
+            if getattr(hf_vision_config, "vision_config", None) is not None:
+                hf_vision_config = hf_vision_config.vision_config
+            hf_vision_config._attn_implementation = "sdpa"  # pyright: ignore
+            visual_encoder: PreTrainedModel = AutoModel.from_config(
+                hf_vision_config, trust_remote_code=True
+            )
+        else:
+            visual_encoder = AutoModel.from_pretrained(
+                vision_config.hf_name,
+                trust_remote_code=True,
+                # Pin the vision tower to sdpa explicitly (matches the current
+                # transformers default for these encoders; guards against future
+                # library default changes). Note: a VisionConfig field would NOT
+                # work here — PretrainedConfig.__init__ pops 'attn_implementation'
+                # into the private _attn_implementation, so a schema knob would be
+                # silently dead.
+                attn_implementation="sdpa",
+            )
         if getattr(visual_encoder, "vision_model", None):
             visual_encoder = visual_encoder.vision_model  # pyright: ignore
         return visual_encoder
@@ -221,7 +243,11 @@ def create_dynamic_causal_vlm_class(
             inputs_embeds=inputs_embeds,
             **kwargs,
         )
-        inputs.pop("cache_position")
+        # v5: the base prepare_inputs_for_generation only injects `cache_position`
+        # for remote-code models, so it may be absent here. Pop with a default to
+        # avoid KeyError; the VLM forward generates from inputs_embeds and does not
+        # consume cache_position. Audit point #5.
+        inputs.pop("cache_position", None)
         if images is not None:
             inputs["images"] = images
         if image_sizes is not None:

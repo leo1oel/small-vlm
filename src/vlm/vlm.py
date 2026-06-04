@@ -64,7 +64,6 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         VLMForCausalLM, VLMConfig = get_dynamic_vlm(model_cfg.language_model.hf_name)
         model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
             trainer_cfg.from_pretrained,
-            low_cpu_mem_usage=True,
             dtype=torch.bfloat16
             if trainer_cfg.bf16
             else torch.float16
@@ -107,7 +106,6 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         model = VLMForCausalLM.from_pretrained(
             model_cfg.language_model.hf_name,
             config=config,
-            low_cpu_mem_usage=True,
             trust_remote_code=True,
             dtype=torch.bfloat16
             if trainer_cfg.bf16
