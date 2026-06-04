@@ -54,8 +54,18 @@ def train(model: Any, training_args: TrainingArguments, data_module: Any, proces
         log.info(f"Resuming from checkpoint: {training_args.resume_from_checkpoint}")
         trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     else:
-        log.info("Training without resuming from checkpoint")
-        trainer.train()
+        import os
+
+        from transformers.trainer_utils import get_last_checkpoint
+
+        last_ckpt = None
+        if os.path.isdir(training_args.output_dir):
+            last_ckpt = get_last_checkpoint(training_args.output_dir)
+        if last_ckpt is not None:
+            log.info(f"Auto-resuming from last checkpoint: {last_ckpt} (requeued job?)")
+        else:
+            log.info("Training from scratch (no checkpoint in output_dir)")
+        trainer.train(resume_from_checkpoint=last_ckpt)
 
     log.info("Saving state")
     trainer.save_state()

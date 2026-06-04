@@ -55,7 +55,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
     )
 
     if trainer_cfg.from_pretrained:
-        log.info("Loading processor from pretrained: {trainer_cfg.from_pretrained}")
+        log.info(f"Loading processor from pretrained: {trainer_cfg.from_pretrained}")
         processor = VLMProcessor.from_pretrained(
             trainer_cfg.from_pretrained,
         )

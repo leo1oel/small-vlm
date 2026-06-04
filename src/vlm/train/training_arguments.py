@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 import transformers
 
@@ -239,12 +240,29 @@ class TrainingArguments(transformers.TrainingArguments):
     version: str = "v0"
 
 
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+
+
+def _resolve_deepspeed(ds: str | None) -> str | None:
+    """Resolve a deepspeed config: absolute path as-is; bare filename relative to the
+    packaged config/deepspeed/ directory. Keeps yaml configs host-independent."""
+    if ds is None:
+        return None
+    p = Path(ds)
+    if p.is_file():
+        return str(p)
+    candidate = _CONFIG_DIR / "deepspeed" / p.name
+    if candidate.is_file():
+        return str(candidate)
+    raise FileNotFoundError(f"DeepSpeed config not found: {ds} (also tried {candidate})")
+
+
 def get_training_args(config: TrainerConfig) -> TrainingArguments:
     return TrainingArguments(
         remove_unused_columns=False,
         output_dir=config.output_dir,
         num_train_epochs=config.num_train_epochs,
-        deepspeed=config.deepspeed,
+        deepspeed=_resolve_deepspeed(config.deepspeed),
         save_strategy=config.save_strategy,
         save_steps=config.save_steps,
         save_total_limit=config.save_total_limit,

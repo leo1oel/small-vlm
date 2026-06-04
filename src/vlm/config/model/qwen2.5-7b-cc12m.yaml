@@ -6,7 +6,7 @@ language_model:
   max_seq_length: 4096
 
 visual_encoder:
-  hf_name: /pasteur2/u/yiming/open_clip/models/ViT-L-14-hf
+  hf_name: ${oc.env:VLM_MODEL_ROOT}/open_clip/ViT-L-14-hf
   output_layer: -2
   use_cls_token: False
 
