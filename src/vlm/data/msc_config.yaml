@@ -1,0 +1,57 @@
+# Multi-Storage Client (MSC) config for streaming training data from Azure
+# Blob Storage (dataset type "energon", see energon_dataset.py).
+#
+# Env vars are interpolated by MSC (os.path.expandvars). They are set by
+# energon_dataset._bootstrap_env() from AZURE_SAS_TOKEN (environment or a .env
+# file); no manual setup needed beyond providing the SAS token.
+#
+# URL layout with empty base_path:  msc://azure/<container>/<blob-path>
+#   e.g. msc://azure/data/LLaVA-OneVision-1.5-Instruct/train.jsonl
+
+profiles:
+  azure:
+    # Opt this profile into the top-level cache block (MSC requires BOTH this
+    # flag and the cache: block, else caching is silently off).
+    caching_enabled: true
+    storage_provider:
+      type: azure
+      options:
+        endpoint_url: ${AZURE_BLOB_ENDPOINT}
+        # Required by MSC's schema; empty keeps the container in the URL:
+        # msc://azure/<container>/<blob-path>
+        base_path: ""
+    credentials_provider:
+      type: AzureCredentials
+      options:
+        connection: ${AZURE_STORAGE_CONNECTION_STRING}
+
+  # Cache-free twin of `azure` for bulk sequential scans (download/indexing).
+  # ObjectFile's disable_read_cache=True does NOT stop the underlying
+  # storage_client.read() from writing every range into the cache (verified:
+  # a 44GB download churned the 20G FIFO at ~10x slowdown). Bulk ops use this
+  # profile instead so the training cache keeps its media.
+  azure_nocache:
+    storage_provider:
+      type: azure
+      options:
+        endpoint_url: ${AZURE_BLOB_ENDPOINT}
+        base_path: ""
+    credentials_provider:
+      type: AzureCredentials
+      options:
+        connection: ${AZURE_STORAGE_CONNECTION_STRING}
+
+# Transparent local range-cache for remote reads. Energon always opens files
+# with prefetch_file=False, so reads are cached in `cache_line_size` chunks —
+# a large jsonl is never downloaded wholesale. Sequential jsonl reads within a
+# worker's slice hit the same 64M cache line, drastically cutting round-trips.
+cache:
+  size: 20G
+  cache_line_size: 64M
+  prefetch_file: false
+  # Training data is immutable: skip the per-read HEAD/etag check, so cache
+  # hits cost zero network round-trips.
+  check_source_version: false
+  location: ${MSC_CACHE_DIR}
+  eviction_policy:
+    policy: fifo

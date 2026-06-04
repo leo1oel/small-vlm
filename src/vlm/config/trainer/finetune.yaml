@@ -13,7 +13,7 @@ report_to: wandb
 from_pretrained: ${oc.env:VLM_PRETRAIN_CKPT,null}
 group_by_modality_length: True
 save_steps: 2000
-save_only_model: False  # requeue/auto-resume needs optimizer state in checkpoints
+save_only_model: False # requeue/auto-resume needs optimizer state in checkpoints
 
 defaults:
   - unfreeze: finetune

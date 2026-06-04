@@ -148,8 +148,8 @@ class Conversation:
                     ret += role
 
         elif self.sep_style == SeparatorStyle.LLAMA_2:
-            wrap_sys: Callable[[str | Any], str] = (
-                lambda msg: f"<<SYS>>\n{msg}\n<</SYS>>\n\n" if len(msg) > 0 else msg
+            wrap_sys: Callable[[str | Any], str] = lambda msg: (
+                f"<<SYS>>\n{msg}\n<</SYS>>\n\n" if len(msg) > 0 else msg
             )
             wrap_inst: Callable[[str], str] = lambda msg: f"[INST] {msg} [/INST]"
             ret = ""

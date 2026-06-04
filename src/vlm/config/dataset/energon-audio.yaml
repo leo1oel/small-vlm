@@ -1,0 +1,27 @@
+# Stream training data straight from Azure Blob via Megatron-Energon — no
+# local dataset preparation beyond the automatic one-time jsonl download+index.
+#
+# Credentials: AZURE_SAS_TOKEN in the environment or a .env file (cwd, repo
+# root, or repo parent). Local jsonl copies live under $VLM_ENERGON_DATA_DIR
+# (fallback: $VLM_DATA_ROOT/energon-jsonl, then ~/.cache/vlm/energon-jsonl).
+#
+# REQUIRED with this dataset type: trainer.max_steps > 0 (the stream has no
+# epoch length). dataset.num_workers owns the loading parallelism;
+# trainer.dataloader_num_workers is ignored.
+
+name: energon-audio
+type: energon
+
+# blob folder -> blend weight; one entry = no blending. Mixing image and audio
+# datasets is supported (modality dials live in the model config):
+# folders:
+#   LLaVA-OneVision-1.5-Instruct: 2.0
+#   audio: 1.0
+folders:
+  audio: 1.0
+
+# jsonl_name: train.jsonl        # e.g. train_mini.jsonl for smoke tests
+# use_local_jsonl: null          # null=auto, true=require local, false=stream remote
+shuffle_buffer_size: 10000
+max_samples_per_sequence: 100 # randomness vs. sequential-read efficiency
+num_workers: 4

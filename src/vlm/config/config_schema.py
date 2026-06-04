@@ -6,10 +6,22 @@ from omegaconf import MISSING  # pyright: ignore
 
 @dataclass
 class VisualEncoderConfig:
-    hf_name: str = MISSING
+    # `hf_name: null` in the model yaml selects the encoder-free
+    # (gemma4_unified-style) raw-patch path: no vision tower at all; the dials
+    # below configure RawImageProcessor. When hf_name is set, the dials are
+    # ignored and the classic HF-vision-tower path is used unchanged.
+    hf_name: str | None = MISSING
     output_layer: int | None = None
     use_cls_token: bool = False
     use_all_tokens: bool = False
+    # --- encoder-free (raw_patch) dials ---
+    patch_size: int = 16  # teacher patch edge, px (gemma4 default)
+    pooling_kernel_size: int = 3  # k; model patch = patch_size * k px (gemma4: 48px)
+    max_soft_tokens: int = 280  # per-image token budget, any positive int
+    image_mean: list[float] | None = (
+        None  # post-rescale normalize; None = rescale-only (gemma4-style)
+    )
+    image_std: list[float] | None = None
 
 
 @dataclass
@@ -24,6 +36,11 @@ class LanguageModelConfig:
     image_token: str = "<image>"
     ignore_index: int = -100
     image_token_index: int = -200
+    # Audio placeholder, symmetric with the image one: "<audio>" in the sample
+    # text is tokenized then replaced by the (non-vocab) sentinel index, which
+    # the splice swaps for audio features.
+    audio_token: str = "<audio>"
+    audio_token_index: int = -201
     padding_side: str = "left"
 
 
@@ -31,6 +48,26 @@ class LanguageModelConfig:
 class ConnectorConfig:
     name: str = MISSING
     type: str = MISSING
+    # --- raw_patch dials (ignored by other connector types) ---
+    mm_embed_dim: int | None = None  # embedder internal width; None = LM hidden_size
+    mm_posemb_size: int | None = None  # per-axis posemb rows; None = max_soft_tokens
+
+
+@dataclass
+class AudioConfig:
+    """Encoder-free audio pathway (gemma4_unified-style). Disabled by default —
+    vision-only configs need not mention this section at all."""
+
+    enabled: bool = False
+    # Connector (connector_map key + display name)
+    name: str = "raw_waveform"
+    type: str = "raw_waveform"
+    # Frame size: samples per audio soft token. 640 @ 16kHz = 40ms/token,
+    # gemma4-compatible. Changing either requires retraining the audio connector.
+    samples_per_token: int = 640
+    sampling_rate: int = 16000
+    # Per-audio token cap for the dataset side (gemma4: 750 = 30s). None = no cap.
+    max_audio_tokens: int | None = 750
 
 
 @dataclass
@@ -39,19 +76,37 @@ class ModelConfig:
     visual_encoder: VisualEncoderConfig = field(default_factory=VisualEncoderConfig)
     language_model: LanguageModelConfig = field(default_factory=LanguageModelConfig)
     connector: ConnectorConfig = field(default_factory=ConnectorConfig)
+    audio: AudioConfig = field(default_factory=AudioConfig)
 
 
 @dataclass
 class DatasetConfig:
     name: str = MISSING
-    path: str = MISSING
+    # type "json": local LLaVA-style json/jsonl/yaml-mixture (path + image_folder
+    #   required — validated at load time, not by the schema, because the
+    #   "energon" type legitimately omits them).
+    # type "energon": stream samples from Azure Blob via Megatron-Energon; data
+    #   location comes from `folders` instead of path/image_folder.
     type: str = "json"
+    path: str | None = None
     lazy_preprocess: bool = True
     is_multimodal: bool = True
     early_mix_text: bool = False
-    image_folder: str = MISSING
+    image_folder: str | None = None
+    audio_folder: str | None = None  # root for samples' relative "audio" paths
     image_aspect_ratio: str = "square"
     image_token: str = "<image>"
+    # --- streaming dials (type: "energon" only) ---
+    # blob folder -> blend weight; a single entry means no blending. Each folder
+    # must contain a prepared <jsonl_name> (auto-prepared on first use).
+    folders: dict[str, float] | None = None
+    jsonl_name: str = "train.jsonl"
+    shuffle_buffer_size: int = 10000
+    max_samples_per_sequence: int | None = 100
+    # energon owns DataLoader workers AND rank sharding; the HF trainer's
+    # dataloader_num_workers must stay 0 for this dataset type.
+    num_workers: int = 4
+    use_local_jsonl: bool | None = None  # None = prefer a local jsonl copy if present
 
 
 @dataclass
@@ -92,6 +147,9 @@ class TrainerConfig:
     tf32: bool | None = None
     deepspeed: str | None = None
     num_train_epochs: int = 1
+    # Required (> 0) for dataset.type="energon": the streaming loader has no
+    # epoch length, so scheduling/stopping must be step-based.
+    max_steps: int = -1
     save_strategy: str = "steps"
     save_steps: int = 5000
     save_total_limit: int = 20

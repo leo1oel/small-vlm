@@ -38,7 +38,11 @@ def group_params_by_prefix(model: Any):
     component_prefixes = {
         "vision_model": ["model.vision_model", "model.vision_tower", "vision_tower"],
         "language_model": [],
-        "connector": ["model.connector", "connector"],
+        # The audio connector deliberately shares the "connector" group: both
+        # embedders are trained together (same freeze flag, LR, weight decay) in
+        # the gemma4_unified-style stage-1 recipe. Split into its own group here
+        # (plus optimizer/schema dials) if they ever need separate treatment.
+        "connector": ["model.connector", "model.audio_connector", "connector"],
         "lm_head": ["lm_head"],
     }
 

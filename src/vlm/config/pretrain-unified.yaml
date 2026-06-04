@@ -1,0 +1,33 @@
+defaults:
+  - cfg
+  - model: qwen3-1.7b-unified
+  - trainer: pretrain # unfreeze=connector-only: exactly the unified stage-1 recipe
+  - inference: default
+  - dataset: llava-pretrain
+  - override hydra/job_logging: rich
+  - _self_
+
+# Stage-1 pretrain for the encoder-free unified model: freeze the Qwen3
+# backbone, train only the image/audio connectors on caption-style data.
+#
+# Local smoke (Mac, no GPU cluster):
+#   python -m vlm -cn pretrain-unified \
+#     model=qwen3-0.6b-unified \
+#     trainer.deepspeed=null trainer.attn_implementation=sdpa \
+#     trainer.report_to=none trainer.per_device_train_batch_size=2
+#
+# NOTE: until the dataset supplies audio (or per-batch audio dummies), train
+# with model.audio.enabled=false to avoid unused-parameter stalls under
+# deepspeed; flip it on once the audio data path (task 7d) lands.
+
+hydra:
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: INFO
+  run:
+    dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}
