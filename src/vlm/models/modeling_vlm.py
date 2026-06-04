@@ -64,14 +64,24 @@ def create_dynamic_vlm_class(
         if not config.lazy_load:
             self.vision_model = self._build_vision_model(config)
             self.connector = self._build_connector(config)
+            self.audio_connector = self._build_audio_connector(config)
         log.info(f"DynamicVLM class {self.__class__.__name__} initialized.")
 
     def init_other_components(self: Any) -> None:
         self.vision_model = self._build_vision_model(self.config)
         self.connector = self._build_connector(self.config)
+        self.audio_connector = self._build_audio_connector(self.config)
 
-    def _build_vision_model(self: Any, config: Any) -> PreTrainedModel:
+    def _build_vision_model(self: Any, config: Any) -> PreTrainedModel | None:
         vision_config = config.vision_config
+        if getattr(vision_config, "hf_name", None) is None:
+            # Encoder-free path (gemma4_unified-style, connector type "raw_patch"):
+            # there is no vision tower at all — raw patches from RawImageProcessor
+            # go straight to the connector. Returning None here covers both the
+            # fresh-build path (init_other_components) and the checkpoint-reload
+            # path (__init__ under meta device), since both funnel through this
+            # builder. Downstream, encode dispatch checks `vision_model is None`.
+            return None
         # transformers v5 instantiates the model under a `torch.device("meta")`
         # context during `from_pretrained` (modeling_utils: `with torch.device("meta")`).
         # A nested `from_pretrained` inside that context is explicitly forbidden
@@ -120,6 +130,24 @@ def create_dynamic_vlm_class(
             config.hidden_size,
         )
 
+    def _build_audio_connector(self: Any, config: Any) -> Connector | None:
+        """Audio pathway (encoder-free, gemma4_unified-style): a connector that
+        projects raw waveform frames into LM space. None when the config has no
+        audio_config or it is disabled — vision-only models stay audio-free."""
+        audio_config = getattr(config, "audio_config", None)
+        if audio_config is None or not getattr(audio_config, "enabled", True):
+            return None
+        connector_class = connector_map.get(audio_config.type)
+        if not connector_class:
+            raise ValueError(f"Unsupported audio connector type: {audio_config.type}")
+        # For raw_waveform the "image_hidden_size" slot carries the audio frame
+        # size (samples_per_token); derived from the audio config, never hand-set.
+        return connector_class(
+            audio_config,
+            getattr(audio_config, "samples_per_token", 640),
+            config.hidden_size,
+        )
+
     DynamicVLMClass = type(
         "VLM",
         (ParentLLMClass,),  # Inherit from the specific LLM class
@@ -128,6 +156,7 @@ def create_dynamic_vlm_class(
             "__init__": __init__,
             "init_other_components": init_other_components,
             "_build_connector": _build_connector,
+            "_build_audio_connector": _build_audio_connector,
             "_build_vision_model": _build_vision_model,
         },
     )
@@ -162,12 +191,21 @@ def create_dynamic_causal_vlm_class(
         output_hidden_states: bool | None = None,
         images: FloatTensor | None = None,
         image_sizes: list[list[int]] | None = None,
+        image_position_ids: list[Tensor] | None = None,
+        audios: list[Tensor] | None = None,
         return_dict: bool | None = None,
     ) -> CausalLMOutputWithPast:
-        # Early image encoding - encode all image inputs at the beginning
+        # Early modality encoding - encode all image/audio inputs at the beginning
         image_features = None
+        audio_features = None
         if images is not None:
-            image_features, _ = self.encode_images(images)
+            if self.model.vision_model is None:
+                # Encoder-free path: images are per-image raw patch tensors.
+                image_features = self.encode_raw_patches(images, image_position_ids)
+            else:
+                image_features, _ = self.encode_images(images)
+        if audios is not None:
+            audio_features = self.encode_raw_audio(audios)
         if inputs_embeds is None:
             (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = (
                 self.prepare_inputs_labels_for_multimodal(
@@ -177,6 +215,7 @@ def create_dynamic_causal_vlm_class(
                     past_key_values,
                     labels,
                     image_features,
+                    audio_features,
                 )
             )
         return super(self.__class__, self).forward(
@@ -198,6 +237,8 @@ def create_dynamic_causal_vlm_class(
         inputs: Tensor | None = None,
         images: FloatTensor | None = None,
         image_sizes: list[list[int]] | None = None,
+        image_position_ids: list[Tensor] | None = None,
+        audios: list[Tensor] | None = None,
         **kwargs: Any,
     ) -> Any:
         position_ids = kwargs.pop("position_ids", None)
@@ -205,8 +246,16 @@ def create_dynamic_causal_vlm_class(
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
 
-        if images is not None:
-            image_features, _ = self.encode_images(images)
+        if images is not None or audios is not None:
+            image_features = None
+            audio_features = None
+            if images is not None:
+                if self.model.vision_model is None:
+                    image_features = self.encode_raw_patches(images, image_position_ids)
+                else:
+                    image_features, _ = self.encode_images(images)
+            if audios is not None:
+                audio_features = self.encode_raw_audio(audios)
             (_, position_ids, attention_mask, _, inputs_embeds, _) = (
                 self.prepare_inputs_labels_for_multimodal(
                     inputs,
@@ -215,6 +264,7 @@ def create_dynamic_causal_vlm_class(
                     None,
                     None,
                     image_features,
+                    audio_features,
                 )
             )
         else:
@@ -237,6 +287,8 @@ def create_dynamic_causal_vlm_class(
     ):
         images = kwargs.pop("images", None)
         image_sizes = kwargs.pop("image_sizes", None)
+        image_position_ids = kwargs.pop("image_position_ids", None)
+        audios = kwargs.pop("audios", None)
         inputs = super(self.__class__, self).prepare_inputs_for_generation(
             input_ids,
             past_key_values=past_key_values,
@@ -252,7 +304,74 @@ def create_dynamic_causal_vlm_class(
             inputs["images"] = images
         if image_sizes is not None:
             inputs["image_sizes"] = image_sizes
+        if image_position_ids is not None:
+            inputs["image_position_ids"] = image_position_ids
+        if audios is not None:
+            inputs["audios"] = audios
         return inputs
+
+    def encode_raw_patches(
+        self: Any,
+        images: list[Tensor] | Tensor,
+        image_position_ids: list[Tensor] | Tensor | None,
+    ) -> list[Tensor]:
+        """Encoder-free image path (gemma4_unified-style; vision_model is None).
+
+        `images` are per-image raw patch tensors (N_i, patch_dim) produced by
+        RawImageProcessor — N_i varies with aspect ratio — with matching
+        (N_i, 2) integer XY coordinates in `image_position_ids` (the spatial
+        information lives ONLY in these coordinates; the LM uses plain 1D RoPE).
+        All images are packed into one connector call and split back, so the
+        cost is a single matmul regardless of batch composition.
+
+        Returns a list of per-image features (N_i, text_hidden) — the same
+        per-image layout that prepare_inputs_labels_for_multimodal consumes.
+        """
+        if isinstance(images, Tensor):
+            images = [images]
+        if isinstance(image_position_ids, Tensor):
+            image_position_ids = [image_position_ids]
+        if image_position_ids is None or len(image_position_ids) != len(images):
+            raise ValueError(
+                "encode_raw_patches: the encoder-free path requires one image_position_ids "
+                f"tensor per image, got {0 if image_position_ids is None else len(image_position_ids)} "
+                f"for {len(images)} image(s). RawImageProcessor produces them together; make sure "
+                "the dataset/collator forwards both lists."
+            )
+        split_sizes = [patches.shape[0] for patches in images]
+        packed = torch.cat([patches.to(self.device) for patches in images], dim=0)
+        positions = torch.cat([pos.to(self.device) for pos in image_position_ids], dim=0)
+        features = self.model.connector(packed, positions)
+        return list(torch.split(features, split_sizes, dim=0))
+
+    def encode_raw_audio(
+        self: Any,
+        audios: list[Tensor] | Tensor,
+    ) -> list[Tensor]:
+        """Encoder-free audio path (gemma4_unified-style).
+
+        `audios` are per-audio raw waveform-frame tensors (T_i, samples_per_token)
+        from Gemma4UnifiedAudioFeatureExtractor — T_i varies with duration
+        (1 frame = 40ms @ 16kHz for the default 640). No position ids: audio is
+        a 1D sequence, frame order in the text sequence is all the position
+        information there is (gemma4_unified gives audio no positional embedding
+        either). Packed into one connector call and split back, symmetric with
+        encode_raw_patches.
+
+        Returns a list of per-audio features (T_i, text_hidden).
+        """
+        if self.model.audio_connector is None:
+            raise ValueError(
+                "encode_raw_audio: audios were provided but this model has no audio "
+                "pathway. Enable it via the model yaml audio section (audio.enabled: true) "
+                "so load_model builds the audio connector."
+            )
+        if isinstance(audios, Tensor):
+            audios = [audios]
+        split_sizes = [frames.shape[0] for frames in audios]
+        packed = torch.cat([frames.to(self.device) for frames in audios], dim=0)
+        features = self.model.audio_connector(packed)
+        return list(torch.split(features, split_sizes, dim=0))
 
     def encode_images_raw(self: Any, images: Tensor) -> tuple[list[Tensor] | Tensor, Any]:
         """Encode images using vision model only, without connector."""
@@ -334,6 +453,7 @@ def create_dynamic_causal_vlm_class(
         past_key_values: list[FloatTensor] | None = None,
         labels: LongTensor | None = None,
         image_features: Tensor | None = None,
+        audio_features: list[Tensor] | None = None,
     ) -> tuple[
         Tensor | None,
         LongTensor | None,
@@ -342,7 +462,7 @@ def create_dynamic_causal_vlm_class(
         Tensor | None,
         LongTensor | None,
     ]:
-        if image_features is None or input_ids.shape[1] == 1:  # pyright: ignore
+        if (image_features is None and audio_features is None) or input_ids.shape[1] == 1:  # pyright: ignore
             return input_ids, position_ids, attention_mask, past_key_values, None, labels
 
         # Let's just add dummy tensors if they do not exist,
@@ -377,51 +497,71 @@ def create_dynamic_causal_vlm_class(
             for cur_labels, cur_attention_mask in zip(labels, attention_mask, strict=False)
         ]  # pyright: ignore
 
+        # Modality registry: placeholder token id -> (feature list, cursor).
+        # Cursors are shared across the batch loop: features are ordered exactly
+        # as their placeholders appear across the batch, plus one dummy entry per
+        # sample that lacks the modality (consumed zero-width below — the LLaVA
+        # deepspeed trick: the connector already ran on the dummy during the
+        # encode phase, so its parameters stay in the graph every step).
+        modality_features: dict[int, tuple[Any, list[int]]] = {}
+        if image_features is not None:
+            modality_features[self.config.image_token_index] = (image_features, [0])
+        if audio_features is not None:
+            modality_features[getattr(self.config, "audio_token_index", -201)] = (
+                audio_features,
+                [0],
+            )
+
         new_input_embeds = []
         new_labels = []
-        cur_image_idx = 0
         for batch_idx, cur_input_ids in enumerate(input_ids):
-            num_images = (cur_input_ids == self.config.image_token_index).sum()
-            if num_images == 0:
-                cur_image_features = image_features[cur_image_idx]
+            is_mm_token = torch.zeros_like(cur_input_ids, dtype=torch.bool)
+            for token_index in modality_features:
+                is_mm_token |= cur_input_ids == token_index
+            mm_positions: list[int] = torch.where(is_mm_token)[0].tolist()
+
+            # Zero-width dummy consumption for modalities absent from this row.
+            absent_dummies = []
+            for token_index, (features, cursor) in modality_features.items():
+                if not bool((cur_input_ids == token_index).any()):
+                    absent_dummies.append(features[cursor[0]][0:0])
+                    cursor[0] += 1
+
+            if len(mm_positions) == 0:
                 cur_input_embeds_1 = self.get_input_embeddings()(cur_input_ids)
-                cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
+                cur_input_embeds = torch.cat([cur_input_embeds_1, *absent_dummies], dim=0)
                 new_input_embeds.append(cur_input_embeds)
                 new_labels.append(labels[batch_idx])  # pyright: ignore
-                cur_image_idx += 1
                 continue
 
-            image_token_indices = (
-                [-1]
-                + torch.where(cur_input_ids == self.config.image_token_index)[0].tolist()
-                + [cur_input_ids.shape[0]]
-            )
-            cur_input_ids_noim = []
+            # Split the row into text segments around the (interleaved) modality
+            # placeholders, embed all text in one lookup, then re-assemble with
+            # each placeholder replaced by its modality's next feature block.
+            boundaries = [-1] + mm_positions + [cur_input_ids.shape[0]]
+            cur_input_ids_segments = []
             cur_labels = labels[batch_idx]  # pyright: ignore
-            cur_labels_noim = []
-            for i in range(len(image_token_indices) - 1):
-                cur_input_ids_noim.append(
-                    cur_input_ids[image_token_indices[i] + 1 : image_token_indices[i + 1]]
-                )
-                cur_labels_noim.append(
-                    cur_labels[image_token_indices[i] + 1 : image_token_indices[i + 1]]
-                )
-            split_sizes = [x.shape[0] for x in cur_labels_noim]
-            cur_input_embeds = self.get_input_embeddings()(torch.cat(cur_input_ids_noim))
-            cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
+            cur_labels_segments = []
+            for i in range(len(boundaries) - 1):
+                cur_input_ids_segments.append(cur_input_ids[boundaries[i] + 1 : boundaries[i + 1]])
+                cur_labels_segments.append(cur_labels[boundaries[i] + 1 : boundaries[i + 1]])
+            split_sizes = [x.shape[0] for x in cur_labels_segments]
+            cur_input_embeds = self.get_input_embeddings()(torch.cat(cur_input_ids_segments))
+            text_segment_embeds = torch.split(cur_input_embeds, split_sizes, dim=0)
             cur_new_input_embeds = []
             cur_new_labels = []
 
-            for i in range(num_images + 1):
-                cur_new_input_embeds.append(cur_input_embeds_no_im[i])
-                cur_new_labels.append(cur_labels_noim[i])
-                if i < num_images:
-                    cur_image_features = image_features[cur_image_idx]
-                    cur_image_idx += 1
-                    cur_new_input_embeds.append(cur_image_features)
+            for i in range(len(mm_positions) + 1):
+                cur_new_input_embeds.append(text_segment_embeds[i])
+                cur_new_labels.append(cur_labels_segments[i])
+                if i < len(mm_positions):
+                    token_index = int(cur_input_ids[mm_positions[i]].item())
+                    features, cursor = modality_features[token_index]
+                    cur_features = features[cursor[0]]
+                    cursor[0] += 1
+                    cur_new_input_embeds.append(cur_features)
                     cur_new_labels.append(
                         torch.full(
-                            (cur_image_features.shape[0],),
+                            (cur_features.shape[0],),
                             self.config.ignore_index,
                             device=cur_labels.device,
                             dtype=cur_labels.dtype,
@@ -429,6 +569,7 @@ def create_dynamic_causal_vlm_class(
                     )
 
             cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
+            cur_new_input_embeds.extend(absent_dummies)
 
             cur_new_input_embeds = torch.cat(cur_new_input_embeds)
             cur_new_labels = torch.cat(cur_new_labels)
@@ -539,6 +680,8 @@ def create_dynamic_causal_vlm_class(
             "forward": forward,
             "generate": generate,
             "prepare_inputs_for_generation": prepare_inputs_for_generation,
+            "encode_raw_patches": encode_raw_patches,
+            "encode_raw_audio": encode_raw_audio,
             "encode_images_raw": encode_images_raw,
             "encode_images": encode_images,
             "unpad_image": unpad_image,

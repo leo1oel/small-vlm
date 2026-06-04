@@ -19,6 +19,14 @@ class DataArguments:
     ignore_index: int = -100
     image_token_index: int = -200
     image_aspect_ratio: str = "square"
+    # --- audio (encoder-free raw-waveform path; mirrors the image fields) ---
+    audio_token: str = "<audio>"
+    audio_token_index: int = -201
+    audio_folder: str | None = None
+    audio_enabled: bool = False
+    audio_sampling_rate: int = 16000
+    audio_samples_per_token: int = 640
+    max_audio_tokens: int | None = 750
 
 
 def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> DataArguments:
@@ -37,4 +45,11 @@ def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> Da
         ignore_index=trainer_config.language_model.ignore_index,
         image_token_index=trainer_config.language_model.image_token_index,
         image_aspect_ratio=data_config.image_aspect_ratio,
+        audio_token=trainer_config.language_model.audio_token,
+        audio_token_index=trainer_config.language_model.audio_token_index,
+        audio_folder=data_config.audio_folder,
+        audio_enabled=trainer_config.audio.enabled,
+        audio_sampling_rate=trainer_config.audio.sampling_rate,
+        audio_samples_per_token=trainer_config.audio.samples_per_token,
+        max_audio_tokens=trainer_config.audio.max_audio_tokens,
     )

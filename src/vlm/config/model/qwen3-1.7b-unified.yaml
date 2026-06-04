@@ -1,0 +1,32 @@
+defaults:
+  - _self_
+
+# Encoder-free unified understanding model (gemma4_unified-style) on the
+# Qwen3-1.7B backbone — the main training target.
+# Stage-1 (trainer: pretrain) trains only the two connectors:
+# ~19.5M (image embedder @ mm_embed_dim=2048) + ~1.3M (audio, 640x2048).
+
+language_model:
+  hf_name: Qwen/Qwen3-1.7B
+  max_seq_length: 4096
+
+visual_encoder:
+  hf_name: null # encoder-free: no vision tower; raw patches -> connector
+  patch_size: 16 # teacher patch, px
+  pooling_kernel_size: 3 # model patch = 16*3 = 48px (gemma4 geometry)
+  max_soft_tokens: 280 # per-image token budget (any positive int)
+  # image_mean / image_std: null -> rescale-only, like gemma4
+
+connector:
+  name: raw_patch
+  type: raw_patch
+  # mm_embed_dim: null -> defaults to the LM hidden size (2048)
+  # mm_posemb_size: null -> auto-filled with max_soft_tokens by load_model
+
+audio:
+  enabled: true # encoder-free audio: raw 16kHz waveform frames -> connector
+  samples_per_token: 640 # 40ms per audio soft token (gemma4-compatible)
+  sampling_rate: 16000
+  max_audio_tokens: 750 # dataset-side cap: 30s per audio clip
+
+name: qwen3-1.7b-unified

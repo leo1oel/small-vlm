@@ -8,9 +8,11 @@ import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import override
+from typing import Any, override
 
+import soundfile as sf
 import torch
+import torchaudio
 import transformers
 import yaml
 from PIL import Image
@@ -18,6 +20,7 @@ from torch.utils.data import Dataset
 from transformers.image_processing_utils import BaseImageProcessor
 
 from ..models import VLMProcessor
+from ..models.image_processing_raw import RawImageProcessor
 from ..utils import conversation as conversation_lib
 from .data_arguments import DataArguments
 
@@ -117,6 +120,158 @@ def tokenizer_image_token(
             return torch.tensor(input_ids, dtype=torch.long)
         raise ValueError(f"Unsupported tensor type: {return_tensors}")
     return input_ids
+
+
+# ---------------------------------------------------------------------------
+# Shared per-sample multimodal core — pure functions used by BOTH the local
+# json dataset below and the energon streaming path (energon_dataset.py).
+# ---------------------------------------------------------------------------
+
+
+def _media_pattern(data_args: DataArguments) -> str:
+    return (
+        "(" + "|".join(re.escape(t) for t in (data_args.image_token, data_args.audio_token)) + ")"
+    )
+
+
+def tokenizer_multimodal_token(
+    prompt: str,
+    tokenizer: transformers.PreTrainedTokenizer,
+    data_args: DataArguments,
+    return_tensors: str | None = None,
+):
+    """Generalization of tokenizer_image_token to multiple media placeholders:
+    '<image>' -> image_token_index (-200), '<audio>' -> audio_token_index (-201).
+    Behavior-identical to tokenizer_image_token for image-only prompts
+    (including the keep-first-BOS-only handling)."""
+    sentinel = {
+        data_args.image_token: data_args.image_token_index,
+        data_args.audio_token: data_args.audio_token_index,
+    }
+    input_ids: list[int] = []
+    # re.split with a capturing group: even chunks are text (possibly ""), the
+    # placeholders themselves come through as their own chunks.
+    for i, chunk in enumerate(re.split(_media_pattern(data_args), prompt)):
+        if chunk in sentinel:
+            input_ids.append(sentinel[chunk])
+            continue
+        ids = tokenizer(chunk).input_ids
+        # the tokenizer may prepend BOS to every chunk; keep it on the first only
+        if i != 0 and len(ids) > 0 and ids[0] == tokenizer.bos_token_id:
+            ids = ids[1:]
+        input_ids.extend(ids)
+
+    if return_tensors is not None:
+        if return_tensors == "pt":
+            return torch.tensor(input_ids, dtype=torch.long)
+        raise ValueError(f"Unsupported tensor type: {return_tensors}")
+    return input_ids
+
+
+def inject_missing_media_tokens(
+    conversations: list[dict],
+    n_images: int,
+    n_audios: int,
+    data_args: DataArguments,
+) -> None:
+    """Reconcile media placeholders with the media a sample actually carries
+    (per modality, in place). Datasets like ASR transcripts or bare caption
+    pairs don't ship '<image>'/'<audio>' markers:
+      - media present, no placeholder anywhere -> prepend to the first
+        human/user turn (deterministic order: images then audios);
+      - placeholder count matches -> leave the text as-is;
+      - any other mismatch -> raise (ambiguous sample; surface, don't guess).
+    """
+
+    def text_key(turn: dict) -> str:
+        return "value" if "value" in turn else "content"
+
+    prefix = ""
+    for token, n in ((data_args.image_token, n_images), (data_args.audio_token, n_audios)):
+        found = sum(str(turn[text_key(turn)]).count(token) for turn in conversations)
+        if found == n:
+            continue
+        if n > 0 and found == 0:
+            prefix += (token + "\n") * n
+        else:
+            raise ValueError(
+                f"sample has {n} media item(s) for {token!r} but {found} placeholder(s) in its text"
+            )
+    if not prefix:
+        return
+    for turn in conversations:
+        if (turn.get("from") or turn.get("role")) in ("human", "user"):
+            turn[text_key(turn)] = prefix + turn[text_key(turn)]
+            return
+    raise ValueError("no human/user turn to inject media placeholders into")
+
+
+def load_audio_frames(audio_source: Any, data_args: DataArguments) -> torch.Tensor:
+    """Decode audio (a path or a file-like object) into model-ready frames:
+    mono float32 @ audio_sampling_rate, shaped (T, samples_per_token).
+    Longer than max_audio_tokens -> truncated (head kept); the tail partial
+    frame is zero-padded (= the audio feature extractor's padding_value).
+    Decode = soundfile (wav/flac/ogg/mp3 via libsndfile); resample =
+    torchaudio.functional (pure torch sinc kernel, no torchcodec/ffmpeg)."""
+    data, in_sr = sf.read(audio_source, dtype="float32", always_2d=True)  # (S, C)
+    wav = torch.from_numpy(data).mean(dim=1)  # mono (S,)
+    if in_sr != data_args.audio_sampling_rate:
+        wav = torchaudio.functional.resample(wav, in_sr, data_args.audio_sampling_rate)
+    samples_per_token = data_args.audio_samples_per_token
+    if data_args.max_audio_tokens is not None:
+        wav = wav[: data_args.max_audio_tokens * samples_per_token]
+    if wav.numel() == 0:
+        raise ValueError(f"empty audio: {audio_source}")
+    remainder = wav.numel() % samples_per_token
+    if remainder:
+        wav = torch.cat([wav, wav.new_zeros(samples_per_token - remainder)])
+    return wav.view(-1, samples_per_token)
+
+
+def process_raw_image(image: Image.Image, processor: RawImageProcessor) -> tuple:
+    """Encoder-free image entry: variable-resolution NaFlex patchification.
+    No square-padding/resizing here — the processor preserves aspect ratio.
+    Returns a 4-tuple (patches (N, patch_dim), position_ids (N, 2), size,
+    modality) — one element longer than the classic 3-tuple, which is how the
+    collator tells the two pipelines apart."""
+    out = processor.preprocess(image)
+    return out["pixel_values"][0], out["image_position_ids"][0], image.size, "image"
+
+
+def make_dummy_image_entry(image_processor: BaseImageProcessor) -> tuple:
+    """Image entry for a sample with no image (text-only / audio-only) so the
+    vision connector still runs every step (deepspeed/DDP unused-parameter
+    guard); the splice consumes its feature zero-width — exact-zero gradient."""
+    if isinstance(image_processor, RawImageProcessor):
+        patches, position_ids = image_processor.get_dummy_inputs()
+        return patches, position_ids, (1, 1), "text"
+    crop_size = image_processor.crop_size
+    if crop_size is None:
+        crop_size = image_processor.size
+    return (
+        torch.zeros(1, 3, crop_size["height"], crop_size["width"]),
+        (crop_size["width"], crop_size["height"]),
+        "text",
+    )
+
+
+def make_dummy_audio_frames(data_args: DataArguments) -> torch.Tensor:
+    """Audio counterpart of make_dummy_image_entry: one zero frame, consumed
+    zero-width by the splice."""
+    return torch.zeros(1, data_args.audio_samples_per_token)
+
+
+def check_audio_template_supported() -> None:
+    """Audio placeholders are wired into the 'plain' and 'qwen' templates only
+    (the ones this project trains with); other templates would silently
+    tokenize '<audio>' as literal text, so fail loudly instead."""
+    conv = conversation_lib.default_conversation
+    if conv.sep_style == conversation_lib.SeparatorStyle.PLAIN or conv.version == "qwen":
+        return
+    raise NotImplementedError(
+        f"audio samples are only supported with the 'plain' or 'qwen' conversation "
+        f"templates, but the active template is version={conv.version!r}"
+    )
 
 
 def preprocess_multimodal(sources: Sequence[str], data_args: DataArguments) -> dict:
@@ -230,21 +385,23 @@ def preprocess_llama_2(
     )
 
 
-# Per-process cache: (id(tokenizer), has_image) -> prepared deepcopy.
+# Per-process cache: (id(tokenizer), has_image, media_tokens) -> prepared deepcopy.
 # The deepcopy isolation is deliberate — adding '<image>' to the SHARED tokenizer
 # would change len(tokenizer) and trigger an unwanted embedding resize in vlm.py.
-_PREPROCESS_TOKENIZER_CACHE: dict[tuple[int, bool], transformers.PreTrainedTokenizer] = {}
+_PREPROCESS_TOKENIZER_CACHE: dict[tuple, transformers.PreTrainedTokenizer] = {}
 
 
 def _get_preprocess_tokenizer(
-    tokenizer: transformers.PreTrainedTokenizer, has_image: bool
+    tokenizer: transformers.PreTrainedTokenizer,
+    has_image: bool,
+    media_tokens: tuple[str, ...] = ("<image>",),
 ) -> transformers.PreTrainedTokenizer:
-    key = (id(tokenizer), has_image)
+    key = (id(tokenizer), has_image, media_tokens)
     cached = _PREPROCESS_TOKENIZER_CACHE.get(key)
     if cached is None:
         cached = copy.deepcopy(tokenizer)
         if has_image:
-            cached.add_tokens(["<image>"], special_tokens=True)
+            cached.add_tokens(list(media_tokens), special_tokens=True)
         _PREPROCESS_TOKENIZER_CACHE[key] = cached
     return cached
 
@@ -259,11 +416,23 @@ def preprocess_qwen(
     # roles = {"human": "<|im_start|>user", "gpt": "<|im_start|>assistant"}
     roles = {"human": "user", "gpt": "assistant"}
 
-    # Add image tokens to tokenizer as a special tokens
+    # Add image/audio tokens to tokenizer as special tokens
     # Use a deepcopy of tokenizer so that we don't modify on the tokenizer
-    tokenizer = _get_preprocess_tokenizer(tokenizer, has_image)
+    # NOTE: has_image is really "has media" here — the dataset passes True for
+    # samples carrying images and/or audio.
+    tokenizer = _get_preprocess_tokenizer(
+        tokenizer, has_image, (data_args.image_token, data_args.audio_token)
+    )
 
-    image_token_index = tokenizer.convert_tokens_to_ids("<image>")
+    # Only resolve the media token ids when they were actually added — for
+    # text-only batches convert_tokens_to_ids would return unk/None and could
+    # falsely match real text tokens below.
+    image_token_index = (
+        tokenizer.convert_tokens_to_ids(data_args.image_token) if has_image else None
+    )
+    audio_token_index = (
+        tokenizer.convert_tokens_to_ids(data_args.audio_token) if has_image else None
+    )
     im_start = tokenizer.convert_tokens_to_ids("<|im_start|>")
     im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")
     # unmask_tokens = ["<|im_start|>", "<|im_start|>", "\n"]
@@ -319,8 +488,10 @@ def preprocess_qwen(
         for idx, encode_id in enumerate(input_id):
             if encode_id in unmask_tokens_idx:
                 target[idx] = encode_id
-            if encode_id == image_token_index:
+            if image_token_index is not None and encode_id == image_token_index:
                 input_id[idx] = data_args.image_token_index
+            elif audio_token_index is not None and encode_id == audio_token_index:
+                input_id[idx] = data_args.audio_token_index
         input_ids.append(input_id)
         targets.append(target)
     input_ids = torch.tensor(input_ids, dtype=torch.long)
@@ -705,25 +876,29 @@ def preprocess_plain(
     tokenizer: transformers.PreTrainedTokenizer,
     data_args: DataArguments,
 ) -> dict:
-    # add end signal and concatenate together
+    # add end signal and concatenate together. The human side is reduced to
+    # just the media placeholders (in their original order) — the plain
+    # pretrain recipe drops the human text entirely. Image-only samples
+    # produce exactly the legacy "<image>" behavior.
     conversations = []
     for source in sources:
         assert len(source) == 2
-        assert data_args.image_token in source[0]["value"]
-        source[0]["value"] = data_args.image_token
+        placeholders = re.findall(_media_pattern(data_args), source[0]["value"])
+        assert placeholders, "plain preprocessing expects at least one media placeholder"
+        source[0]["value"] = "".join(placeholders)
         conversation = (
             source[0]["value"] + source[1]["value"] + conversation_lib.default_conversation.sep
         )
         conversations.append(conversation)
     # tokenize conversations
     input_ids = [
-        tokenizer_image_token(prompt, tokenizer, return_tensors="pt", data_args=data_args)
+        tokenizer_multimodal_token(prompt, tokenizer, return_tensors="pt", data_args=data_args)
         for prompt in conversations
     ]
     targets = copy.deepcopy(input_ids)
     for target, source in zip(targets, sources, strict=False):
         tokenized_len = len(
-            tokenizer_image_token(source[0]["value"], tokenizer, data_args=data_args)
+            tokenizer_multimodal_token(source[0]["value"], tokenizer, data_args=data_args)
         )
         target[:tokenized_len] = data_args.ignore_index
 
@@ -882,9 +1057,10 @@ class LazySupervisedDataset(Dataset):
     def lengths(self):
         length_list = []
         for sample in self.list_data_dict:
-            img_tokens = 128 if "image" in sample else 0
+            # heuristic media token estimates, only used for length grouping
+            media_tokens = (128 if "image" in sample else 0) + (128 if "audio" in sample else 0)
             length_list.append(
-                sum(len(conv["value"].split()) for conv in sample["conversations"]) + img_tokens
+                sum(len(conv["value"].split()) for conv in sample["conversations"]) + media_tokens
             )
         return length_list
 
@@ -895,7 +1071,12 @@ class LazySupervisedDataset(Dataset):
             cur_len = sum(len(conv["value"].split()) for conv in sample["conversations"])
             assert cur_len > 0, f"Conversation length is 0 for {sample}"
 
-            if "image" in sample or "video" in sample or self.data_args.early_mix_text:
+            if (
+                "image" in sample
+                or "video" in sample
+                or "audio" in sample
+                or self.data_args.early_mix_text
+            ):
                 length_list.append(cur_len)
             else:
                 length_list.append(-cur_len)
@@ -910,6 +1091,11 @@ class LazySupervisedDataset(Dataset):
         except Exception as exn:
             print(f"Failed to open image {image_file}. Exception:", exn)
             raise exn
+
+        if isinstance(processor, RawImageProcessor):
+            # Encoder-free path: variable resolution, aspect ratio preserved by
+            # the processor itself — expand2square/aspect handling must NOT run.
+            return process_raw_image(image, processor)
 
         image_size = image.size
         image_aspect_ratio = self.data_args.image_aspect_ratio
@@ -991,20 +1177,51 @@ class LazySupervisedDataset(Dataset):
             sources = [sources]
         assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
 
-        if "image" in sources[0]:
-            image_file = self.list_data_dict[i]["image"]
+        sample = self.list_data_dict[i]
+        if "video" in sample:
+            raise NotImplementedError("video samples are not supported")
+
+        # --- media loading: image / audio are independently optional ---
+        image = None
+        if "image" in sample:
+            image_file = sample["image"]
             if isinstance(image_file, list):
                 image = [self.process_image(f) for f in image_file]
                 # Handling multi images
                 # overwrite to process with simple pad
-                if len(image_file) > 1:
+                # (CLIP path only: the raw processor is natively variable-size)
+                if len(image_file) > 1 and not isinstance(self.image_processor, RawImageProcessor):
                     image = [self.process_image(f, "pad") for f in image_file]
                     image = [[im[0], im[1], "image"] for im in image]
             else:
                 image = [self.process_image(image_file)]
-            sources = preprocess_multimodal(
-                copy.deepcopy([e["conversations"] for e in sources]), self.data_args
+
+        audio = None
+        if "audio" in sample:
+            if not self.data_args.audio_enabled:
+                raise ValueError(
+                    f"sample {sample.get('id', i)} carries audio but the model's audio "
+                    "pathway is off — set model.audio.enabled=true"
+                )
+            check_audio_template_supported()
+            audio_files = (
+                sample["audio"] if isinstance(sample["audio"], list) else [sample["audio"]]
             )
+            audio_folder = self.data_args.audio_folder or ""
+            audio = [
+                load_audio_frames(os.path.join(audio_folder, f), self.data_args)
+                for f in audio_files
+            ]
+
+        sources = copy.deepcopy([e["conversations"] for e in sources])
+        inject_missing_media_tokens(
+            sources[0],
+            n_images=len(image) if image is not None else 0,
+            n_audios=len(audio) if audio is not None else 0,
+            data_args=self.data_args,
+        )
+        if image is not None:
+            sources = preprocess_multimodal(sources, self.data_args)
 
         # elif "video" in sources[0]:
         #     video_file = self.list_data_dict[i]["video"]
@@ -1059,9 +1276,9 @@ class LazySupervisedDataset(Dataset):
         #         processor = self.image_processor
         #         image = processor.preprocess(video, return_tensors="pt")["pixel_values"]
         #         if self.data_args.add_time_instruction:
-        #             time_instruciton = f"The video lasts for {video_time:.2f} seconds, and {num_frames_to_sample} frames are uniformly sampled from it. These frames are located at {frame_time}.Please answer the following questions related to this video."
+        #             time_instruction = f"The video lasts for {video_time:.2f} seconds, and {num_frames_to_sample} frames are uniformly sampled from it. These frames are located at {frame_time}.Please answer the following questions related to this video."
         #             sources[0]["conversations"][0]["value"] = (
-        #                 f"{self.data_args.image_token}\n{time_instruciton}\n{sources[0]['conversations'][0]['value'].replace(self.data_args.image_token, '')}"
+        #                 f"{self.data_args.image_token}\n{time_instruction}\n{sources[0]['conversations'][0]['value'].replace(self.data_args.image_token, '')}"
         #             )
         #         image = [(image, video[0].size, "video")]
         #         sources = preprocess_multimodal(
@@ -1072,11 +1289,11 @@ class LazySupervisedDataset(Dataset):
         #         print(f"Error: {e}")
         #         print(f"Failed to read video file: {video_file}")
         #         return self._get_item(i + 1)
-        else:
-            sources = copy.deepcopy([e["conversations"] for e in sources])
 
-        has_image = ("image" in self.list_data_dict[i]) or ("video" in self.list_data_dict[i])
-        data_dict = preprocess(sources, self.tokenizer, self.data_args, has_image=has_image)
+        # has_image historically gates the media-aware tokenization path; audio
+        # placeholders ride the same path, so it really means "has media".
+        has_media = image is not None or audio is not None
+        data_dict = preprocess(sources, self.tokenizer, self.data_args, has_image=has_media)
 
         if "prompt" in data_dict:
             prompt = data_dict["prompt"]
@@ -1087,22 +1304,18 @@ class LazySupervisedDataset(Dataset):
             data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
 
         # image exist in the data
-        if "image" in self.list_data_dict[i]:
-            data_dict["image"] = image  # pyright: ignore
-        elif "video" in self.list_data_dict[i]:
+        if image is not None:
             data_dict["image"] = image  # pyright: ignore
         elif self.data_args.is_multimodal:
-            # image does not exist in the data, but the model is multimodal
-            crop_size = self.image_processor.crop_size
-            if crop_size is None:
-                crop_size = self.image_processor.size
-            data_dict["image"] = [
-                (
-                    torch.zeros(1, 3, crop_size["height"], crop_size["width"]),
-                    (crop_size["width"], crop_size["height"]),
-                    "text",
-                ),
-            ]
+            # image does not exist in the data, but the model is multimodal:
+            # dummy entry, consumed zero-width by the splice
+            data_dict["image"] = [make_dummy_image_entry(self.image_processor)]
+        # audio exist in the data (dummy when the audio pathway is on but the
+        # sample has none — same zero-width trick as the image dummy)
+        if audio is not None:
+            data_dict["audio"] = audio  # pyright: ignore
+        elif self.data_args.audio_enabled:
+            data_dict["audio"] = [make_dummy_audio_frames(self.data_args)]  # pyright: ignore
         # prompt exist in the data
         if prompt is not None:
             data_dict["prompt"] = prompt
@@ -1150,17 +1363,29 @@ class DataCollatorForSupervisedDataset:
         )
 
         if "image" in instances[0]:
-            images = [instance["image"] for instance in instances]
+            flat = [im for instance in instances for im in instance["image"]]
+            if len(flat[0]) == 4:
+                # encoder-free entries: (patches, position_ids, size, modality).
+                # Lists, never stacked — images vary in patch count N.
+                batch["images"] = [im[0] for im in flat]
+                batch["image_position_ids"] = [im[1] for im in flat]
+                batch["image_sizes"] = [im[2] for im in flat]
+            else:
+                # classic 3-tuple entries: (pixel_values, size, modality)
+                batch["image_sizes"] = [im[1] for im in flat]
+                # batch["modalities"] = [im[2] for im in flat]
+                images = [im[0] for im in flat]
+                batch["images"] = images
 
-            batch["image_sizes"] = [im[1] for im_list in images for im in im_list]
-            # batch["modalities"] = [im[2] for im_list in images for im in im_list]
-            images = [im[0] for im_list in images for im in im_list]
-            batch["images"] = images
+                # if all(x is not None and x.shape == images[0].shape for x in images):
+                #     batch["images"] = torch.stack(images)
+                # else:
+                #     batch["images"] = images
 
-            # if all(x is not None and x.shape == images[0].shape for x in images):
-            #     batch["images"] = torch.stack(images)
-            # else:
-            #     batch["images"] = images
+        if "audio" in instances[0]:
+            # one (T_i, samples_per_token) tensor per audio, flattened in batch
+            # order — exactly the queue layout the splice consumes
+            batch["audios"] = [a for instance in instances for a in instance["audio"]]
 
         # if "prompt" in instances[0]:
         #     batch["prompts"] = [instance["prompt"] for instance in instances]
@@ -1173,6 +1398,11 @@ def make_supervised_data_module(
     data_args: DataArguments,
 ) -> dict:
     """Make dataset and collator for supervised fine-tuning."""
+    if not data_args.data_path:
+        raise ValueError(
+            "dataset.path is required for dataset.type='json' (it is optional in "
+            "the schema only because dataset.type='energon' does not use it)"
+        )
     train_dataset = LazySupervisedDataset(
         processor=processor, data_path=data_args.data_path, data_args=data_args
     )

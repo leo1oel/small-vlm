@@ -27,10 +27,10 @@ The VLM consists of three main components:
 
 ## Setup and Installation
 
-1.  **Environment Setup with uv**:
+1. **Environment Setup with uv**:
     This project uses `uv` for Python environment and dependency management. For instructions on installing `uv` and setting up Python, please refer to [installation.md](installation.md).
 
-2.  **Install Dependencies**:
+1. **Install Dependencies**:
     Once `uv` is installed and you have cloned the repository, install the necessary dependencies:
 
     ```bash
@@ -39,11 +39,11 @@ The VLM consists of three main components:
 
 ### Environment variables
 
-| Variable | Meaning | Example |
-|---|---|---|
-| `VLM_DATA_ROOT` | Root directory for datasets | `/gscratch/krishna/$USER/data` |
-| `VLM_MODEL_ROOT` | Root for locally stored vision encoders | `/gscratch/krishna/$USER/models` |
-| `VLM_PRETRAIN_CKPT` | Stage-1 checkpoint consumed by finetune configs (optional) | `outputs/.../checkpoint-8000` |
+| Variable            | Meaning                                                    | Example                          |
+| ------------------- | ---------------------------------------------------------- | -------------------------------- |
+| `VLM_DATA_ROOT`     | Root directory for datasets                                | `/gscratch/krishna/$USER/data`   |
+| `VLM_MODEL_ROOT`    | Root for locally stored vision encoders                    | `/gscratch/krishna/$USER/models` |
+| `VLM_PRETRAIN_CKPT` | Stage-1 checkpoint consumed by finetune configs (optional) | `outputs/.../checkpoint-8000`    |
 
 DeepSpeed configs in trainer yamls are bare filenames (e.g. `zero3.json`) resolved
 against `src/vlm/config/deepspeed/` automatically. `train.slurm` targets the hyak
@@ -106,7 +106,7 @@ You can refer to `src/vlm/inference/eval.py`
 
 This project provides a script to easily upload your trained models and processors to the Hugging Face Hub.
 
-1.  **Run the push script**:
+1. **Run the push script**:
     Execute the `push-to-hub` command (which calls the `push_vlm_to_hub` function):
 
     ```bash
@@ -119,7 +119,7 @@ This project provides a script to easily upload your trained models and processo
     - The desired repository name on the Hub (e.g., `your-username/your-model-name`).
     - Whether to force push if the repository already exists.
 
-2.  **Loading from Hub**:
+1. **Loading from Hub**:
     Once pushed, your model can be loaded by anyone using the standard `transformers` library:
 
     ```python
@@ -134,7 +134,7 @@ This project provides a script to easily upload your trained models and processo
 
     The `push-to-hub` script automatically prepares the necessary configuration files (`modeling_vlm.py`, `processing_vlm.py`, `configuration_vlm.py`, `connectors.py`) and updates `config.json` and `processor_config.json` to enable this seamless loading.
 
----
+______________________________________________________________________
 
 _This project was built from
 [simple-modern-uv](https://github.com/jlevy/simple-modern-uv), [LLaVA](https://github.com/haotian-liu/LLaVA), [LLaVA-NEXT](https://github.com/LLaVA-VL/LLaVA-NeXT)_

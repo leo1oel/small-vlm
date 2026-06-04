@@ -2,12 +2,12 @@ version: 1
 formatters:
   simple:
     (): vlm.utils.logging_utils.ColoredFormatter
-    format: '%(message)s'
+    format: "%(message)s"
   detailed:
-    format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
+    format: "[%(asctime)s][%(name)s][%(levelname)s] - %(message)s"
 filters:
   rank_zero_filter:
-    (): 'vlm.utils.logging_utils.RankZeroFilter'
+    (): "vlm.utils.logging_utils.RankZeroFilter"
 handlers:
   console:
     class: rich.logging.RichHandler

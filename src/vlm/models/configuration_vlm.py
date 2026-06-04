@@ -31,6 +31,24 @@ class ConnectorConfig(PretrainedConfig):
         super().__init__(**kwargs)
 
 
+class AudioConfig(PretrainedConfig):
+    """Audio-pathway config (encoder-free, gemma4_unified-style).
+
+    Carries the yaml dials for the audio connector: enabled, name, type
+    (connector_map key, e.g. "raw_waveform"), samples_per_token (frame size,
+    640 = 40ms @ 16kHz), plus anything future connectors need. Kwargs
+    passthrough like VisionConfig/ConnectorConfig.
+    """
+
+    model_type: ClassVar[str] = "audio_connector"
+
+    def __init__(
+        self,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+
+
 def create_dynamic_vlm_config_class(
     base_language_model_name_or_path: str,
 ) -> type[PretrainedConfig]:
@@ -53,14 +71,21 @@ def create_dynamic_vlm_config_class(
             self,
             vision_config_args: dict[str, Any] = None,
             connector_config_args: dict[str, Any] = None,
+            audio_config_args: dict[str, Any] = None,
             lazy_load: bool = False,
             **kwargs: Any,
         ):
             final_vision_args = kwargs.pop("vision_config", vision_config_args)
             final_connector_args = kwargs.pop("connector_config", connector_config_args)
+            final_audio_args = kwargs.pop("audio_config", audio_config_args)
 
             self.vision_config: VisionConfig = VisionConfig(**(final_vision_args or {}))
             self.connector_config: ConnectorConfig = ConnectorConfig(**(final_connector_args or {}))
+            # None (not an empty AudioConfig) when absent: old checkpoints and
+            # vision-only configs simply have no audio pathway.
+            self.audio_config: AudioConfig | None = (
+                AudioConfig(**final_audio_args) if final_audio_args else None
+            )
             self.lazy_load: bool = lazy_load
             # Initialize the base language model configuration part
             super().__init__(**kwargs)

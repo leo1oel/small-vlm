@@ -262,7 +262,7 @@
 #                 if self.tokenizer.pad_token_id is not None
 #                 else self.tokenizer.eos_token_id
 #             )
-#             contxt_id = (
+#             context_id = (
 #                 tokenizer_image_token(
 #                     prompt, self.tokenizer, self.image_token_index, return_tensors="pt"
 #                 )
@@ -282,7 +282,7 @@
 #             )
 #             labels = input_ids.clone()
 #             # Context part no need to calculate for loss
-#             labels[0, : contxt_id.shape[1]] = -100
+#             labels[0, : context_id.shape[1]] = -100
 #             with torch.inference_mode():
 #                 outputs = self.model(
 #                     input_ids=input_ids,
@@ -295,8 +295,8 @@
 #             # loss = torch.exp(loss)
 #             logits = outputs["logits"]
 #             greedy_tokens = logits.argmax(dim=-1)
-#             cont_toks = input_ids[:, contxt_id.shape[1] :]  # [1, seq]
-#             greedy_tokens = greedy_tokens[:, contxt_id.shape[1] : input_ids.shape[1]]  # [1, seq]
+#             cont_toks = input_ids[:, context_id.shape[1] :]  # [1, seq]
+#             greedy_tokens = greedy_tokens[:, context_id.shape[1] : input_ids.shape[1]]  # [1, seq]
 #             max_equal = (greedy_tokens == cont_toks).all()
 #             res.append((float(loss.item()), bool(max_equal)))
 #             pbar.update(1)

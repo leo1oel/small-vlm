@@ -75,8 +75,8 @@ extensions:
 - [Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)
 
 - [Based Pyright](https://marketplace.visualstudio.com/items?itemName=detachhead.basedpyright)
-  for type checking. Note that this extension works with non-Microsoft VSCode forks like
-  Cursor.
+    for type checking. Note that this extension works with non-Microsoft VSCode forks like
+    Cursor.
 
 ## Documentation
 
@@ -84,7 +84,7 @@ extensions:
 
 - [basedpyright docs](https://docs.basedpyright.com/latest/)
 
-* * *
+______________________________________________________________________
 
 *This file was built with
 [simple-modern-uv](https://github.com/jlevy/simple-modern-uv).*

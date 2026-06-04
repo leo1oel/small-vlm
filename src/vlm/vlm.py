@@ -1,17 +1,19 @@
 import logging
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import hydra
 import torch
 from omegaconf import OmegaConf
-from transformers import AutoConfig, PreTrainedTokenizer, set_seed
+from transformers import AutoConfig, AutoTokenizer, PreTrainedTokenizer, set_seed
 
 from vlm.config.config_schema import LanguageModelConfig
 
 from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
 from .data import get_data_args, make_supervised_data_module
 from .models import VLMProcessor, get_dynamic_vlm
+from .models.image_processing_raw import RawImageProcessor
 from .train import get_training_args, train
 from .utils.precision import resolve_precision
 
@@ -49,6 +51,45 @@ def add_special_tokens(tokenizer: PreTrainedTokenizer, config: LanguageModelConf
         tokenizer.add_tokens(tokens_to_add, special_tokens=True)
 
 
+def attach_audio_feature_extractor(processor: VLMProcessor, audio_config: Any) -> None:
+    """Attach (or null out) the audio feature extractor on the processor.
+
+    The extractor is fully derivable from the model's audio_config (it is just
+    "chunk 16kHz waveform into samples_per_token frames"), so it is rebuilt
+    here on every load instead of being persisted with the processor — this
+    also keeps it out of ProcessorMixin's attribute machinery. We reuse
+    transformers' Gemma4UnifiedAudioFeatureExtractor verbatim (zero code:
+    feature_size == audio_samples_per_token frames + bool validity mask).
+    Accepts either the yaml dict (fresh build) or the AudioConfig object from a
+    checkpoint's model config (reload path).
+    """
+
+    def get(key: str, default: Any) -> Any:
+        if isinstance(audio_config, dict):
+            return audio_config.get(key, default)
+        return getattr(audio_config, key, default)
+
+    samples_per_token, sampling_rate = 640, 16000
+    enabled = False
+    if audio_config is not None:
+        enabled = bool(get("enabled", False))
+        samples_per_token = int(get("samples_per_token", samples_per_token))
+        sampling_rate = int(get("sampling_rate", sampling_rate))
+    if not enabled:
+        processor.feature_extractor = None
+        return
+    from transformers.models.gemma4_unified.feature_extraction_gemma4_unified import (
+        Gemma4UnifiedAudioFeatureExtractor,
+    )
+
+    processor.feature_extractor = Gemma4UnifiedAudioFeatureExtractor(
+        feature_size=samples_per_token,
+        sampling_rate=sampling_rate,
+        padding_value=0.0,
+        audio_samples_per_token=samples_per_token,
+    )
+
+
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
     log.info(
         f"Loading model: [bold red][link=file://{CONFIG_PATH / 'model' / f'{model_cfg.name}.yaml'}]{model_cfg.name}[/link][/bold red]"
@@ -76,30 +117,78 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             model.config.max_seq_length = model_cfg.language_model.max_seq_length
         if model.config.vocab_size < len(processor.tokenizer):
             model.model.resize_token_embeddings(len(processor.tokenizer))
+        # Audio pathway follows the checkpoint's model config on reload.
+        attach_audio_feature_extractor(processor, getattr(model.config, "audio_config", None))
     else:
-        hf_config = AutoConfig.from_pretrained(model_cfg.visual_encoder.hf_name)
-        if getattr(hf_config, "vision_config", None):
-            hf_config = hf_config.vision_config
-        vision_config_dict = hf_config if isinstance(hf_config, dict) else hf_config.to_dict()
-        vision_config = vision_config_dict | OmegaConf.to_container(model_cfg.visual_encoder)
-        connector_config = OmegaConf.to_container(model_cfg.connector)
+        if model_cfg.visual_encoder.hf_name is None:
+            # Encoder-free (gemma4_unified-style raw-patch) path: no vision tower,
+            # so there is no HF vision config to inherit — vision_config is just
+            # the yaml dials plus one derived field.
+            vision_config = cast(dict[str, Any], OmegaConf.to_container(model_cfg.visual_encoder))
+            # Single source of truth for the connector input dim:
+            # (patch_size * pooling_kernel_size)^2 * 3. Derived, never hand-set.
+            model_patch = (
+                model_cfg.visual_encoder.patch_size * model_cfg.visual_encoder.pooling_kernel_size
+            )
+            vision_config["hidden_size"] = model_patch**2 * 3
+        else:
+            hf_config = AutoConfig.from_pretrained(model_cfg.visual_encoder.hf_name)
+            if getattr(hf_config, "vision_config", None):
+                hf_config = hf_config.vision_config
+            vision_config_dict = hf_config if isinstance(hf_config, dict) else hf_config.to_dict()
+            vision_config = vision_config_dict | OmegaConf.to_container(model_cfg.visual_encoder)
+        connector_config = cast(dict[str, Any], OmegaConf.to_container(model_cfg.connector))
+        if connector_config.get("type") == "raw_patch" and not connector_config.get(
+            "mm_posemb_size"
+        ):
+            # The factorized position table must cover the worst-case grid side
+            # (a budget-long single-row strip), so default to the token budget.
+            connector_config["mm_posemb_size"] = model_cfg.visual_encoder.max_soft_tokens
+        # Audio pathway: only materialize an audio_config when enabled, so
+        # vision-only models keep audio_config=None (no audio_connector built).
+        audio_config = OmegaConf.to_container(model_cfg.audio) if model_cfg.audio.enabled else None
         hf_config = AutoConfig.from_pretrained(model_cfg.language_model.hf_name)
         if model_cfg.language_model.max_seq_length is None:
             model_cfg.language_model.max_seq_length = hf_config.max_position_embeddings
         language_config = hf_config.to_dict() | OmegaConf.to_container(model_cfg.language_model)
-        processor = VLMProcessor.from_names(
-            model_cfg.visual_encoder.hf_name,
-            model_cfg.language_model.hf_name,
-            trust_remote_code=True,
-            use_fast=True,
-            model_max_length=model_cfg.language_model.max_seq_length,
-            padding_side=model_cfg.language_model.padding_side,
-        )
+        if model_cfg.visual_encoder.hf_name is None:
+            # Encoder-free path: our own RawImageProcessor (variable resolution,
+            # raw patches) + the LM's tokenizer. No AutoImageProcessor involved.
+            image_processor = RawImageProcessor(
+                patch_size=model_cfg.visual_encoder.patch_size,
+                pooling_kernel_size=model_cfg.visual_encoder.pooling_kernel_size,
+                max_soft_tokens=model_cfg.visual_encoder.max_soft_tokens,
+                image_mean=OmegaConf.to_container(model_cfg.visual_encoder.image_mean)
+                if model_cfg.visual_encoder.image_mean is not None
+                else None,
+                image_std=OmegaConf.to_container(model_cfg.visual_encoder.image_std)
+                if model_cfg.visual_encoder.image_std is not None
+                else None,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_cfg.language_model.hf_name,
+                trust_remote_code=True,
+                use_fast=True,
+                model_max_length=model_cfg.language_model.max_seq_length,
+                padding_side=model_cfg.language_model.padding_side,
+            )
+            processor = VLMProcessor(image_processor=image_processor, tokenizer=tokenizer)
+        else:
+            processor = VLMProcessor.from_names(
+                model_cfg.visual_encoder.hf_name,
+                model_cfg.language_model.hf_name,
+                trust_remote_code=True,
+                use_fast=True,
+                model_max_length=model_cfg.language_model.max_seq_length,
+                padding_side=model_cfg.language_model.padding_side,
+            )
+        attach_audio_feature_extractor(processor, audio_config)
         add_special_tokens(processor.tokenizer, model_cfg.language_model)
         VLMForCausalLM, VLMConfig = get_dynamic_vlm(model_cfg.language_model.hf_name)
         config = VLMConfig(
             vision_config=vision_config,
             connector_config=connector_config,
+            audio_config=audio_config,
             lazy_load=True,
             **language_config,
         )
@@ -142,8 +231,29 @@ def vlm(cfg: AppConfig) -> None:
         model.to(training_args.device)
         data_args = get_data_args(cfg.dataset, cfg.model)
         log.info("Creating data module")
-        data_module = make_supervised_data_module(processor=processor, data_args=data_args)
-        train(model, training_args, data_module, processor)
+        if cfg.dataset.type == "energon":
+            # lazy import: needs megatron-energon + multistorageclient, which
+            # local-json training environments may not have installed
+            from .data.energon_dataset import build_energon_train_loader
+
+            energon_loader = build_energon_train_loader(
+                cfg.dataset,
+                processor,
+                data_args,
+                batch_size=cfg.trainer.per_device_train_batch_size,
+            )
+            data_module = dict(train_dataset=None, eval_dataset=None, data_collator=None)
+            train(
+                model,
+                training_args,
+                data_module,
+                processor,
+                energon_loader=energon_loader,
+                energon_num_workers=cfg.dataset.num_workers,
+            )
+        else:
+            data_module = make_supervised_data_module(processor=processor, data_args=data_args)
+            train(model, training_args, data_module, processor)
 
 
 def validate_config(cfg: AppConfig) -> None:

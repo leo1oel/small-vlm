@@ -1,0 +1,38 @@
+name: pre-commit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  prek:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "stable"
+      - name: pre-commit run (fix first pass)
+        id: prek_fix
+        uses: j178/prek-action@v1
+        continue-on-error: true
+      - name: pre-commit run (verify second pass)
+        uses: j178/prek-action@v1
+      - name: Detect changes
+        id: diff
+        run: |
+          if git diff --quiet; then
+              echo "changed=false" >> $GITHUB_OUTPUT
+          else
+              echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      - name: Auto-commit fixes
+        if: steps.diff.outputs.changed == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v7
+        with:
+          commit_message: "Apply pre-commit fixes"

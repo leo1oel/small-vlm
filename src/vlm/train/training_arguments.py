@@ -262,6 +262,7 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         remove_unused_columns=False,
         output_dir=config.output_dir,
         num_train_epochs=config.num_train_epochs,
+        max_steps=config.max_steps,
         deepspeed=_resolve_deepspeed(config.deepspeed),
         save_strategy=config.save_strategy,
         save_steps=config.save_steps,

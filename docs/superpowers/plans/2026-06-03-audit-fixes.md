@@ -8,15 +8,16 @@
 
 **Tech Stack:** Python 3.13 / uv / hydra / pytest；升级目标 transformers==5.10.1、torch 最新（与 deepspeed 兼容为准）、accelerate>=1.13、deepspeed>=0.19、datasets>=4.8
 
----
+______________________________________________________________________
 
 ## 执行约定（每个任务必须遵守）
 
 **质量要求（用户明确指示）：** 每个改动在实施前要认真核实细节正确性，实施后必须经过独立审查 agent 审查，参考网上资料和 `.venv` 内安装包源码确认 API 用法正确，确保不引入 bug。
 
 **每个任务的标准流程:**
+
 1. 实施 subagent 按步骤执行（含运行验证命令）
-2. 实施完成后、commit 之前，dispatch 一个**审查 agent**，prompt 模板如下（替换 `{TASK}` 为任务标题、`{REQUIREMENTS}` 为该任务的"背景"段落）：
+1. 实施完成后、commit 之前，dispatch 一个**审查 agent**，prompt 模板如下（替换 `{TASK}` 为任务标题、`{REQUIREMENTS}` 为该任务的"背景"段落）：
 
 ```
 你是代码审查员。审查 /mmfs1/gscratch/krishna/leoym/small-vlm 工作区中未提交的改动（git diff + git status）。
@@ -28,10 +29,10 @@
 4. 输出：APPROVE 或 REJECT + 逐条问题清单（文件:行号 + 修复建议）。对不确定的 API 行为必须给出源码/文档依据，不允许凭记忆断言。
 ```
 
-3. 审查 REJECT → 实施 agent 修复 → 重新审查，直到 APPROVE
-4. APPROVE 后才 commit
+1. 审查 REJECT → 实施 agent 修复 → 重新审查，直到 APPROVE
+1. APPROVE 后才 commit
 
----
+______________________________________________________________________
 
 ## Setup
 
@@ -42,14 +43,16 @@ cd /mmfs1/gscratch/krishna/leoym/small-vlm
 git checkout -b audit-fixes
 ```
 
----
+______________________________________________________________________
 
 ### Task 1: 删除 zero2.json 的 optimizer block（恢复差分学习率）
 
 **背景:** transformers 的 DeepSpeed 集成（`integrations/deepspeed.py:371-389`）在 DS config 含 `optimizer` block 时会用 DummyOptim **跳过** `VLMTrainer.create_optimizer()`，导致 `optimizer.py` 里 vision/connector/LLM 的差分学习率参数组被静默丢弃。zero3.json 没有此 block（正确写法），zero2.json 有（pretrain/train 配置在用，受害最深）。
 
 **Files:**
+
 - Modify: `src/vlm/config/deepspeed/zero2.json:13-21`
+
 - Modify: `src/vlm/config/deepspeed/zero3_offload.json`（同样的 block，目前是死配置，顺手清理）
 
 - [ ] **Step 1.1: 删除 zero2.json 的 optimizer block**
@@ -114,18 +117,24 @@ git add src/vlm/config/deepspeed/zero2.json src/vlm/config/deepspeed/zero3_offlo
 git commit -m "fix: remove DS-native optimizer block so custom per-component LR groups take effect"
 ```
 
----
+______________________________________________________________________
 
 ### Task 2: 整体删除 CLIP 共训练代码
 
-**背景:** 用户决定不再需要 CLIP 共训练（commit d7d4bac 引入）。删除面已通过 grep 全量确认：`open_clip: True` 没有任何 yaml 在用；`webdataset` 仅被 unified_dataset 使用；tests/ 无相关引用。删除范围 = task_modes/clip_* 前向分支、open_clip 加载、dual_task、UnifiedDataset、MultiTaskTrainer、相关配置与依赖。保留：`llama3.2-3b-clip/dino`、`*-cc12m` 等模型 yaml（它们只是视觉编码器替换实验，走 AutoModel 加载，不涉及共训练）、`train-llama-clip.yaml`/`train-llama-dino.yaml`（执行时核实其内容确实不引用 unified/dual_task 后保留）。
+**背景:** 用户决定不再需要 CLIP 共训练（commit d7d4bac 引入）。删除面已通过 grep 全量确认：`open_clip: True` 没有任何 yaml 在用；`webdataset` 仅被 unified_dataset 使用；tests/ 无相关引用。删除范围 = task_modes/clip\_\* 前向分支、open_clip 加载、dual_task、UnifiedDataset、MultiTaskTrainer、相关配置与依赖。保留：`llama3.2-3b-clip/dino`、`*-cc12m` 等模型 yaml（它们只是视觉编码器替换实验，走 AutoModel 加载，不涉及共训练）、`train-llama-clip.yaml`/`train-llama-dino.yaml`（执行时核实其内容确实不引用 unified/dual_task 后保留）。
 
 **Files:**
+
 - Delete: `src/vlm/data/unified_dataset.py`, `src/vlm/train/multitask_trainer.py`
+
 - Delete: `src/vlm/config/unified-pretrain-llava.yaml`, `unified-pretrain-qwen.yaml`, `unified-finetune-llava.yaml`, `unified-finetune-qwen.yaml`
+
 - Delete: `src/vlm/config/trainer/finetune-unified.yaml`, `src/vlm/config/dataset/unified-pretrain.yaml`, `src/vlm/config/dataset/unified-finetune.yaml`
+
 - Delete: `src/vlm/config/model/llava-7b-unified.yaml`, `src/vlm/config/model/qwen2.5-3b-unified.yaml`
+
 - Delete: `src/vlm/config/trainer/learning_rate/llava-unified.yaml`（删除前 grep 确认无引用）
+
 - Modify: `src/vlm/data/__init__.py`, `src/vlm/data/data_arguments.py`, `src/vlm/models/modeling_vlm.py`, `src/vlm/models/processing_vlm.py`, `src/vlm/models/configuration_vlm.py`, `src/vlm/train/vlm_trainer.py`, `src/vlm/vlm.py`, `src/vlm/config/config_schema.py`, `pyproject.toml`
 
 - [ ] **Step 2.1: 删除文件**
@@ -143,7 +152,7 @@ git rm src/vlm/config/model/llava-7b-unified.yaml src/vlm/config/model/qwen2.5-3
 grep -rn "learning_rate/llava-unified\|llava-unified" src/vlm/config --include="*.yaml" || git rm src/vlm/config/trainer/learning_rate/llava-unified.yaml
 ```
 
-- [ ] **Step 2.2: data/__init__.py 改为**
+- [ ] **Step 2.2: data/**init**.py 改为**
 
 ```python
 from .data_arguments import DataArguments, get_data_args
@@ -165,53 +174,56 @@ __all__ = [
 - [ ] **Step 2.4: config_schema.py 删除字段**
 
 - `DatasetConfig`：删除 `clip_data_type`、`clip_dataset_size`、`clip_data_path`、`clip_image_folder`、`clip_webdataset_urls`、`vlm_batch_size`、`clip_batch_size`
+
 - `ModelConfig`：删除 `dual_task: bool = False`
+
 - `VisualEncoderConfig`：删除 `open_clip: bool = False`、`open_clip_model: str | None = None`
 
 - [ ] **Step 2.5: modeling_vlm.py 清理（最大的一处）**
 
 逐项：
+
 1. `forward`（130-225 行）：签名删除 `task_modes`、`clip_input_ids`、`clip_attention_mask`、`clip_images` 四个参数；删除整个 `if task_modes is not None and "clip" in task_modes:` 分支（154-201 行）。保留分支后的常规路径（203-225 行）不动。
-2. `encode_images`（340-363 行）与 `encode_images_raw`（285-338 行）：签名删除 `input_ids`、`attention_mask` 参数；`encode_images_raw` 删除整个 `if input_ids is not None:` 分支（292-302 行）和 `if self.config.vision_config.open_clip:` 分支（304-313 行）及 `if self.config.dual_task:` 分支（315-319 行），收敛为单一路径：
+1. `encode_images`（340-363 行）与 `encode_images_raw`（285-338 行）：签名删除 `input_ids`、`attention_mask` 参数；`encode_images_raw` 删除整个 `if input_ids is not None:` 分支（292-302 行）和 `if self.config.vision_config.open_clip:` 分支（304-313 行）及 `if self.config.dual_task:` 分支（315-319 行），收敛为单一路径：
 
 ```python
-    def encode_images_raw(self: Any, images: Tensor) -> tuple[list[Tensor] | Tensor, Any]:
-        """Encode images using vision model only, without connector."""
-        outputs = self.model.vision_model(
-            images,
-            output_hidden_states=True,
-        )
-        hidden_states = outputs.hidden_states[self.config.vision_config.output_layer].to(
-            images.dtype
-        )
-        if self.config.vision_config.use_all_tokens:
-            image_features = hidden_states
-        elif self.config.vision_config.use_cls_token:
-            if "siglip" in self.config.vision_config.hf_name:
-                image_features = outputs.pooler_output.unsqueeze(1)
-            else:
-                image_features = hidden_states[:, 0:1]
+def encode_images_raw(self: Any, images: Tensor) -> tuple[list[Tensor] | Tensor, Any]:
+    """Encode images using vision model only, without connector."""
+    outputs = self.model.vision_model(
+        images,
+        output_hidden_states=True,
+    )
+    hidden_states = outputs.hidden_states[self.config.vision_config.output_layer].to(
+        images.dtype
+    )
+    if self.config.vision_config.use_all_tokens:
+        image_features = hidden_states
+    elif self.config.vision_config.use_cls_token:
+        if "siglip" in self.config.vision_config.hf_name:
+            image_features = outputs.pooler_output.unsqueeze(1)
         else:
-            image_features = hidden_states[:, 1:]
-        image_features = self.model.connector(image_features)
-        return image_features, outputs
+            image_features = hidden_states[:, 0:1]
+    else:
+        image_features = hidden_states[:, 1:]
+    image_features = self.model.connector(image_features)
+    return image_features, outputs
 ```
 
-3. `_build_vision_model`（73-88 行）：删除 open_clip 分支，收敛为：
+1. `_build_vision_model`（73-88 行）：删除 open_clip 分支，收敛为：
 
 ```python
-    def _build_vision_model(self: Any, config: Any) -> PreTrainedModel:
-        vision_config = config.vision_config
-        visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
-            vision_config.hf_name, trust_remote_code=True
-        )
-        if getattr(visual_encoder, "vision_model", None):
-            visual_encoder = visual_encoder.vision_model  # pyright: ignore
-        return visual_encoder
+def _build_vision_model(self: Any, config: Any) -> PreTrainedModel:
+    vision_config = config.vision_config
+    visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
+        vision_config.hf_name, trust_remote_code=True
+    )
+    if getattr(visual_encoder, "vision_model", None):
+        visual_encoder = visual_encoder.vision_model  # pyright: ignore
+    return visual_encoder
 ```
 
-4. 类工厂 dict（599-614 行）：删除 `"supports_report_metrics": True,` 一行。
-5. 文件内搜索 `report_metrics`、`open_clip`、`dual_task`、`task_modes`、`clip_`，确认零残留。
+1. 类工厂 dict（599-614 行）：删除 `"supports_report_metrics": True,` 一行。
+1. 文件内搜索 `report_metrics`、`open_clip`、`dual_task`、`task_modes`、`clip_`，确认零残留。
 
 - [ ] **Step 2.6: processing_vlm.py 删除 open_clip**
 
@@ -232,8 +244,8 @@ __all__ = [
         vision_config_dict = hf_config if isinstance(hf_config, dict) else hf_config.to_dict()
 ```
 
-2. `VLMConfig(...)` 构造（113-119 行）：删除 `dual_task=model_cfg.dual_task,` 一行。
-3. `vlm()` 函数（156-172 行）：删除 `if cfg.model.dual_task:` 两处分支（日志分支和 data_module 分支），收敛为始终：
+1. `VLMConfig(...)` 构造（113-119 行）：删除 `dual_task=model_cfg.dual_task,` 一行。
+1. `vlm()` 函数（156-172 行）：删除 `if cfg.model.dual_task:` 两处分支（日志分支和 data_module 分支），收敛为始终：
 
 ```python
         model, processor = load_model(cfg.model, cfg.trainer)
@@ -244,7 +256,7 @@ __all__ = [
         train(model, training_args, data_module, processor)
 ```
 
-4. 删除顶部不再使用的 `AutoProcessor` import（若仅 clip_tokenizer 在用）。
+1. 删除顶部不再使用的 `AutoProcessor` import（若仅 clip_tokenizer 在用）。
 
 - [ ] **Step 2.9: vlm_trainer.py 脱离 MultiTaskTrainer**
 
@@ -280,7 +292,7 @@ git add -A
 git commit -m "refactor: remove CLIP co-training (open_clip, webdataset, unified dataset, multitask trainer, dual_task)"
 ```
 
----
+______________________________________________________________________
 
 ### Task 3: 路径参数化 + 适配本集群的 train.slurm
 
@@ -289,11 +301,17 @@ git commit -m "refactor: remove CLIP co-training (open_clip, webdataset, unified
 **环境变量约定:** `VLM_DATA_ROOT`（数据根）、`VLM_MODEL_ROOT`（本地编码器权重根）、`VLM_PRETRAIN_CKPT`（pretrain 产出 checkpoint，finetune 用，可不设）。
 
 **Files:**
+
 - Modify: `src/vlm/train/training_arguments.py`（deepspeed 解析）
+
 - Modify: `src/vlm/config/trainer/finetune.yaml`, `pretrain.yaml`, `train.yaml`
+
 - Modify: `src/vlm/config/dataset/llava-pretrain.yaml`, `llava-finetune.yaml`
+
 - Modify: `src/vlm/config/model/llava-7b-cc12m.yaml`, `qwen2.5-7b-cc12m.yaml`, `llama3.2-3b-clip.yaml`, `llama3.2-3b-dino.yaml`
+
 - Modify: `src/vlm/train/train.py`（auto-resume）
+
 - Modify: `train.slurm`, `README.md`
 
 - [ ] **Step 3a.1: deepspeed 路径代码内解析**
@@ -315,7 +333,9 @@ def _resolve_deepspeed(ds: str | None) -> str | None:
     candidate = _CONFIG_DIR / "deepspeed" / p.name
     if candidate.is_file():
         return str(candidate)
-    raise FileNotFoundError(f"DeepSpeed config not found: {ds} (also tried {candidate})")
+    raise FileNotFoundError(
+        f"DeepSpeed config not found: {ds} (also tried {candidate})"
+    )
 ```
 
 `get_training_args` 里 `deepspeed=config.deepspeed,` 改为 `deepspeed=_resolve_deepspeed(config.deepspeed),`。
@@ -323,7 +343,9 @@ def _resolve_deepspeed(ds: str | None) -> str | None:
 - [ ] **Step 3a.2: trainer yaml 的 deepspeed 行改为裸文件名**
 
 - `finetune.yaml:2` → `deepspeed: zero3.json`
+
 - `pretrain.yaml:2` → `deepspeed: zero2.json`
+
 - `train.yaml:2` → `deepspeed: zero2.json`
 
 - [ ] **Step 3a.3: 验证解析函数**
@@ -373,6 +395,7 @@ image_aspect_ratio: pad
 - [ ] **Step 3c.1: trainer yaml 的 from_pretrained 参数化**
 
 - `finetune.yaml`: `from_pretrained: /pasteur2/...` → `from_pretrained: ${oc.env:VLM_PRETRAIN_CKPT,null}`
+
 - `train.yaml`: 删除已失效的 `from_pretrained: /pasteur/.../checkpoint-8720` 行，加注释 `# from_pretrained: set via trainer.from_pretrained=... or VLM_PRETRAIN_CKPT`
 
 - [ ] **Step 3c.2: requeue 自动续训支持**
@@ -380,29 +403,29 @@ image_aspect_ratio: pad
 (1) `src/vlm/train/train.py` 把：
 
 ```python
-    if training_args.resume_from_checkpoint:
-        log.info(f"Resuming from checkpoint: {training_args.resume_from_checkpoint}")
-        trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
-    else:
-        log.info("Training without resuming from checkpoint")
-        trainer.train()
+if training_args.resume_from_checkpoint:
+    log.info(f"Resuming from checkpoint: {training_args.resume_from_checkpoint}")
+    trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+else:
+    log.info("Training without resuming from checkpoint")
+    trainer.train()
 ```
 
 改为：
 
 ```python
-    if training_args.resume_from_checkpoint:
-        log.info(f"Resuming from checkpoint: {training_args.resume_from_checkpoint}")
-        trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
-    else:
-        from transformers.trainer_utils import get_last_checkpoint
+if training_args.resume_from_checkpoint:
+    log.info(f"Resuming from checkpoint: {training_args.resume_from_checkpoint}")
+    trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+else:
+    from transformers.trainer_utils import get_last_checkpoint
 
-        last_ckpt = get_last_checkpoint(training_args.output_dir)
-        if last_ckpt is not None:
-            log.info(f"Auto-resuming from last checkpoint: {last_ckpt} (requeued job?)")
-        else:
-            log.info("Training from scratch (no checkpoint in output_dir)")
-        trainer.train(resume_from_checkpoint=last_ckpt)
+    last_ckpt = get_last_checkpoint(training_args.output_dir)
+    if last_ckpt is not None:
+        log.info(f"Auto-resuming from last checkpoint: {last_ckpt} (requeued job?)")
+    else:
+        log.info("Training from scratch (no checkpoint in output_dir)")
+    trainer.train(resume_from_checkpoint=last_ckpt)
 ```
 
 (2) `finetune.yaml` 把 `save_only_model: True` 改为 `save_only_model: False` 并加注释 `# requeue/auto-resume needs optimizer state in checkpoints`。
@@ -412,7 +435,9 @@ image_aspect_ratio: pad
 - [ ] **Step 3d.1: model yaml 的本地视觉编码器路径参数化**
 
 - `llava-7b-cc12m.yaml` / `qwen2.5-7b-cc12m.yaml`: `hf_name: ${oc.env:VLM_MODEL_ROOT}/open_clip/ViT-L-14-hf`
+
 - `llama3.2-3b-clip.yaml`: `hf_name: ${oc.env:VLM_MODEL_ROOT}/clip_datacomp_s`
+
 - `llama3.2-3b-dino.yaml`: `hf_name: ${oc.env:VLM_MODEL_ROOT}/dino_datacomp10m`
 
 - [ ] **Step 3e.1: 重写 train.slurm（hyak ckpt-all / l40:4 / requeue）**
@@ -500,14 +525,16 @@ git add src/vlm/train/training_arguments.py src/vlm/train/train.py src/vlm/confi
 git commit -m "fix: parameterize paths via env vars, package-relative deepspeed configs, hyak ckpt-all slurm + auto-resume"
 ```
 
----
+______________________________________________________________________
 
 ### Task 4: 添加 kernels 依赖（免编译 flash-attn）
 
 **背景:** transformers ≥4.56 内建 kernels-Hub 集成：装了 `kernels` 包后，`attn_implementation="flash_attention_2"` 在本地 flash-attn 缺失时自动 fallback 到 Hub 预编译 kernel，无需源码编译。l40（Ada/SM89）支持 FA2。运行时性能与本地编译版相同。
 
 **Files:**
+
 - Modify: `pyproject.toml`
+
 - Modify: `Makefile:11-23`
 
 - [ ] **Step 4.1: pyproject.toml dependencies 按字母序插入**
@@ -538,26 +565,28 @@ git add pyproject.toml uv.lock Makefile
 git commit -m "build: add kernels dep so FA2 loads from hub when flash-attn is not compiled locally"
 ```
 
----
+______________________________________________________________________
 
 ### Task 5: 切换到 fused AdamW
 
 **背景:** torch 2.6 下 HF 默认 `adamw_torch`（非 fused）。`VLMTrainer.create_optimizer`（`vlm_trainer.py:68`）走 `get_optimizer_cls_and_kwargs(self.args, ...)`，设置 `optim` 后 fused=True 与自定义差分学习率参数组共同生效。数学等价、零风险；收益为个位数百分比。
 
 **Files:**
+
 - Modify: `src/vlm/config/config_schema.py`（TrainerConfig）
+
 - Modify: `src/vlm/train/training_arguments.py`（get_training_args）
 
 - [ ] **Step 5.1: TrainerConfig 添加字段**（`attn_implementation` 旁）
 
 ```python
-    optim: str = "adamw_torch_fused"
+optim: str = "adamw_torch_fused"
 ```
 
 - [ ] **Step 5.2: get_training_args 显式传递**（参数是手工逐个传的，漏传则静默失效）
 
 ```python
-        optim=config.optim,
+optim = (config.optim,)
 ```
 
 - [ ] **Step 5.3: 验证**
@@ -579,14 +608,16 @@ git add src/vlm/config/config_schema.py src/vlm/train/training_arguments.py
 git commit -m "perf: default to fused AdamW (preserves custom per-component param groups)"
 ```
 
----
+______________________________________________________________________
 
 ### Task 6: dtype 兼容清理（v5 升级的前置）
 
 **背景:** `torch_dtype=` kwarg 在 4.56 弃用、v5 移除。`vlm.py` 已用 `dtype=`，但 `eval.py:79`、`push_to_hub.py:142,147` 还是旧写法；`eval.py:147` 读 `model.config.torch_dtype`。Task 9 升级前必须先清。
 
 **Files:**
+
 - Modify: `src/vlm/inference/eval.py:79,147`
+
 - Modify: `src/vlm/utils/push_to_hub.py:142,147`
 
 - [ ] **Step 6.1: eval.py 两处修改**
@@ -594,15 +625,16 @@ git commit -m "perf: default to fused AdamW (preserves custom per-component para
 79 行：
 
 ```python
-        dtype=torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,
+dtype = (torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,)
 ```
 
 147 行：
 
 ```python
-    images_tensor = images_tensor.to(
-        model.device, dtype=getattr(model.config, "dtype", None) or next(model.parameters()).dtype
-    )
+images_tensor = images_tensor.to(
+    model.device,
+    dtype=getattr(model.config, "dtype", None) or next(model.parameters()).dtype,
+)
 ```
 
 - [ ] **Step 6.2: push_to_hub.py 两处修改**
@@ -623,14 +655,16 @@ git add src/vlm/inference/eval.py src/vlm/utils/push_to_hub.py
 git commit -m "chore: torch_dtype -> dtype (v5 forward compat)"
 ```
 
----
+______________________________________________________________________
 
 ### Task 7: 去掉数据热路径的逐样本 tokenizer deepcopy
 
 **背景:** `preprocess_qwen`（`dataset.py:245-248`）与 `preprocess_llama3`（326-329）每个样本 `copy.deepcopy(tokenizer) + add_tokens`。**不能**直接改共享 tokenizer：`vlm.py` 会在 `len(tokenizer) > vocab_size` 时 resize embedding，deepcopy 正是为了隔离这次 add_tokens（`<image>` 用 -200 哨兵 id 重映射，不需要真实 embedding 行）。正确做法：进程内按 (tokenizer, has_image) 缓存一份副本。
 
 **Files:**
+
 - Modify: `src/vlm/data/dataset.py`
+
 - Test: `tests/test_image_tokenizer_cache.py`
 
 - [ ] **Step 7.1: 写失败测试**
@@ -691,7 +725,9 @@ Expected: FAIL，`ImportError: cannot import name '_get_preprocess_tokenizer'`
 # Per-process cache: (id(tokenizer), has_image) -> prepared deepcopy.
 # The deepcopy isolation is deliberate — adding '<image>' to the SHARED tokenizer
 # would change len(tokenizer) and trigger an unwanted embedding resize in vlm.py.
-_PREPROCESS_TOKENIZER_CACHE: dict[tuple[int, bool], transformers.PreTrainedTokenizer] = {}
+_PREPROCESS_TOKENIZER_CACHE: dict[
+    tuple[int, bool], transformers.PreTrainedTokenizer
+] = {}
 
 
 def _get_preprocess_tokenizer(
@@ -721,7 +757,7 @@ def _get_preprocess_tokenizer(
 均替换为：
 
 ```python
-    tokenizer = _get_preprocess_tokenizer(tokenizer, has_image)
+tokenizer = _get_preprocess_tokenizer(tokenizer, has_image)
 ```
 
 保留其后逻辑不动（qwen 的 `tokenizer.chat_template = chat_template` 对缓存副本重复赋同值是幂等的）。
@@ -739,15 +775,17 @@ git add src/vlm/data/dataset.py tests/test_image_tokenizer_cache.py
 git commit -m "perf: cache per-process image-aware tokenizer copy instead of per-sample deepcopy"
 ```
 
----
+______________________________________________________________________
 
 ### Task 8（可选，防御性）: 视觉塔显式 attn_implementation
 
 **背景:** `_build_vision_model` 不传 attn_implementation，视觉塔静默继承库默认（当前=sdpa，恰好正确）。此改动无性能变化，纯粹钉死行为、防库默认值变化（v5 升级前尤其有意义）。
 
 **Files:**
+
 - Modify: `src/vlm/config/config_schema.py`（VisualEncoderConfig）
-- Modify: `src/vlm/models/modeling_vlm.py`（_build_vision_model）
+
+- Modify: `src/vlm/models/modeling_vlm.py`（\_build_vision_model）
 
 - [ ] **Step 8.1: VisualEncoderConfig 添加字段**（注意 Task 2 已删除 open_clip 字段后的形态）
 
@@ -763,14 +801,14 @@ class VisualEncoderConfig:
 
 （该字段经 `vlm.py` 的 `OmegaConf.to_container(model_cfg.visual_encoder)` 自动流入 VisionConfig，无需改 vlm.py。）
 
-- [ ] **Step 8.2: _build_vision_model 传入**（基于 Task 2 收敛后的版本）
+- [ ] **Step 8.2: \_build_vision_model 传入**（基于 Task 2 收敛后的版本）
 
 ```python
-        visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
-            vision_config.hf_name,
-            trust_remote_code=True,
-            attn_implementation=getattr(vision_config, "attn_implementation", None) or "sdpa",
-        )
+visual_encoder: PreTrainedModel = AutoModel.from_pretrained(
+    vision_config.hf_name,
+    trust_remote_code=True,
+    attn_implementation=getattr(vision_config, "attn_implementation", None) or "sdpa",
+)
 ```
 
 - [ ] **Step 8.3: 验证 + 审查 → Commit**
@@ -781,30 +819,35 @@ git add src/vlm/config/config_schema.py src/vlm/models/modeling_vlm.py
 git commit -m "chore: pin vision tower attn_implementation to sdpa explicitly"
 ```
 
----
+______________________________________________________________________
 
 ### Task 9: 依赖全面升级（transformers 5.10.1 + torch/accelerate/deepspeed/datasets 最新）与 v5 迁移
 
 **背景:** 用户要求尽量把所有库升到新版，特别是 transformers 5.10.1。当前 pin：transformers 4.56.1 / torch 2.6.0 / accelerate 1.6.0 / deepspeed 0.16.7 / datasets 4.0.0。生态现状（2026-06 调研）：transformers v5.10.1、torch 2.12.0、accelerate 1.13.0、deepspeed 0.19.1、datasets 4.8.5。**这是风险最高的任务**：本仓库用 `type()` 动态建类 + 多处 Trainer 私有 API，每一项迁移点都必须对照 .venv 新版源码逐一验证，不允许凭记忆。
 
 **已知迁移点清单（来自调研，执行时逐项对照 v5.10 实际源码确认）:**
-1. `warmup_ratio` 在 v5 弃用、按计划 v5.2 起移除 → `get_training_args` 改用 `warmup_steps`（v5 接受 float<1 等效 ratio）
-2. `torch_dtype` → `dtype`（Task 6 已清理，升级后 grep 复查）
-3. `MODEL_MAPPING` / `MODEL_FOR_CAUSAL_LM_MAPPING`（`modeling_vlm.py:43-49` 动态类工厂的根基）在 v5 是否还在原位置
-4. `Trainer.get_optimizer_cls_and_kwargs` / `create_optimizer` / `_get_train_sampler(train_dataset)` 签名（`vlm_trainer.py` 覆写）
-5. `from transformers.trainer import has_length, is_datasets_available`、`from transformers.trainer_pt_utils import LengthGroupedSampler` 导入路径
-6. `prepare_inputs_for_generation` 覆写中的 `inputs.pop("cache_position")`（`modeling_vlm.py:278`）—— v5 缓存/生成接口变化的重点排查对象
-7. `low_cpu_mem_usage` kwarg 在 v5 from_pretrained 中的状态
-8. 动态 `type()` 类 + 新建 `lm_head` 的 `_init_weights`/`post_init` 行为（v5 自动初始化逻辑变化，防止加载后权重被重新初始化）
-9. `VLMProcessor`（`processing_vlm.py`）对照 v5 ProcessorMixin API
-10. `report_to=None` 在 v5 的语义（本仓库 4 个 trainer yaml 显式 `report_to: wandb`，但 TrainerConfig 默认 None 需确认不报错）
-11. deepspeed 0.19 + 新 torch 的兼容（若 torch 2.12 与 deepspeed 不兼容，逐级回退 2.11/2.10/2.9 找最高兼容版）
-12. flash-attn 不重新编译，靠 kernels Hub fallback（Task 4）
+
+1. `warmup_ratio` 在 v5 弃用、按计划 v5.2 起移除 → `get_training_args` 改用 `warmup_steps`（v5 接受 float\<1 等效 ratio）
+1. `torch_dtype` → `dtype`（Task 6 已清理，升级后 grep 复查）
+1. `MODEL_MAPPING` / `MODEL_FOR_CAUSAL_LM_MAPPING`（`modeling_vlm.py:43-49` 动态类工厂的根基）在 v5 是否还在原位置
+1. `Trainer.get_optimizer_cls_and_kwargs` / `create_optimizer` / `_get_train_sampler(train_dataset)` 签名（`vlm_trainer.py` 覆写）
+1. `from transformers.trainer import has_length, is_datasets_available`、`from transformers.trainer_pt_utils import LengthGroupedSampler` 导入路径
+1. `prepare_inputs_for_generation` 覆写中的 `inputs.pop("cache_position")`（`modeling_vlm.py:278`）—— v5 缓存/生成接口变化的重点排查对象
+1. `low_cpu_mem_usage` kwarg 在 v5 from_pretrained 中的状态
+1. 动态 `type()` 类 + 新建 `lm_head` 的 `_init_weights`/`post_init` 行为（v5 自动初始化逻辑变化，防止加载后权重被重新初始化）
+1. `VLMProcessor`（`processing_vlm.py`）对照 v5 ProcessorMixin API
+1. `report_to=None` 在 v5 的语义（本仓库 4 个 trainer yaml 显式 `report_to: wandb`，但 TrainerConfig 默认 None 需确认不报错）
+1. deepspeed 0.19 + 新 torch 的兼容（若 torch 2.12 与 deepspeed 不兼容，逐级回退 2.11/2.10/2.9 找最高兼容版）
+1. flash-attn 不重新编译，靠 kernels Hub fallback（Task 4）
 
 **Files:**
+
 - Modify: `pyproject.toml`, `uv.lock`
+
 - Modify: `src/vlm/train/training_arguments.py`（warmup 等 v5 适配）
+
 - Modify: 排查清单中暴露的所有文件
+
 - Create: `devtools/smoke_test.py`
 
 - [ ] **Step 9.1: 升级 pin**
@@ -832,7 +875,7 @@ dependencies = [
 ]
 ```
 
-（torch 下限 2.9、不设上限，让 uv 解析 deepspeed/transformers 共同允许的最高版本；若解析结果 <2.12，记录原因。）
+（torch 下限 2.9、不设上限，让 uv 解析 deepspeed/transformers 共同允许的最高版本；若解析结果 \<2.12，记录原因。）
 
 - [ ] **Step 9.2: 重解析并安装**
 
@@ -857,9 +900,13 @@ uv run python -c "from transformers import TrainingArguments; import inspect; pr
 - [ ] **Step 9.4: 按核查报告逐项修改**
 
 至少包含（以核查结果为准）：
+
 - `training_arguments.py` 的 `get_training_args`：`warmup_ratio=config.warmup_ratio` → 按核查结论改为 `warmup_steps=config.warmup_ratio`（确认 v5 接受 float）或保留（若 5.10 仍兼容 warmup_ratio 则只加 TODO）
+
 - `training_arguments.py` 自定义 TrainingArguments 子类的新增/移除字段比对
+
 - `modeling_vlm.py` 的 `prepare_inputs_for_generation`/`generate` 按 v5 生成接口修正（`cache_position` pop 是否仍需要/仍合法）
+
 - 其余暴露项
 
 - [ ] **Step 9.5: 写冒烟测试（CPU，全链路）**
@@ -936,7 +983,9 @@ def main() -> None:
         for (n1, p1), (_, p2) in zip(
             model.named_parameters(), reloaded.named_parameters(), strict=True
         ):
-            assert torch.allclose(p1.detach(), p2.detach(), atol=1e-6), f"weight mismatch: {n1}"
+            assert torch.allclose(
+                p1.detach(), p2.detach(), atol=1e-6
+            ), f"weight mismatch: {n1}"
     print("save/reload round-trip OK")
 
     # generate() path
@@ -981,7 +1030,7 @@ git add -A
 git commit -m "build!: upgrade to transformers 5.10.1, torch/accelerate/deepspeed/datasets latest; v5 migration"
 ```
 
----
+______________________________________________________________________
 
 ## 收尾
 
@@ -1007,13 +1056,13 @@ done
 git log --oneline main..audit-fixes
 ```
 
----
+______________________________________________________________________
 
 ## 本计划明确不包含
 
-| 项目 | 原因 |
-|---|---|
-| lmms-eval 评测重接 | 用户确认不需要 |
-| SigLIP 2 编码器 | 用户确认不需要 |
-| 数据集下载落位（LLaVA-Pretrain / Instruct-150K 到 `VLM_DATA_ROOT`） | 属于运维操作，路径就位后才能跑真实训练 |
-| Liger / cut-cross-entropy 手动集成 | `use_liger_kernel` 对动态类是 no-op，需手动集成且收益待测 |
+| 项目                                                                | 原因                                                      |
+| ------------------------------------------------------------------- | --------------------------------------------------------- |
+| lmms-eval 评测重接                                                  | 用户确认不需要                                            |
+| SigLIP 2 编码器                                                     | 用户确认不需要                                            |
+| 数据集下载落位（LLaVA-Pretrain / Instruct-150K 到 `VLM_DATA_ROOT`） | 属于运维操作，路径就位后才能跑真实训练                    |
+| Liger / cut-cross-entropy 手动集成                                  | `use_liger_kernel` 对动态类是 no-op，需手动集成且收益待测 |
