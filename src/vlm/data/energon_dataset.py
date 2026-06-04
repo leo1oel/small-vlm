@@ -48,7 +48,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from PIL import Image
@@ -138,30 +138,75 @@ def _require_credentials() -> None:
 
 _bootstrap_env()
 
-# Streaming-only optional deps (megatron-energon + multi-storage-client); the
-# rest of the package never imports this module, so json-only environments
-# (including CI, where basedpyright runs) need not install them.
-import multistorageclient as msc  # noqa: E402  # pyright: ignore[reportMissingImports]  (needs MSC_CONFIG set above)
-from megatron.energon import (  # noqa: E402  # pyright: ignore[reportMissingImports]
-    Cooker,
-    FileStore,
-    Sample,
-    TaskEncoder,
-    WorkerConfig,
-    basic_sample_keys,
-    get_savable_loader,
-    get_train_dataset,
-    stateless,
-)
-from megatron.energon.epathlib import (  # noqa: E402  # pyright: ignore[reportMissingImports]
-    EPath,
-)
-from megatron.energon.flavors.jsonl.ijsonl import (  # noqa: E402  # pyright: ignore[reportMissingImports]
-    IJsonlIndexWriter,
-)
-from megatron.energon.savable_loader import (  # noqa: E402  # pyright: ignore[reportMissingImports]
-    SavableDataLoader,
-)
+# Streaming-only optional deps (megatron-energon + multi-storage-client). The
+# runtime import is guarded so environments without them — json-only training,
+# CI test collection (pytest imports every src module) — can still import this
+# module; building the loader without the deps raises a helpful error instead.
+# The type checker always follows the real-import branch.
+if TYPE_CHECKING:
+    import multistorageclient as msc  # noqa: E402  # pyright: ignore[reportMissingImports]  (needs MSC_CONFIG set above)
+    from megatron.energon import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+        Cooker,
+        FileStore,
+        Sample,
+        TaskEncoder,
+        WorkerConfig,
+        basic_sample_keys,
+        get_savable_loader,
+        get_train_dataset,
+        stateless,
+    )
+    from megatron.energon.epathlib import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+        EPath,
+    )
+    from megatron.energon.flavors.jsonl.ijsonl import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+        IJsonlIndexWriter,
+    )
+    from megatron.energon.savable_loader import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+        SavableDataLoader,
+    )
+
+    _streaming_import_error: ImportError | None = None
+else:
+    try:
+        import multistorageclient as msc  # noqa: E402
+        from megatron.energon import (  # noqa: E402
+            Cooker,
+            FileStore,
+            Sample,
+            TaskEncoder,
+            WorkerConfig,
+            basic_sample_keys,
+            get_savable_loader,
+            get_train_dataset,
+            stateless,
+        )
+        from megatron.energon.epathlib import EPath  # noqa: E402
+        from megatron.energon.flavors.jsonl.ijsonl import IJsonlIndexWriter  # noqa: E402
+        from megatron.energon.savable_loader import SavableDataLoader  # noqa: E402
+
+        _streaming_import_error = None
+    except ImportError as _import_error:  # pragma: no cover - only without the extras
+        _streaming_import_error = _import_error
+
+        # Minimal runtime stand-ins so the module-level classes/annotations
+        # below still define; nothing streaming ever *executes* without the
+        # real deps, because build_energon_train_loader raises first.
+        msc = None
+        FileStore = WorkerConfig = EPath = IJsonlIndexWriter = SavableDataLoader = object
+        basic_sample_keys = get_savable_loader = get_train_dataset = None
+
+        class Sample:
+            pass
+
+        class TaskEncoder:
+            pass
+
+        def Cooker(*args, **kwargs):  # noqa: N802  (mirrors energon's name)
+            return None
+
+        def stateless(fn):
+            return fn
 
 # ---------------------------------------------------------------------------
 # 1. Remote layout & local copies
@@ -759,6 +804,12 @@ def build_energon_train_loader(
     Resume: save_state_rank()/restore_state_rank() — valid only for the same
     world_size and num_workers.
     """
+    if _streaming_import_error is not None:
+        raise ImportError(
+            "dataset.type='energon' requires the streaming dependencies — install "
+            "megatron-energon (with the [azure-storage-blob] extra) and "
+            f"multi-storage-client. Original error: {_streaming_import_error}"
+        ) from _streaming_import_error
     _require_credentials()
     use_local_jsonl = dataset_config.use_local_jsonl
     specs = normalize_folder_specs(dataset_config.folders, dataset_config.jsonl_name)

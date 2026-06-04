@@ -10,12 +10,12 @@ A flexible and configurable Vision Language Model (VLM) framework built with PyT
 - **Configuration Management**: Utilizes [Hydra](https://hydra.cc/) for robust and flexible configuration management, allowing you to define and override parameters easily.
 - **Environment Setup**: Uses [uv](https://github.com/astral-sh/uv) for fast and reliable Python environment and package management.
 - **Granular Training Control**:
-  - Independently set learning rates and weight decay for the LLM, visual encoder, and connector.
-  - Independently freeze or unfreeze these components during different training stages.
+    - Independently set learning rates and weight decay for the LLM, visual encoder, and connector.
+    - Independently freeze or unfreeze these components during different training stages.
 - **LLaVA Implementation**: Includes a straightforward reproduction of the LLaVA model (pretraining and finetuning).
 - **Hugging Face Hub Integration**:
-  - Easily push your trained models to the Hugging Face Hub using a simple script.
-  - Load models pushed to the Hub using the standard `AutoModel` and `AutoProcessor` classes from the `transformers` library.
+    - Easily push your trained models to the Hugging Face Hub using a simple script.
+    - Load models pushed to the Hub using the standard `AutoModel` and `AutoProcessor` classes from the `transformers` library.
 
 ## Architecture
 
@@ -67,13 +67,13 @@ deepspeed --module vlm -cn pretrain-llava
 You can customize various aspects of the model and training process through Hydra configurations located in `src/vlm/config/`. This includes:
 
 - **Model Components**:
-  - `model.visual_encoder.hf_name`: Hugging Face name of the visual encoder.
-  - `model.language_model.hf_name`: Hugging Face name of the language model.
-  - `model.connector.name` and `model.connector.type`: Define the type and specifics of the connector module.
+    - `model.visual_encoder.hf_name`: Hugging Face name of the visual encoder.
+    - `model.language_model.hf_name`: Hugging Face name of the language model.
+    - `model.connector.name` and `model.connector.type`: Define the type and specifics of the connector module.
 - **Training Parameters per Component**:
-  - `trainer.unfreeze`: Booleans `train_vision_model`, `train_language_model`, `train_connector` to control which parts are trainable.
-  - `trainer.learning_rate`: Specific learning rates like `visual_encoder_learning_rate`, `language_model_learning_rate`, `connector_learning_rate`.
-  - `trainer.weight_decay`: Specific weight decays like `visual_encoder_weight_decay`, `language_model_weight_decay`, `connector_weight_decay`.
+    - `trainer.unfreeze`: Booleans `train_vision_model`, `train_language_model`, `train_connector` to control which parts are trainable.
+    - `trainer.learning_rate`: Specific learning rates like `visual_encoder_learning_rate`, `language_model_learning_rate`, `connector_learning_rate`.
+    - `trainer.weight_decay`: Specific weight decays like `visual_encoder_weight_decay`, `language_model_weight_decay`, `connector_weight_decay`.
 
 For example, to change the learning rate for the language model during finetuning, you could modify `src/vlm/config/trainer/learning_rate/llava-finetune.yaml` or override it via the command line:
 

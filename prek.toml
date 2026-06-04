@@ -59,6 +59,9 @@ hooks = [
     {
         id = "mdformat",
         language = "python",
+        # generated working documents (AI plan files) contain pseudo-code
+        # blocks that mdformat-black cannot parse
+        exclude = "^docs/superpowers/",
         additional_dependencies = [
             "mdformat-gfm",
             "mdformat-black",
@@ -79,7 +82,7 @@ hooks = [
 repo = "https://github.com/igorshubovych/markdownlint-cli"
 rev = "v0.47.0"
 hooks = [
-    { id = "markdownlint-fix" }
+    { id = "markdownlint-fix", exclude = "^docs/superpowers/" }
 ]
 
 [[repos]]

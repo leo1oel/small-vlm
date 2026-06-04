@@ -1,0 +1,8 @@
+# markdownlint config (used by the markdownlint-fix hook in prek.toml).
+# MD013 (80-col line length) is off: the README/docs rely on tables and long
+# links that cannot be wrapped; ruff/mdformat still govern code and structure.
+MD013: false
+# Match mdformat-mkdocs (prek.toml), which indents nested lists by 4 spaces —
+# with the default (2) the two fixers ping-pong forever on nested lists.
+MD007:
+  indent: 4

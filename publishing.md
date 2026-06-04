@@ -1,4 +1,4 @@
-## Publishing Releases
+# Publishing Releases
 
 This is how to publish a Python package to [**PyPI**](https://pypi.org/) from GitHub
 Actions, when using the
@@ -11,7 +11,7 @@ you can simply create tagged releases (using standard format for the tag name, e
 `v0.1.0`) on GitHub and the tag will trigger a release build, which then uploads it to
 PyPI.
 
-### How to Publish the First Time
+## How to Publish the First Time
 
 This part is a little confusing the first time.
 Here is the simplest way to do it.
@@ -60,7 +60,7 @@ For the purposes of this example replace OWNER and PROJECT with the right values
 
     - If it succeeds, you should see it appear at `https://pypi.org/project/PROJECT`.
 
-### How to Publish Subsequent Releases
+## How to Publish Subsequent Releases
 
 Just create a new release!
 Everything is the same as the last two steps above.
