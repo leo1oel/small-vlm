@@ -279,7 +279,7 @@ def create_dynamic_causal_vlm_class(
         self: Any,
         images: list[Tensor] | Tensor,
     ):
-        if images is None:
+        if images is None:  # pyright: ignore[reportUnnecessaryComparison]
             image_features = None
             outputs = None
             print("Images are None in this batch, training on text only.")

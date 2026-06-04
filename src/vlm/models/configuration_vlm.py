@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from transformers import AutoConfig, PretrainedConfig
 
@@ -8,11 +8,11 @@ log: logging.Logger = logging.getLogger(name=__name__)
 
 class VisionConfig(PretrainedConfig):
     # transformers v5 wraps every PretrainedConfig subclass in
-    # @dataclass(kw_only=True); an *annotated* class attribute becomes a dataclass
-    # field. `model_type` is a ClassVar on the base, so assign it WITHOUT an
-    # annotation (matching v5's own configs, e.g. `model_type = "llava"`) to override
-    # the value rather than create a spurious field.
-    model_type = "vision_model"
+    # @dataclass(kw_only=True); a plainly-annotated class attribute would become a
+    # dataclass field. The base declares `model_type: ClassVar[str]`
+    # (configuration_utils.py:227), and ClassVar is excluded from dataclass fields,
+    # so this override is safe.
+    model_type: ClassVar[str] = "vision_model"
 
     def __init__(
         self,
@@ -22,7 +22,7 @@ class VisionConfig(PretrainedConfig):
 
 
 class ConnectorConfig(PretrainedConfig):
-    model_type = "connector"
+    model_type: ClassVar[str] = "connector"
 
     def __init__(
         self,
@@ -45,9 +45,9 @@ def create_dynamic_vlm_config_class(
         )
 
     class DynamicVLMConfig(BaseLMConfigClass):
-        # No annotation: override the base ClassVar value, don't create a dataclass
-        # field (transformers v5 wraps configs in @dataclass(kw_only=True)).
-        model_type = "vlm"
+        # ClassVar: override the base value without creating a dataclass field
+        # (transformers v5 wraps configs in @dataclass(kw_only=True)).
+        model_type: ClassVar[str] = "vlm"
 
         def __init__(
             self,

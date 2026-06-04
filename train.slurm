@@ -19,6 +19,13 @@ PROJECT_ROOT=/mmfs1/gscratch/krishna/leoym/small-vlm
 cd "${PROJECT_ROOT}"
 source .venv/bin/activate
 
+# DeepSpeed imports call nvcc on GPU nodes; compute nodes have no /usr/local/cuda.
+# Load the newest toolkit module and skip the 12.9-vs-13.0 (torch cu130) major
+# version check — we compile no DeepSpeed JIT ops (pure ZeRO, no offload).
+type module &>/dev/null || source /usr/share/lmod/lmod/init/bash
+module load cuda/12.9.1
+export DS_SKIP_CUDA_CHECK=1
+
 # Host-specific roots (adjust to where data/models actually live)
 export VLM_DATA_ROOT="${VLM_DATA_ROOT:-/gscratch/krishna/${USER}/data}"
 export VLM_MODEL_ROOT="${VLM_MODEL_ROOT:-/gscratch/krishna/${USER}/models}"

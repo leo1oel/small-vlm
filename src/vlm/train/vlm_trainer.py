@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 class VLMTrainer(Trainer):
     @override
-    def _get_train_sampler(self, train_dataset=None) -> torch.utils.data.Sampler | None:
+    def _get_train_sampler(self, train_dataset: Any = None) -> torch.utils.data.Sampler | None:
         if train_dataset is None:
             train_dataset = self.train_dataset
         if train_dataset is None or not has_length(train_dataset):
@@ -58,7 +58,7 @@ class VLMTrainer(Trainer):
             return RandomSampler(train_dataset)
 
     @override
-    def create_optimizer(self, model=None):
+    def create_optimizer(self, model: torch.nn.Module | None = None):
         # v5 Trainer calls create_optimizer(model) in the FSDP delay-creation path
         # (trainer.py: self.create_optimizer(model)); accept and honor the arg.
         opt_model = self.model if model is None else model

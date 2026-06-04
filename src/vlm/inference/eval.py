@@ -49,7 +49,10 @@ def _auto_detect_conv_mode(model_path: str):
         return "llava_v1"  # Default for llava models
     else:
         # Default fallback
-        warnings.warn(f"Could not auto-detect conv_mode for {model_path}, using 'v1' as default")
+        warnings.warn(
+            f"Could not auto-detect conv_mode for {model_path}, using 'v1' as default",
+            stacklevel=2,
+        )
         return "v1"
 
 
