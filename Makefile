@@ -10,7 +10,7 @@ default: install lint test
 
 install:
 	uv sync --all-extras --dev
-	uv pip install flash-attn --no-build-isolation
+	-uv pip install flash-attn --no-build-isolation  # optional: hub kernels are the fallback
 
 lint:
 	uv run python devtools/lint.py
@@ -20,7 +20,7 @@ test:
 
 upgrade:
 	uv sync --upgrade --all-extras --dev
-	uv pip install flash-attn --no-build-isolation
+	-uv pip install flash-attn --no-build-isolation  # optional: hub kernels are the fallback
 
 build:
 	uv build
