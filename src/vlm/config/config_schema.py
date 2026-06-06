@@ -201,6 +201,12 @@ class TrainerConfig:
     # padding too, "no" disables. Counts input_ids-level tokens — media
     # sentinels count as 1 (the FLOPs metric uses spliced length instead).
     include_num_input_tokens_seen: str = "no"
+    # Collective-op watchdog timeout (seconds). Streaming + token-budget
+    # bucketing makes batch-to-batch latency fat-tailed (a rank can wait on a
+    # slow bucket flush / Azure stall while peers sit in allreduce) — the
+    # 10-min NCCL default killed a run at step 4848; 1h tolerates stalls and
+    # lets the run continue instead of paying a full requeue+restore.
+    ddp_timeout: int = 3600
     # torch.compile via the HF Trainer (inductor). The multimodal splice and
     # chunked CE graph-break, but the decoder stack (the compute bulk) still
     # compiles; variable spliced lengths settle into dynamic-shape graphs
