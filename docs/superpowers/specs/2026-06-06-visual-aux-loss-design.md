@@ -70,7 +70,7 @@ nepa:       pred = F.normalize(head(h_j), dim=-1)  ∈ R^2048
 ```
 
 `L_total = L_CE + λ · L_visual`, with `λ = trainer.visual_aux_weight`
-(defaults: `aim_pixel` 0.4 — AIMv2's optimal α; `nepa` 0.5).
+(default 0.5 for both arms — user decision 2026-06-06; AIMv2's α=0.4 noted as the literature prior for pixel targets).
 
 - **Head (both objectives):** fresh MLP on `h`, depth
   `visual_aux_head_depth` (default 2: `Linear(2048→hidden) → GELU →
@@ -250,9 +250,9 @@ Running jobs relaunch from this working tree on requeue. With
 | Arm | Config | λ | Question answered |
 |---|---|---|---|
 | 0 | `sft-unified` (already planned/running) | — | causal small-scale floor |
-| 1 | `sft-unified-aimpixel` | 0.4 | does next-patch *pixel* supervision help understanding? |
+| 1 | `sft-unified-aimpixel` | 0.5 | does next-patch *pixel* supervision help understanding? |
 | 2 | `sft-unified-nepa` | 0.5 | does *latent* beat *pixel* (or no-aux)? collapse behavior in a co-trained VLM |
-| 3 (cheap, optional) | arm-1 yaml + `visual_aux_layer: 6` | 0.25–0.4 | depth axis; crosses the aux-exit research line |
+| 3 (cheap, optional) | arm-1 yaml + `visual_aux_layer: 6` | 0.5 | depth axis; crosses the aux-exit research line |
 
 - Launch: `CONFIG_NAME=sft-unified-aimpixel sbatch train.slurm` (separate
   RUN_DIRs per arm).
