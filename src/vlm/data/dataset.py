@@ -193,6 +193,26 @@ def inject_missing_media_tokens(
             continue
         if n > 0 and found == 0:
             prefix += (token + "\n") * n
+        elif found > n:
+            # Text mentions the literal placeholder more often than the sample
+            # carries media (~0.1% of OneVision/FineVision: artifacts like a
+            # prompt QUOTING "<audio>"). Neutralize the surplus occurrences —
+            # bracket-swapped so the multimodal tokenizer no longer splits on
+            # them — keeping the first n aligned with the actual media. This
+            # must NOT raise: a raise inside energon's buffer-restore path
+            # (which has no skip handler, unlike the streaming path) turns one
+            # such buffered sample into a deterministic resume crash-loop.
+            neutral = "[" + token.strip("<>") + "]"
+            remaining = found - n
+            for turn in reversed(conversations):
+                if remaining <= 0:
+                    break
+                text = str(turn[text_key(turn)])
+                while remaining > 0 and token in text:
+                    head, _, tail = text.rpartition(token)
+                    text = head + neutral + tail
+                    remaining -= 1
+                turn[text_key(turn)] = text
         else:
             raise ValueError(
                 f"sample has {n} media item(s) for {token!r} but {found} placeholder(s) in its text"
@@ -236,6 +256,35 @@ def process_raw_image(image: Image.Image, processor: RawImageProcessor) -> tuple
     collator tells the two pipelines apart."""
     out = processor.preprocess(image)
     return out["pixel_values"][0], out["image_position_ids"][0], image.size, "image"
+
+
+def expand2square(pil_img: Image.Image, background_color: tuple[int, int, int]) -> Image.Image:
+    width, height = pil_img.size
+    if width == height:
+        return pil_img
+    elif width > height:
+        result = Image.new(pil_img.mode, (width, width), background_color)
+        result.paste(pil_img, (0, (width - height) // 2))
+        return result
+    else:
+        result = Image.new(pil_img.mode, (height, height), background_color)
+        result.paste(pil_img, ((height - width) // 2, 0))
+        return result
+
+
+def process_classic_image(
+    image: Image.Image, processor: BaseImageProcessor, image_aspect_ratio: str
+) -> tuple:
+    """Encoder-path (CLIP/SigLIP/DINO) image entry: fixed-resolution pixel
+    grid via the HF image processor, optional square-padding first. Returns
+    the classic 3-tuple (pixel_values, size, modality). Shared by the
+    local-json dataset and the energon task encoder so both produce the
+    exact same model inputs."""
+    image_size = image.size
+    if image_aspect_ratio == "pad":
+        image = expand2square(image, tuple(int(x * 255) for x in processor.image_mean))
+    pixel_values = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
+    return pixel_values, image_size, "image"
 
 
 def make_dummy_image_entry(image_processor: BaseImageProcessor) -> tuple:
@@ -450,7 +499,19 @@ def preprocess_qwen(
     # Apply prompt templates
     input_ids, targets = [], []
     for _, source in enumerate(sources):
-        if roles[source[0]["from"]] != roles["human"]:
+        # A leading system turn (e.g. ~9% of LLaVA-OneVision-1.5-Instruct, of
+        # which about half are empty-string artifacts) becomes this sample's
+        # system message when non-empty; empty ones fall back to the default.
+        # Either way it must not reach the roles[...] lookup below, which only
+        # knows human/gpt (KeyError: 'system' used to crash the worker here).
+        sample_system = system_message
+        first_role = source[0].get("from") or source[0].get("role")
+        if first_role == "system":
+            sys_text = source[0]["value"] if "value" in source[0] else source[0].get("content")
+            if isinstance(sys_text, str) and sys_text.strip():
+                sample_system = sys_text
+            source = source[1:]
+        if source and roles.get(source[0]["from"], source[0]["from"]) != roles["human"]:
             source = source[1:]
 
         input_id, target = [], []
@@ -461,7 +522,7 @@ def preprocess_qwen(
         # returns a BatchEncoding; pass return_dict=False to keep the v4 behavior
         # of returning a plain list[int] that we concatenate below.
         input_id += tokenizer.apply_chat_template(
-            [{"role": "system", "content": system_message}], return_dict=False
+            [{"role": "system", "content": sample_system}], return_dict=False
         )
         target += [data_args.ignore_index] * len(input_id)
 
@@ -1097,40 +1158,12 @@ class LazySupervisedDataset(Dataset):
             # the processor itself — expand2square/aspect handling must NOT run.
             return process_raw_image(image, processor)
 
-        image_size = image.size
         image_aspect_ratio = self.data_args.image_aspect_ratio
         if overwrite_image_aspect_ratio is not None:
             image_aspect_ratio = overwrite_image_aspect_ratio
-        # if image_aspect_ratio == "highres":
-        #     image = process_highres_image(
-        #         image, self.image_processor, self.data_args.image_grid_pinpoints
-        #     )
-        # elif image_aspect_ratio == "anyres" or "anyres_max" in image_aspect_ratio:
-        #     image = process_anyres_image(
-        #         image, self.image_processor, self.data_args.image_grid_pinpoints
-        #     )
-        # elif image_aspect_ratio == "crop_split":
-        #     image = process_highres_image_crop_split(image, self.data_args)
-        elif image_aspect_ratio == "pad":
-
-            def expand2square(pil_img: Image.Image, background_color: tuple[int, int, int]):
-                width, height = pil_img.size
-                if width == height:
-                    return pil_img
-                elif width > height:
-                    result = Image.new(pil_img.mode, (width, width), background_color)
-                    result.paste(pil_img, (0, (width - height) // 2))
-                    return result
-                else:
-                    result = Image.new(pil_img.mode, (height, height), background_color)
-                    result.paste(pil_img, ((height - width) // 2, 0))
-                    return result
-
-            image = expand2square(image, tuple(int(x * 255) for x in processor.image_mean))
-            image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
-        else:
-            image = processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
-        return image, image_size, "image"
+        # (highres / anyres / crop_split variants removed with the legacy
+        # multi-crop pipelines; see git history if they come back.)
+        return process_classic_image(image, processor, image_aspect_ratio)
 
     @override
     def __getitem__(self, i: int) -> dict[str, torch.Tensor]:

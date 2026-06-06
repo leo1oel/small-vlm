@@ -28,9 +28,12 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
     trainer._save(output_dir, state_dict=cpu_state_dict)  # pyright: ignore
 
 
-def _validate_energon_args(training_args: TrainingArguments) -> None:
+def validate_energon_args(training_args: TrainingArguments) -> None:
     """The streaming loader has no epoch length and does its own sampling, so a
-    few HF Trainer features are structurally unavailable — fail loud upfront."""
+    few HF Trainer features are structurally unavailable — fail loud upfront.
+
+    Called from vlm() before the (slow) model load so misconfigurations abort
+    in seconds, and again from train() to guard direct callers."""
     if training_args.max_steps <= 0:
         raise ValueError(
             "dataset.type='energon' requires trainer.max_steps > 0: the streaming "
@@ -73,12 +76,18 @@ def train(
         model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     conversation_lib.default_conversation = conversation_lib.conv_templates[training_args.version]
+    # Record the template in the checkpoint config (serialized into config.json
+    # by save_pretrained) so inference can rebuild the exact training-time
+    # prompt format without guessing — vlm.inference.resolve_conv_mode reads it.
+    model.config.conversation_version = training_args.version
+    # Training-only chunked CE switch; the model's forward reads it (0 = off).
+    model.config.loss_chunk_size = training_args.loss_chunk_size
 
     model.config.use_cache = False
     set_trainable_params(model, training_args)
 
     if energon_loader is not None:
-        _validate_energon_args(training_args)
+        validate_energon_args(training_args)
 
     log.info("Creating trainer")
     trainer = VLMTrainer(
@@ -108,7 +117,28 @@ def train(
             log.info("Training from scratch (no checkpoint in output_dir)")
 
     if energon_loader is not None and resume_ckpt:
-        restore_energon_state(energon_loader, resume_ckpt, training_args, energon_num_workers)
+        # One-shot escape hatch for checkpoints whose LOADER state is
+        # unrestorable (e.g. buffer restore-keys written by older code):
+        # `touch <output_dir>/.skip_energon_restore_once` before submitting.
+        # Weights/optimizer/scheduler still resume; only the stream restarts.
+        # The marker is consumed, so later preemption-requeues restore fully.
+        skip_marker = os.path.join(training_args.output_dir, ".skip_energon_restore_once")
+        skip_stream_restore = os.path.isfile(skip_marker)
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            # Every rank must sample the marker before rank 0 consumes it.
+            torch.distributed.barrier()
+        if skip_stream_restore:
+            if training_args.process_index == 0:
+                try:
+                    os.remove(skip_marker)
+                except FileNotFoundError:
+                    pass
+            log.warning(
+                "one-shot marker found: SKIPPING energon stream restore — the data "
+                f"stream restarts fresh; model/optimizer still resume from {resume_ckpt}"
+            )
+        else:
+            restore_energon_state(energon_loader, resume_ckpt, training_args, energon_num_workers)
 
     trainer.train(resume_from_checkpoint=resume_ckpt)
 

@@ -106,6 +106,19 @@ class DatasetConfig:
     # energon owns DataLoader workers AND rank sharding; the HF trainer's
     # dataloader_num_workers must stay 0 for this dataset type.
     num_workers: int = 4
+    # Length-grouped batching (type "energon" only): upper edges of the
+    # effective-length buckets (post-splice tokens: text + per-image patches
+    # + per-audio frames). Samples batch only within their bucket, so padding
+    # is bounded by bucket width. None = no bucketing. Buckets are
+    # worker-local — keep them few and wide so each fills promptly.
+    length_buckets: list[int] | None = None
+    # Token-budget batching (needs length_buckets): each bucket flushes
+    # batch_token_budget // bucket_edge samples per batch, giving every
+    # micro-batch ~constant effective tokens — uniform GPU memory and large
+    # batches on short buckets. Samples-per-step then VARIES (tokens stay
+    # ~constant); trainer.per_device_train_batch_size becomes the loader
+    # default only. None = fixed batch size per bucket.
+    batch_token_budget: int | None = None
     use_local_jsonl: bool | None = None  # None = prefer a local jsonl copy if present
 
 
@@ -152,7 +165,7 @@ class TrainerConfig:
     max_steps: int = -1
     save_strategy: str = "steps"
     save_steps: int = 5000
-    save_total_limit: int = 20
+    save_total_limit: int | None = 20  # None = keep every checkpoint
     save_only_model: bool = False
     logging_steps: int = 1
     # transformers v5 deprecated `warmup_ratio` in favor of `warmup_steps`, which
@@ -176,6 +189,24 @@ class TrainerConfig:
     seed: int = 42
     attn_implementation: str | None = "flash_attention_2"
     optim: str = "adamw_torch_fused"
+    # Training-only chunked cross-entropy (0 = off): drop ignore_index
+    # positions before the lm_head matmul, then compute fp32 CE over hidden
+    # chunks of this many tokens — never materializing the full
+    # (batch*seq, vocab) logits (~25GB fp32 at bs4/seq4k with the 152k vocab).
+    # Numerically replicates transformers' ForCausalLMLoss mean reduction.
+    loss_chunk_size: int = 0
+    # Native transformers token accounting, surfaced per log step in wandb
+    # (num_input_tokens_seen + train tokens/sec): "non_padding" sums
+    # attention_mask across ranks (small per-step gather), "all" counts
+    # padding too, "no" disables. Counts input_ids-level tokens — media
+    # sentinels count as 1 (the FLOPs metric uses spliced length instead).
+    include_num_input_tokens_seen: str = "no"
+    # torch.compile via the HF Trainer (inductor). The multimodal splice and
+    # chunked CE graph-break, but the decoder stack (the compute bulk) still
+    # compiles; variable spliced lengths settle into dynamic-shape graphs
+    # after the first recompile. Validate on a 50-step trial before enabling
+    # in production.
+    torch_compile: bool = False
 
 
 @dataclass

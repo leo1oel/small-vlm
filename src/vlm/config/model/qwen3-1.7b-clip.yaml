@@ -1,0 +1,25 @@
+defaults:
+    - _self_
+
+# Encoder ablation arm: CLIP-ViT-B/16 tower + MLP connector on the same
+# Qwen3-1.7B backbone as qwen3-1.7b-unified. Every image becomes a fixed
+# 196-token splice (224^2 / 16^2 patches, CLS dropped) vs the encoder-free
+# arm's variable <=280 raw-patch tokens.
+
+language_model:
+    hf_name: Qwen/Qwen3-1.7B
+    max_seq_length: 4096
+
+visual_encoder:
+    hf_name: openai/clip-vit-base-patch16
+    output_layer: -2 # standard LLaVA tap: penultimate layer features
+    use_cls_token: false
+
+connector:
+    name: mlp_2_gelu
+    type: mlp
+
+audio:
+    enabled: false # vision-only ablation; symmetric with the unified arm
+
+name: qwen3-1.7b-clip

@@ -5,9 +5,9 @@
 #SBATCH --requeue
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=l40:4
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=256G
+#SBATCH --gpus=l40:8
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=480G
 #SBATCH --time=4:00:00
 #SBATCH --output=/mmfs1/gscratch/krishna/leoym/small-vlm/logs/train_%j.log
 #SBATCH --error=/mmfs1/gscratch/krishna/leoym/small-vlm/logs/train_%j.log
@@ -38,7 +38,7 @@ export HF_HUB_OFFLINE=1
 export MSC_CACHE_DIR="/scr/${USER}/msc-cache"
 mkdir -p "${MSC_CACHE_DIR}"
 
-export NGPUS=4
+export NGPUS=8
 CONFIG_NAME="${CONFIG_NAME:-finetune-llava}"
 # Stable output dir so --requeue auto-resume can find previous checkpoints
 # (hydra's default run dir is timestamped and changes on every requeue).

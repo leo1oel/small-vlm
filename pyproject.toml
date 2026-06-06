@@ -71,6 +71,27 @@ dev = [
     "ipykernel",
     "ipywidgets>=8.1.7",
 ]
+# Cluster / streaming training env: Azure streaming (dataset.type="energon")
+# plus fused attention. flash-attn is a prebuilt wheel pinned to the cluster
+# stack (linux, CPython 3.13, torch 2.12+cu130) — other platforms skip it via
+# the marker, so local (macOS) `uv sync` keeps working.
+# NOTE: bump the flash-attn URL below together with any torch/CUDA upgrade —
+# an ABI mismatch only surfaces at import time, not at lock time. Wheels:
+# https://github.com/mjun0812/flash-attention-prebuild-wheels
+cluster = [
+    "megatron-energon[azure-storage-blob]",
+    "multi-storage-client[azure-storage-blob]",
+    "flash-attn; sys_platform == 'linux' and python_full_version >= '3.13' and python_full_version < '3.14'",
+]
+
+[tool.uv]
+default-groups = ["dev", "cluster"]
+
+[tool.uv.sources]
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.17/flash_attn-2.8.3%2Bcu130torch2.12-cp313-cp313-linux_x86_64.whl" }
+# PyPI 7.3.2 lacks the filesystem+msc:// aux protocol our energon_dataset uses;
+# it landed on the develop branch (pinned to a known-good commit, 2026-05-28).
+megatron-energon = { git = "https://github.com/NVIDIA/Megatron-Energon", rev = "4a1d360dc84773aa5008cb27326fa87e3155c97b" }
 
 [project.scripts]
 # Add script entry points here:

@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 
+from transformers import AutoConfig
+
 from ..config import DatasetConfig, ModelConfig
 
 
@@ -19,6 +21,11 @@ class DataArguments:
     ignore_index: int = -100
     image_token_index: int = -200
     image_aspect_ratio: str = "square"
+    # Soft tokens each image splices into (encoder path only: a fixed
+    # (image_size/patch_size)^2 per tower; None on the encoder-free path,
+    # where the per-image patch count is variable and read off the entry).
+    # Used by length bucketing's effective_sample_length.
+    image_soft_tokens: int | None = None
     # --- audio (encoder-free raw-waveform path; mirrors the image fields) ---
     audio_token: str = "<audio>"
     audio_token_index: int = -201
@@ -29,8 +36,24 @@ class DataArguments:
     max_audio_tokens: int | None = 750
 
 
+def _image_soft_tokens(model_config: ModelConfig) -> int | None:
+    """Fixed per-image splice width for encoder towers (CLIP/SigLIP/DINO).
+    Reads the tower's HF config (already in the local cache by the time data
+    args are built — load_model runs first). None for the encoder-free path."""
+    hf_name = model_config.visual_encoder.hf_name
+    if hf_name is None:
+        return None
+    config = AutoConfig.from_pretrained(hf_name)
+    config = getattr(config, "vision_config", None) or config
+    tokens = (config.image_size // config.patch_size) ** 2
+    if model_config.visual_encoder.use_cls_token:
+        tokens += 1
+    return tokens
+
+
 def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> DataArguments:
     return DataArguments(
+        image_soft_tokens=_image_soft_tokens(trainer_config),
         data_path=data_config.path,
         lazy_preprocess=data_config.lazy_preprocess,
         is_multimodal=data_config.is_multimodal,

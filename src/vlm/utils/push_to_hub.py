@@ -214,6 +214,10 @@ def _copy_from_models(pretrained_path: Path) -> list[Path]:
     sources = {
         "processing_vlm.py": models_dir / "processing_vlm.py",
         "connectors.py": models_dir / "connectors.py",
+        # Encoder-free checkpoints reference RawImageProcessor from their
+        # preprocessor_config.json; ship the module so remote-code loading
+        # (and VLMProcessor's manual rebuild) can resolve it.
+        "image_processing_raw.py": models_dir / "image_processing_raw.py",
     }
 
     console.print(
@@ -281,6 +285,7 @@ def _update_config(pretrained_path: Path, base_model_path: str | None = None) ->
         config["auto_map"] = {
             "AutoConfig": "configuration_vlm.VLMConfig",
             "AutoModel": "modeling_vlm.VLMForCausalLM",
+            "AutoModelForCausalLM": "modeling_vlm.VLMForCausalLM",
         }
         # Ensure trust_remote_code is true if custom code is used
         config["trust_remote_code"] = True
@@ -292,6 +297,22 @@ def _update_config(pretrained_path: Path, base_model_path: str | None = None) ->
             json.dump(config, f, indent=2)
         updated_files.append(config_path)
         console.print(f"[green]✓[/green] Updated {config_path.name}")
+
+        # Encoder-free checkpoints: RawImageProcessor is not in transformers'
+        # AutoImageProcessor registry, so point the preprocessor config at the
+        # shipped module for remote-code loading.
+        preprocessor_config_path = pretrained_path / "preprocessor_config.json"
+        if preprocessor_config_path.exists():
+            with open(preprocessor_config_path, encoding="utf-8") as f:
+                preprocessor_config = json.load(f)
+            if preprocessor_config.get("image_processor_type") == "RawImageProcessor":
+                preprocessor_config["auto_map"] = {
+                    "AutoImageProcessor": "image_processing_raw.RawImageProcessor",
+                }
+                with open(preprocessor_config_path, "w", encoding="utf-8") as f:
+                    json.dump(preprocessor_config, f, indent=2)
+                updated_files.append(preprocessor_config_path)
+                console.print(f"[green]✓[/green] Updated {preprocessor_config_path.name}")
 
         processor_config_path = pretrained_path / "processor_config.json"
         processor_config = {

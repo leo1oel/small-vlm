@@ -1,0 +1,39 @@
+# Vision-only streaming SFT mix for the unified (encoder-free) model: blend
+# two Azure blob folders of image-text chat data with equal (1:1) sampling.
+# Conversations are multi-turn instruct data — pair this with a chat template
+# (trainer.version=qwen_2_5), NOT the 2-turn plain caption template.
+#
+# Credentials: AZURE_SAS_TOKEN (env or .env). The jsonl of each folder is
+# auto-downloaded + indexed once (resumable); media always streams lazily
+# through the MSC range cache.
+# REQUIRED with this dataset type: trainer.max_steps > 0.
+
+name: energon-vision
+type: energon
+
+# blob folder -> blend weight (sampling ratio, normalized automatically)
+folders:
+    LLaVA-OneVision-1.5-Instruct: 1.0
+    FineVision: 1.0
+
+# PER-WORKER buffer that must FILL before the first sample is yielded
+# (energon ShuffleBufferDataset): startup cost ≈ num_workers x ranks x size
+# media fetches, RAM ≈ that x ~0.4MB. 1000 still mixes >=10 sequential read
+# runs (max_samples_per_sequence) per worker — plenty on top of blend mixing.
+shuffle_buffer_size: 1000
+# Length-grouped batching: bucket edges over the post-splice effective length
+# (text tokens + ~280/image). Measured distribution: median 490, p75 704,
+# p95 1755 -> these edges cut pad-to-batch-max waste from ~46% to roughly
+# the bucket width. Worker-local buckets: few and wide so each fills fast.
+length_buckets: [512, 768, 1024, 1536, 2304, 4096]
+# ~constant effective tokens per micro-batch (bucket bs = budget // edge).
+# Tuned against the MEASURED rate (1173 samples/step at 180k, 2026-06-05):
+# 153.5k -> ~1000 samples/step avg with acc=1 x 4 GPUs, so 20k steps ≈ 20M
+# samples and save_steps=1000 yields exactly 20 checkpoints. GPU ~85GB,
+# host bucket buffers ~450GB at 12 workers (both probed at the larger 180k).
+batch_token_budget: 153500
+max_samples_per_sequence: 100 # randomness vs. sequential-read efficiency
+# Azure blob fetch latency is fat-tailed (median ~50ms, p90 5-14s measured
+# 2026-06): workers fetch media synchronously per sample, so throughput ≈
+# workers / mean_latency — keep this high to amortize stragglers.
+num_workers: 12

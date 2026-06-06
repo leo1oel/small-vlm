@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import Any, override
 
 import datasets
@@ -70,6 +71,58 @@ class VLMTrainer(Trainer):
     def __init__(self, *args: Any, energon_train_loader: Any = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.energon_train_loader: Any = energon_train_loader
+        # (wall-clock, total_flos) at the first training log — baseline for
+        # the average-throughput metric in log() below.
+        self._flops_baseline: tuple[float, float] | None = None
+        # Rank-local sample counter (exact, fed by compute_loss); summed
+        # across ranks at log time. Session-relative: resets on requeue
+        # (num_input_tokens_seen is the run-cumulative ledger instead).
+        self._local_samples: int = 0
+
+    @override
+    def compute_loss(
+        self,
+        model: torch.nn.Module,
+        inputs: dict[str, Any],
+        return_outputs: bool = False,
+        num_items_in_batch: torch.Tensor | int | None = None,
+    ):
+        if model.training and isinstance(inputs.get("input_ids"), torch.Tensor):
+            self._local_samples += int(inputs["input_ids"].shape[0])
+        return super().compute_loss(
+            model, inputs, return_outputs=return_outputs, num_items_in_batch=num_items_in_batch
+        )
+
+    @override
+    def log(self, logs: dict[str, float], start_time: float | None = None) -> None:
+        # Enrich every TRAINING log record (eval records carry eval_loss
+        # instead) with cumulative-progress metrics; the wandb callback runs
+        # on the handler after this and picks them up automatically.
+        if "loss" in logs:
+            # Fresh at log time: Trainer calls store_flos() (cross-rank sum)
+            # right before log() in _maybe_log_save_evaluate.
+            logs["total_flos"] = float(self.state.total_flos)
+            # Exact samples consumed this session (cross-rank sum of the
+            # compute_loss counter). log() runs on every rank at the same
+            # step (should_log is step-deterministic), so the collective is
+            # safe here. Resets on requeue — num_input_tokens_seen is the
+            # run-cumulative ledger.
+            samples = torch.tensor(float(self._local_samples), device=self.args.device)
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.all_reduce(samples)
+            logs["samples_seen_session"] = float(samples.item())
+            now = time.time()
+            if self._flops_baseline is None:
+                self._flops_baseline = (now, float(self.state.total_flos))
+            else:
+                t0, flos0 = self._flops_baseline
+                if now > t0 and self.state.total_flos > flos0:
+                    # Session-average model TFLOPs/s per GPU (resume restarts
+                    # the baseline; total_flos itself is cumulative).
+                    logs["tflops_per_gpu"] = (
+                        (self.state.total_flos - flos0) / (now - t0) / self.args.world_size / 1e12
+                    )
+        super().log(logs, start_time)
 
     @override
     def get_train_dataloader(self):

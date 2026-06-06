@@ -14,7 +14,7 @@ from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
 from .data import get_data_args, make_supervised_data_module
 from .models import VLMProcessor, get_dynamic_vlm
 from .models.image_processing_raw import RawImageProcessor
-from .train import get_training_args, train
+from .train import get_training_args, train, validate_energon_args
 from .utils.precision import resolve_precision
 
 log: logging.Logger = logging.getLogger(name=__name__)
@@ -227,9 +227,17 @@ def vlm(cfg: AppConfig) -> None:
         cfg.trainer.bf16 = resolved_bf16
         cfg.trainer.tf32 = resolved_tf32
         training_args = get_training_args(cfg.trainer)
+        if cfg.dataset.type == "energon":
+            # Fail fast (seconds, not minutes): these checks would otherwise
+            # only fire in train(), after the slow model load.
+            validate_energon_args(training_args)
         model, processor = load_model(cfg.model, cfg.trainer)
         model.to(training_args.device)
         data_args = get_data_args(cfg.dataset, cfg.model)
+        # Record the classic-path image policy in the checkpoint config (like
+        # conversation_version in train.py) so inference reproduces training
+        # preprocessing without guessing. Encoder-free checkpoints ignore it.
+        model.config.image_aspect_ratio = data_args.image_aspect_ratio
         log.info("Creating data module")
         if cfg.dataset.type == "energon":
             # lazy import: needs megatron-energon + multistorageclient, which

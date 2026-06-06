@@ -5,10 +5,10 @@
 #SBATCH --requeue
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=l40:4
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=256G
-#SBATCH --time=4:00:00
+#SBATCH --gpus=h200:4
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=700G
+#SBATCH --time=2-00:00:00
 #SBATCH --output=/mmfs1/gscratch/krishna/leoym/small-vlm/logs/train_%j.log
 #SBATCH --error=/mmfs1/gscratch/krishna/leoym/small-vlm/logs/train_%j.log
 # NOTE: slurmd opens the output file BEFORE the script body runs, so logs/ must
@@ -42,7 +42,10 @@ export NGPUS=4
 CONFIG_NAME="${CONFIG_NAME:-finetune-llava}"
 # Stable output dir so --requeue auto-resume can find previous checkpoints
 # (hydra's default run dir is timestamped and changes on every requeue).
-RUN_DIR="${PROJECT_ROOT}/outputs/${CONFIG_NAME}"
+# Checkpoints live on the scrubbed FS: separate (huge) quota, immune to
+# the krishna group inode exhaustion that killed step-4000 saves. Purged if
+# untouched ~21 days — archive finals back after the run.
+RUN_DIR="/gscratch/scrubbed/leoym/small-vlm-outputs/${CONFIG_NAME}"
 
 echo "[small-vlm] node=$(hostname) config=${CONFIG_NAME} run_dir=${RUN_DIR}"
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader || true
@@ -51,6 +54,7 @@ python -u -m torch.distributed.run \
     --standalone \
     --nproc_per_node "${NGPUS}" \
     -m vlm -cn "${CONFIG_NAME}" \
+    dataset.num_workers=12 \
     trainer.output_dir="${RUN_DIR}" \
     hydra.run.dir="${RUN_DIR}/hydra"
 

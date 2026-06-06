@@ -6,7 +6,7 @@ gradient_accumulation_steps: 4
 warmup_steps: 0.03
 lr_scheduler_type: cosine
 gradient_checkpointing: True
-dataloader_num_workers: 8
+dataloader_num_workers: 8 # json datasets only — energon datasets ignore this (dataset.num_workers owns loading)
 report_to: wandb
 save_steps: 8000
 save_only_model: True

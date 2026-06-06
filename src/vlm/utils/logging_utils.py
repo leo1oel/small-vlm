@@ -32,8 +32,14 @@ class ColoredFormatter(logging.Formatter):
         else:
             colored_message = message
 
-        # Replace the message in the copied record
+        # Replace the message in the copied record. getMessage() above already
+        # interpolated %-style args into the message, so clear them — leaving
+        # them set makes the base formatter re-apply `msg % args` to a string
+        # with no placeholders left (TypeError: not all arguments converted),
+        # which turns any library's lazy-args warning (urllib3, hf_hub, ...)
+        # into a fatal crash.
         colored_record.msg = colored_message
+        colored_record.args = None
 
         # Use the standard formatter to format the whole record
         return super().format(colored_record)

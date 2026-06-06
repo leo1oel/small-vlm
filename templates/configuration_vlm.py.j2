@@ -1,10 +1,19 @@
-from typing import Any
+"""Static export of the small-vlm dynamic config (configuration_vlm.py in
+src/vlm/models) with the base-LM parent class baked in at push-to-hub time.
+Keep in sync with the live module — the only intended differences are the
+static parent class and the AutoConfig registration at the bottom."""
+
+from typing import Any, ClassVar
 
 from transformers import AutoConfig, PretrainedConfig, {{ parent_class }}
 
 
 class VisionConfig(PretrainedConfig):
-    model_type: str = "vision_model"
+    # transformers v5 wraps every PretrainedConfig subclass in
+    # @dataclass(kw_only=True); a plainly-annotated class attribute would become
+    # a dataclass field. The base declares `model_type: ClassVar[str]`, and
+    # ClassVar is excluded from dataclass fields, so this override is safe.
+    model_type: ClassVar[str] = "vision_model"
 
     def __init__(
         self,
@@ -14,7 +23,24 @@ class VisionConfig(PretrainedConfig):
 
 
 class ConnectorConfig(PretrainedConfig):
-    model_type: str = "connector"
+    model_type: ClassVar[str] = "connector"
+
+    def __init__(
+        self,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+
+
+class AudioConfig(PretrainedConfig):
+    """Audio-pathway config (encoder-free, gemma4_unified-style).
+
+    Carries the yaml dials for the audio connector: enabled, name, type
+    (connector_map key, e.g. "raw_waveform"), samples_per_token (frame size,
+    640 = 40ms @ 16kHz), plus anything future connectors need.
+    """
+
+    model_type: ClassVar[str] = "audio_connector"
 
     def __init__(
         self,
@@ -24,28 +50,30 @@ class ConnectorConfig(PretrainedConfig):
 
 
 class VLMConfig({{ parent_class }}):
-    model_type: str = "vlm"
-
-    _sub_config_classes: dict[str, type[PretrainedConfig]] = {
-        "vision_config": VisionConfig,
-        "connector_config": ConnectorConfig,
-    }
+    model_type: ClassVar[str] = "vlm"
 
     def __init__(
         self,
         vision_config_args: dict[str, Any] = None,
         connector_config_args: dict[str, Any] = None,
+        audio_config_args: dict[str, Any] = None,
         lazy_load: bool = False,
         **kwargs: Any,
     ):
         final_vision_args = kwargs.pop("vision_config", vision_config_args)
         final_connector_args = kwargs.pop("connector_config", connector_config_args)
+        final_audio_args = kwargs.pop("audio_config", audio_config_args)
 
         self.vision_config: VisionConfig = VisionConfig(**(final_vision_args or {}))
         self.connector_config: ConnectorConfig = ConnectorConfig(**(final_connector_args or {}))
+        # None (not an empty AudioConfig) when absent: old checkpoints and
+        # vision-only configs simply have no audio pathway.
+        self.audio_config: AudioConfig | None = (
+            AudioConfig(**final_audio_args) if final_audio_args else None
+        )
         self.lazy_load: bool = lazy_load
-
         # Initialize the base language model configuration part
         super().__init__(**kwargs)
 
-AutoConfig.register("vlm", VLMConfig)
+
+AutoConfig.register("vlm", VLMConfig, exist_ok=True)

@@ -32,11 +32,30 @@ def expand2square(pil_img: Image.Image, background_color: tuple):
 
 
 def process_images(images: list, image_processor: BaseImageProcessor, model_cfg: Any):
+    """Legacy encoder-path (CLIP/SigLIP/DINO) image preprocessing.
+
+    NOT for the encoder-free RawImageProcessor: that path preserves aspect
+    ratio and produces variable-length patch lists + position ids — use
+    vlm.inference.prepare_media_inputs (or RawImageProcessor.preprocess)
+    instead. Guarded here because square-padding would silently corrupt the
+    encoder-free model's inputs.
+    """
+    # Duck-typed check (avoid importing the class here): RawImageProcessor is
+    # the only processor exposing this method.
+    if hasattr(image_processor, "get_dummy_inputs"):
+        raise TypeError(
+            "process_images is for encoder-based (CLIP/SigLIP/DINO) checkpoints; "
+            "this processor is a RawImageProcessor (encoder-free path). Use "
+            "vlm.inference.prepare_media_inputs / generate_response instead."
+        )
     image_aspect_ratio = getattr(model_cfg, "image_aspect_ratio", None)
     new_images = []
     if image_aspect_ratio == "pad":
+        # Pad with the processor's per-channel mean (the value that normalizes
+        # to zero); processors without a mean pad with black.
+        image_mean = getattr(image_processor, "image_mean", None) or (0.0, 0.0, 0.0)
         for image in images:
-            image = expand2square(image, tuple(int(x * 255) for x in image_processor.image_mean))
+            image = expand2square(image, tuple(int(x * 255) for x in image_mean))
             image = image_processor.preprocess(image, return_tensors="pt")["pixel_values"][0]
             new_images.append(image)
     else:

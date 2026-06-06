@@ -238,6 +238,9 @@ class TrainingArguments(transformers.TrainingArguments):
     connector_wd: float | None = None
     visual_encoder_wd: float | None = None
     version: str = "v0"
+    # 0 = full-logits loss; >0 = chunked CE (train.py copies this onto
+    # model.config.loss_chunk_size, which the model's forward reads).
+    loss_chunk_size: int = 0
 
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -297,6 +300,9 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         connector_wd=config.weight_decay.connector_weight_decay,
         visual_encoder_wd=config.weight_decay.visual_encoder_weight_decay,
         version=config.version,
+        loss_chunk_size=config.loss_chunk_size,
+        include_num_input_tokens_seen=config.include_num_input_tokens_seen,
+        torch_compile=config.torch_compile,
         gradient_checkpointing=config.gradient_checkpointing,
         run_name=config.run_name,
         resume_from_checkpoint=config.resume_from_checkpoint,

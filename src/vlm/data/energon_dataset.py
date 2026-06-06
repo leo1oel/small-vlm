@@ -37,6 +37,7 @@ Local state:
     MSC range cache          $MSC_CACHE_DIR, else ~/.cache/vlm/msc-cache
 """
 
+import bisect
 import concurrent.futures
 import fcntl
 import hashlib
@@ -63,6 +64,7 @@ from .dataset import (
     make_dummy_audio_frames,
     make_dummy_image_entry,
     preprocess,
+    process_classic_image,
     process_raw_image,
 )
 
@@ -102,11 +104,45 @@ def _find_sas_token() -> str:
     return ""
 
 
+def _patch_msc_poisoned_file_hang() -> None:
+    """multi-storage-client (<= 0.49.0, latest as of 2026-06): ObjectFile's
+    __init__ can raise (e.g. an Azure HEAD timeout on the fat-tail) AFTER
+    creating the _download_complete event but BEFORE any code path sets it.
+    Every later touch of the broken object — including GC: __del__ -> close()
+    -> closed — then waits on the event forever, freezing the dataloader
+    worker and, through the DataLoader's in-order result queue, the whole
+    training step (observed live: all 4 workers parked in file.py `closed`).
+    Bound the wait and report the poisoned object as closed instead."""
+    try:
+        from multistorageclient.file import ObjectFile
+    except ImportError:  # streaming extras not installed; nothing to patch
+        return
+
+    def closed(self: Any) -> bool:  # mirrors upstream, with a bounded wait
+        if self.readable():
+            if not self._download_complete.wait(timeout=300):
+                log.warning(
+                    "MSC ObjectFile: open never completed for %s — treating as closed",
+                    getattr(self, "_remote_path", "?"),
+                )
+                return True
+        return self._file.closed
+
+    ObjectFile.closed = property(closed)
+
+
 def _bootstrap_env() -> None:
     """Derive MSC/Azure env vars from AZURE_SAS_TOKEN (a full SAS URL). Never
     overwrites existing variables, so a cluster can provide them externally.
     Missing credentials are tolerated here (config paths are still set);
     build_energon_train_loader fails loudly when streaming actually starts."""
+    # The azure SDK's http_logging_policy dumps full request/response headers
+    # for EVERY blob GET — at training rates that is tens of thousands of
+    # multi-line log records through the rich formatter onto a shared FS,
+    # measurable overhead on the media-fetch hot path. Errors still raise
+    # (and log at WARNING+), so nothing actionable is lost.
+    logging.getLogger("azure").setLevel(logging.WARNING)
+    _patch_msc_poisoned_file_hang()
     cache_dir = os.environ.setdefault(
         "MSC_CACHE_DIR", str(Path.home() / ".cache" / "vlm" / "msc-cache")
     )
@@ -638,23 +674,29 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
         super().__init__()
         self.tokenizer: Any = processor.tokenizer
         self.image_processor: Any = processor.image_processor
-        if not isinstance(self.image_processor, RawImageProcessor):
-            raise NotImplementedError(
-                "the energon streaming path currently supports the encoder-free "
-                "RawImageProcessor only (vision tower configs use the local-json path)"
-            )
         self.data_args: DataArguments = data_args
         self.collator: Any = DataCollatorForSupervisedDataset(
             tokenizer=self.tokenizer, ignore_index=data_args.ignore_index
         )
 
+    def _process_images(self, image_bytes: list[bytes]) -> list[tuple]:
+        """Decode + preprocess, dispatching on the processor family:
+        RawImageProcessor -> encoder-free 4-tuples (variable resolution);
+        HF processors (CLIP/SigLIP/DINO) -> classic 3-tuples. Multi-image
+        samples on the classic path force square-padding, mirroring the
+        local-json convention (dataset.py process_image overwrite)."""
+        pil_images = [Image.open(io.BytesIO(b)).convert("RGB") for b in image_bytes]
+        if isinstance(self.image_processor, RawImageProcessor):
+            return [process_raw_image(im, self.image_processor) for im in pil_images]
+        aspect = self.data_args.image_aspect_ratio
+        if len(pil_images) > 1:
+            aspect = "pad"
+        return [process_classic_image(im, self.image_processor, aspect) for im in pil_images]
+
     @stateless  # pyright: ignore[reportUntypedFunctionDecorator]
     def encode_sample(self, sample: MMChatRawSample) -> dict:
         # Decode AFTER the shuffle buffer (the buffer holds compressed bytes).
-        images = [
-            process_raw_image(Image.open(io.BytesIO(b)).convert("RGB"), self.image_processor)
-            for b in sample.image_bytes
-        ]
+        images = self._process_images(sample.image_bytes)
         if sample.audio_bytes and not self.data_args.audio_enabled:
             raise ValueError(
                 f"sample {sample.__key__} carries audio but the model's audio "
@@ -675,6 +717,14 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
             "input_ids": out["input_ids"][0],
             "labels": out["labels"][0],
             "id": sample.__key__,
+            # Restore keys are CHAINS: each energon wrapper prepends its own
+            # segment and restore unwinds them layer by layer down to the
+            # loader. A dict output must carry the INNER sample's chain so
+            # MapDataset can prepend to it — an empty placeholder makes
+            # checkpointed bucket buffers unrestorable ("not enough values to
+            # unpack" deep in the chain), and a missing key saves None
+            # (add_sample_restore_key only writes dicts that have the key).
+            "__restore_key__": getattr(sample, "__restore_key__", ()),
         }
         # identical dummy assembly to LazySupervisedDataset._get_item
         if images:
@@ -689,6 +739,77 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
 
     def batch(self, samples: list[dict]) -> dict:
         return self.collator(samples)
+
+
+def effective_sample_length(data_dict: dict, data_args: DataArguments) -> int:
+    """Post-splice sequence length the GPU will see for one encoded sample:
+    input_ids minus media sentinels, plus each real image's patch rows and
+    each audio's frame rows (modeling_vlm replaces every sentinel token by
+    its feature block). Dummy entries (modality "text" / one zero frame)
+    splice zero-width; the audio dummy's +1 here is irrelevant for
+    bucketing."""
+    input_ids = data_dict["input_ids"]
+    n_sentinels = int(
+        (input_ids == data_args.image_token_index).sum()
+        + (input_ids == data_args.audio_token_index).sum()
+    )
+    image_rows = 0
+    for entry in data_dict.get("image", []):
+        if len(entry) == 4:
+            # encoder-free 4-tuple: per-image patch rows are in the entry
+            if entry[3] == "image":
+                image_rows += int(entry[0].shape[0])
+        elif entry[2] == "image":
+            # classic 3-tuple (CLIP/SigLIP/DINO): fixed splice width per image
+            image_rows += int(data_args.image_soft_tokens or 0)
+    audio_rows = sum(int(frames.shape[0]) for frames in data_dict.get("audio", []))
+    return int(input_ids.shape[0]) - n_sentinels + image_rows + audio_rows
+
+
+class VLMBucketedChatTaskEncoder(VLMChatTaskEncoder):
+    """VLMChatTaskEncoder with length-grouped batching: overriding
+    batch_group_criterion routes batching through energon's GroupBatchDataset
+    (one bucket per effective-length range, each flushing a full batch_size
+    batch through the same collator). Cuts pad-to-batch-max waste (measured
+    46% at bs=4 on the vision SFT mix) to roughly the bucket width.
+
+    Buckets are worker-local and fully savable (GroupBatchDataset serializes
+    every bucket's buffer into the loader state), so requeue resume is exact.
+    """
+
+    def __init__(
+        self,
+        processor: Any,
+        data_args: DataArguments,
+        length_buckets: list[int],
+        batch_token_budget: int | None = None,
+    ):
+        super().__init__(processor, data_args)
+        if not length_buckets or sorted(length_buckets) != list(length_buckets):
+            raise ValueError(
+                f"dataset.length_buckets must be ascending bucket edges, got {length_buckets}"
+            )
+        self.length_buckets: list[int] = list(length_buckets)
+        # Token-budget batching: each bucket flushes batch_token_budget //
+        # bucket_edge samples, so every micro-batch carries ~the same number
+        # of effective tokens — uniform GPU memory across buckets, and short
+        # buckets get large batches (high MFU) instead of the loader-wide
+        # fixed size. None = legacy fixed batch_size per bucket.
+        self.batch_token_budget: int | None = batch_token_budget
+
+    def batch_group_criterion(self, sample: dict) -> tuple[int, int | None]:
+        # Bucket key = index of the first edge >= effective length; lengths
+        # beyond the last edge share the overflow bucket. Returning None for
+        # the batch size selects the loader-wide fixed batch_size.
+        eff = effective_sample_length(sample, self.data_args)
+        key = bisect.bisect_left(self.length_buckets, eff)
+        if self.batch_token_budget is None:
+            return key, None
+        # Overflow bucket (key == len(edges)) is bounded by max_seq_length +
+        # the image budget in practice; sizing it by the last edge keeps it
+        # within ~10% of the budget, well inside the memory margin.
+        edge = self.length_buckets[min(key, len(self.length_buckets) - 1)]
+        return key, max(1, self.batch_token_budget // edge)
 
 
 # ---------------------------------------------------------------------------
@@ -849,12 +970,27 @@ def build_energon_train_loader(
 
     metadataset_yaml = _metadataset_yaml(specs)
     wc = worker_config or WorkerConfig.default_worker_config(num_workers=dataset_config.num_workers)
+    if task_encoder is None:
+        length_buckets = getattr(dataset_config, "length_buckets", None)
+        if length_buckets:
+            task_encoder = VLMBucketedChatTaskEncoder(
+                processor,
+                data_args,
+                list(length_buckets),
+                batch_token_budget=getattr(dataset_config, "batch_token_budget", None),
+            )
+        else:
+            task_encoder = VLMChatTaskEncoder(processor, data_args)
+    # Token-budget bucketing sizes every batch itself; energon then requires
+    # the loader-wide batch_size to be None ("one of the two should be None").
+    if getattr(task_encoder, "batch_token_budget", None):
+        batch_size = None
     dataset = get_train_dataset(
         str(metadataset_yaml),
         batch_size=batch_size,
         shuffle_buffer_size=dataset_config.shuffle_buffer_size,
         max_samples_per_sequence=dataset_config.max_samples_per_sequence,
         worker_config=wc,
-        task_encoder=task_encoder or VLMChatTaskEncoder(processor, data_args),
+        task_encoder=task_encoder,
     )
     return get_savable_loader(dataset, **savable_loader_kwargs)

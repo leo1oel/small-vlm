@@ -218,6 +218,24 @@ def create_dynamic_causal_vlm_class(
                     audio_features,
                 )
             )
+        loss_chunk_size = getattr(self.config, "loss_chunk_size", 0) or 0
+        if (
+            loss_chunk_size > 0
+            and labels is not None
+            and self.training
+            and not output_attentions
+            and not output_hidden_states
+        ):
+            return self.chunked_ce_forward(
+                input_ids=input_ids,
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                labels=labels,
+                use_cache=use_cache,
+                chunk_size=loss_chunk_size,
+            )
         return super(self.__class__, self).forward(
             input_ids=input_ids,
             inputs_embeds=inputs_embeds,
@@ -229,6 +247,75 @@ def create_dynamic_causal_vlm_class(
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+        )
+
+    def chunked_ce_forward(
+        self: Any,
+        input_ids: Tensor | None,
+        inputs_embeds: Tensor | None,
+        attention_mask: Tensor | None,
+        position_ids: LongTensor | None,
+        past_key_values: list[FloatTensor] | None,
+        labels: LongTensor,
+        use_cache: bool | None,
+        chunk_size: int,
+    ) -> CausalLMOutputWithPast:
+        """Training-only loss path that never materializes the full
+        (batch*seq, vocab) fp32 logits: ignore_index positions are dropped
+        BEFORE the lm_head matmul (the image splice and user turns are
+        ignore_index — often most of the row), and the survivors go through
+        lm_head + fp32 CE in `chunk_size`-token chunks.
+
+        Numerically replicates transformers 5.x ForCausalLMLoss with
+        num_items_in_batch=None (loss/loss_utils.py): identical shift (the
+        hidden state at i predicts labels[i+1]; the last position's target is
+        padded to ignore_index), identical matmul-in-model-dtype -> fp32
+        upcast order, and sum/count over valid targets — which equals
+        cross_entropy's reduction="mean" with ignore_index. Pinned by
+        tests in devtools/test_chunked_ce.py.
+
+        Returns logits=None; the HF Trainer never reads logits while
+        training, and the eval/generation paths keep the full-logits
+        super().forward (this method is gated on self.training).
+        """
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+        )
+        hidden_states = outputs.last_hidden_state
+        # ForCausalLMLoss's shift: pad labels right with ignore_index, drop
+        # the first -> target[i] = labels[i+1], last target ignored. -100 is
+        # the fixed ignore_index of the reference implementation.
+        shift_targets = nn.functional.pad(labels, (0, 1), value=-100)[..., 1:]
+        flat_hidden = hidden_states.reshape(-1, hidden_states.shape[-1])
+        flat_targets = shift_targets.reshape(-1).to(flat_hidden.device)
+        valid = flat_targets != -100
+        n_valid = int(valid.sum())
+        if n_valid == 0:
+            # Degenerate batch with every target ignored (the reference path
+            # would produce NaN): emit an exact-zero loss that still touches
+            # lm_head so all trainable params keep grads under deepspeed.
+            loss = self.lm_head(flat_hidden[:1]).float().sum() * 0.0
+        else:
+            hidden_valid = flat_hidden[valid]
+            targets_valid = flat_targets[valid]
+            total = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
+            for hidden_chunk, target_chunk in zip(
+                hidden_valid.split(chunk_size), targets_valid.split(chunk_size), strict=True
+            ):
+                chunk_logits = self.lm_head(hidden_chunk).float()
+                total = total + nn.functional.cross_entropy(
+                    chunk_logits, target_chunk, reduction="sum"
+                )
+            loss = total / n_valid
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=None,
+            past_key_values=outputs.past_key_values,
         )
 
     @override
@@ -300,6 +387,12 @@ def create_dynamic_causal_vlm_class(
         # avoid KeyError; the VLM forward generates from inputs_embeds and does not
         # consume cache_position. Audit point #5.
         inputs.pop("cache_position", None)
+        # v5: generate(..., stop_strings=..., tokenizer=...) leaks the tokenizer
+        # into model_kwargs (generation/utils._sample has no explicit tokenizer
+        # param, so it rides **model_kwargs into forward). Stock models absorb
+        # it via forward(**kwargs); our explicit-signature forward must drop it.
+        inputs.pop("tokenizer", None)
+        inputs.pop("assistant_tokenizer", None)
         if images is not None:
             inputs["images"] = images
         if image_sizes is not None:
@@ -671,6 +764,58 @@ def create_dynamic_causal_vlm_class(
 
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels  # pyright: ignore
 
+    def floating_point_ops(
+        self: Any, input_dict: dict[str, Any], exclude_embeddings: bool = True
+    ) -> int:
+        """Trainer-side FLOPs estimate (6 * params * tokens), accumulated into
+        trainer_state.total_flos. Overridden because the default counts
+        input_ids tokens, where each image is a single sentinel — the spliced
+        sequence the model actually runs has up to max_soft_tokens (280) per
+        image. Swap every media sentinel for its true expansion: soft-token
+        counts come from image_position_ids lengths / audio frame counts."""
+        input_ids = input_dict.get("input_ids")
+        if input_ids is None:
+            return 0
+        mask = input_dict.get("attention_mask")
+        tokens = int(mask.sum().item()) if mask is not None else input_ids.numel()
+        image_position_ids = input_dict.get("image_position_ids")
+        if image_position_ids:
+            tokens += sum(int(p.shape[0]) for p in image_position_ids)
+            image_token_index = getattr(self.config, "image_token_index", -200)
+            n_sentinels = int((input_ids == image_token_index).sum().item())
+            tokens -= n_sentinels  # each sentinel is replaced by its expansion
+            # Absent-modality dummies carry one placeholder row (shape (1, 2))
+            # but splice in zero-width and have no sentinel — don't count them.
+            tokens -= max(0, len(image_position_ids) - n_sentinels)
+        elif input_dict.get("images") is not None:
+            # Classic encoder path (CLIP/SigLIP/DINO): no per-image position
+            # ids; every real image (one sentinel each) splices a fixed
+            # soft-token count derived from the tower config — keep total_flos
+            # comparable with the encoder-free arm.
+            image_token_index = getattr(self.config, "image_token_index", -200)
+            n_sentinels = int((input_ids == image_token_index).sum().item())
+            vision_config = getattr(self.config, "vision_config", None)
+            if n_sentinels and vision_config is not None:
+                get = (
+                    vision_config.get
+                    if isinstance(vision_config, dict)
+                    else lambda k: getattr(vision_config, k, None)
+                )
+                image_size, patch_size = get("image_size"), get("patch_size")
+                if image_size and patch_size:
+                    soft = (image_size // patch_size) ** 2
+                    if getattr(self.config, "use_cls_token", False):
+                        soft += 1
+                    tokens += n_sentinels * (soft - 1)  # sentinel itself already counted
+        audios = input_dict.get("audios")
+        if audios:
+            tokens += sum(int(a.shape[0]) for a in audios)
+            audio_token_index = getattr(self.config, "audio_token_index", -201)
+            n_sentinels = int((input_ids == audio_token_index).sum().item())
+            tokens -= n_sentinels
+            tokens -= max(0, len(audios) - n_sentinels)  # zero-width dummies
+        return 6 * tokens * self.num_parameters(exclude_embeddings=exclude_embeddings)
+
     DynamicCausalVLMClass = type(
         "VLMForCausalLM",
         (ParentCausalLLMClass,),  # Inherit from the specific LLM class
@@ -678,6 +823,8 @@ def create_dynamic_causal_vlm_class(
             "config_class": config_class,
             "__init__": __init__,
             "forward": forward,
+            "chunked_ce_forward": chunked_ce_forward,
+            "floating_point_ops": floating_point_ops,
             "generate": generate,
             "prepare_inputs_for_generation": prepare_inputs_for_generation,
             "encode_raw_patches": encode_raw_patches,
