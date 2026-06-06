@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Execution status:** completed 2026-06-06 via subagent-driven development on branch `worktree-visual-aux` (15 commits, GPU gate + aux-exit regression green). Checkboxes left unticked; per-task review records live in the session transcript.
+
 **Goal:** Pluggable next-patch prediction auxiliary losses at image positions (pixel targets = AIM-style, embedding targets = NEPA-style with stop-grad) on the encoder-free unified VLM, λ=0.5, with `objective: none` byte-identical to today.
 
 **Architecture:** A fresh MLP head on the causal wrapper (next to `lm_head`), built in `__init__` from `model.config` fields (audio-connector gating pattern). The splice tracks which spliced positions belong to which image (block ids); `chunked_ce_forward` builds shift-by-one prediction pairs strictly within blocks and adds `λ·L_visual` to the CE loss, stashing components for the existing all-reduce logging. Spec: `docs/superpowers/specs/2026-06-06-visual-aux-loss-design.md`.
