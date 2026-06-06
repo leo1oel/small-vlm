@@ -276,9 +276,7 @@ def create_dynamic_causal_vlm_class(
         elif objective == "nepa":
             out_dim = int(config.hidden_size)
         else:
-            raise ValueError(
-                f"unknown visual_aux_objective {objective!r} (none|aim_pixel|nepa)"
-            )
+            raise ValueError(f"unknown visual_aux_objective {objective!r} (none|aim_pixel|nepa)")
         depth = int(getattr(config, "visual_aux_head_depth", 2) or 2)
         hidden = int(getattr(config, "visual_aux_head_hidden", 0) or config.hidden_size)
         layers: list[nn.Module] = []
@@ -458,9 +456,7 @@ def create_dynamic_causal_vlm_class(
             | ({int(va_layer)} if (va_active and va_layer) else set())
         )
         for k in capture_layers:
-            handles.append(
-                self.model.layers[k - 1].register_forward_hook(_make_capture(k))
-            )
+            handles.append(self.model.layers[k - 1].register_forward_hook(_make_capture(k)))
         try:
             outputs = self.model(
                 input_ids=input_ids,
@@ -975,9 +971,7 @@ def create_dynamic_causal_vlm_class(
                 cur_new_input_embeds.append(text_segment_embeds[i])
                 cur_new_labels.append(cur_labels_segments[i])
                 if new_image_block_ids is not None:
-                    cur_new_block_ids.append(
-                        torch.full_like(cur_labels_segments[i], -1)
-                    )
+                    cur_new_block_ids.append(torch.full_like(cur_labels_segments[i], -1))
                 if i < len(mm_positions):
                     token_index = int(cur_input_ids[mm_positions[i]].item())
                     features, cursor = modality_features[token_index]
@@ -1022,9 +1016,7 @@ def create_dynamic_causal_vlm_class(
             new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
             new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
             if new_image_block_ids is not None:
-                new_image_block_ids = [
-                    x[:tokenizer_model_max_length] for x in new_image_block_ids
-                ]
+                new_image_block_ids = [x[:tokenizer_model_max_length] for x in new_image_block_ids]
 
         # Combine them
         max_len = max(x.shape[0] for x in new_input_embeds)
@@ -1126,7 +1118,15 @@ def create_dynamic_causal_vlm_class(
         if _position_ids is None:
             position_ids = None
 
-        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, image_block_ids_padded  # pyright: ignore
+        return (  # pyright: ignore
+            None,
+            position_ids,
+            attention_mask,
+            past_key_values,
+            new_input_embeds,
+            new_labels,
+            image_block_ids_padded,
+        )
 
     def floating_point_ops(
         self: Any, input_dict: dict[str, Any], exclude_embeddings: bool = True

@@ -68,9 +68,7 @@ def validate_visual_aux_config(
     if objective == "none":
         return "none", None
     if objective not in ("aim_pixel", "nepa"):
-        raise ValueError(
-            f"model.visual_aux.objective {objective!r} not in (none, aim_pixel, nepa)"
-        )
+        raise ValueError(f"model.visual_aux.objective {objective!r} not in (none, aim_pixel, nepa)")
     if loss_chunk_size <= 0:
         raise ValueError(
             "model.visual_aux.objective requires trainer.loss_chunk_size > 0 — the "

@@ -42,8 +42,8 @@ sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "devtools"))
 
 from hydra import compose, initialize_config_dir  # noqa: E402
-
 from test_chunked_ce import build_batch, to_device  # noqa: E402
+
 from vlm.config import register_configs  # noqa: E402
 from vlm.data.data_arguments import DataArguments  # noqa: E402
 from vlm.utils import conversation as conversation_lib  # noqa: E402
@@ -143,7 +143,10 @@ def main():
     torch.cuda.empty_cache()
 
     # ---- 2. aim_pixel numerical correctness --------------------------------
-    from vlm.models.modeling_vlm import build_visual_aux_pairs, prepare_visual_aux_targets  # noqa: E402
+    from vlm.models.modeling_vlm import (  # noqa: E402
+        build_visual_aux_pairs,
+        prepare_visual_aux_targets,
+    )
 
     model, processor, data_args, _ = build_model("model.visual_aux.objective=aim_pixel")
     assert model.visual_aux_head is not None
