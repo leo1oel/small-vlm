@@ -1,0 +1,49 @@
+# Bee Stage-1 caption pairs for the encoder-free stage-1 connector pretrain:
+# ~998k single-image records (user: image -> assistant: caption) streamed from
+# ONE Azure blob folder — no blending. Every record is exactly 2 turns, so this
+# pairs with the plain caption template (trainer.version=plain, the trainer:
+# pretrain default), NOT the multi-turn qwen_2_5 chat template.
+#
+# Credentials: AZURE_SAS_TOKEN (env or .env). The jsonl is auto-downloaded +
+# indexed once (resumable); media always streams lazily through the MSC range
+# cache. REQUIRED with this dataset type: trainer.max_steps > 0.
+
+name: energon-bee-caption
+type: energon
+
+# Container is the MSC default ("data"); the folder key is the blob prefix
+# inside it. Single folder -> weight is a no-op.
+folders:
+    yiming/Bee-Training-Data-Stage1: 1.0
+
+# Every assistant caption in this set ships a constant empty
+# "<think>\n\n</think>\n\n" prefix (4 tokens). 57% of captions are only
+# 12-30 tokens, so the boilerplate would eat 15-25% of their loss mass —
+# strip it at the messages->conversations bridge (real reasoning is kept).
+strip_empty_think: true
+
+# Single-folder set: no blend mixing to do, but the file interleaves two
+# caption modes (57% short alt-text / 43% long coyo descriptions); 2000 per
+# worker mixes >=20 sequential read runs (max_samples_per_sequence) without
+# the startup cost of energon-mix's 10000.
+shuffle_buffer_size: 2000
+# Bucket edges over the post-splice effective length (caption tokens +
+# 256-280/image + sep). Measured on the first 49k records (well-shuffled,
+# plain template): p50 284, p75 533, p95 745, p99 890 — strongly bimodal
+# with ~56% of mass on the image-token floor (272-320). The 320 first edge
+# captures that whole cluster; vs the SFT edges (512 floor) it cuts
+# pad-to-bucket waste ~31% -> ~15% at the same token budget.
+# Rare samples past the last edge (measured max ~4361, <0.3% of mass) land
+# in an overflow bucket and are CLIPPED to model.max_seq_length at the
+# splice (modeling_vlm), not dropped — only their tail leaves the loss.
+length_buckets: [320, 512, 768, 1024, 1536, 4096]
+# SFT-proven budget as the safe start (~1260 samples/step avg with acc=1 x
+# 4 GPUs -> ~790 steps/epoch). Connector-only training has no backbone
+# optimizer/grad state, so VRAM headroom is likely larger than the SFT
+# arm's — probe 192k/256k with a 50-step trial before raising.
+batch_token_budget: 153500
+max_samples_per_sequence: 100 # randomness vs. sequential-read efficiency
+# Azure blob fetch latency is fat-tailed (median ~50ms, p90 5-14s measured
+# 2026-06): workers fetch media synchronously per sample, so throughput ≈
+# workers / mean_latency — keep this high to amortize stragglers.
+num_workers: 12
