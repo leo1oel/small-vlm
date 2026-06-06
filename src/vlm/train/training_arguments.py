@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import transformers
@@ -241,6 +241,13 @@ class TrainingArguments(transformers.TrainingArguments):
     # 0 = full-logits loss; >0 = chunked CE (train.py copies this onto
     # model.config.loss_chunk_size, which the model's forward reads).
     loss_chunk_size: int = 0
+    # Aux-exit deep supervision (early-fusion ablation): CE through the
+    # shared final norm + lm_head at these decoder layers (1-based output
+    # index), weighted by aux_exit_weight. Empty = off. train.py validates
+    # (validate_aux_exit_config) and copies onto model.config.
+    aux_exit_layers: list[int] = field(default_factory=list)
+    aux_exit_weight: float = 0.25
+    aux_exit_detach: bool = False
 
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
@@ -301,6 +308,9 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         visual_encoder_wd=config.weight_decay.visual_encoder_weight_decay,
         version=config.version,
         loss_chunk_size=config.loss_chunk_size,
+        aux_exit_layers=list(config.aux_exit_layers),
+        aux_exit_weight=config.aux_exit_weight,
+        aux_exit_detach=config.aux_exit_detach,
         include_num_input_tokens_seen=config.include_num_input_tokens_seen,
         torch_compile=config.torch_compile,
         gradient_checkpointing=config.gradient_checkpointing,

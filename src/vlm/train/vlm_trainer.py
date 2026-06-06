@@ -111,6 +111,21 @@ class VLMTrainer(Trainer):
             if torch.distributed.is_available() and torch.distributed.is_initialized():
                 torch.distributed.all_reduce(samples)
             logs["samples_seen_session"] = float(samples.item())
+            # Aux-exit loss components (stashed by chunked_ce_forward when
+            # aux_exit_layers is active): last-micro-batch snapshot,
+            # cross-rank mean. The stash is written on every training step on
+            # every rank (zeros on degenerate batches), so the collective is
+            # as step-deterministic as the samples one above.
+            comps = getattr(self.model, "_last_ce_components", None)
+            if comps is not None:
+                vals = torch.stack([comps["ce_final"], comps["ce_aux"]]).to(
+                    self.args.device
+                )
+                if torch.distributed.is_available() and torch.distributed.is_initialized():
+                    torch.distributed.all_reduce(vals)
+                    vals = vals / self.args.world_size
+                logs["ce_final"] = float(vals[0])
+                logs["ce_aux"] = float(vals[1])
             now = time.time()
             if self._flops_baseline is None:
                 self._flops_baseline = (now, float(self.state.total_flos))

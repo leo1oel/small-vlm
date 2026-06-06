@@ -195,6 +195,21 @@ class TrainerConfig:
     # (batch*seq, vocab) logits (~25GB fp32 at bs4/seq4k with the 152k vocab).
     # Numerically replicates transformers' ForCausalLMLoss mean reduction.
     loss_chunk_size: int = 0
+    # Aux-exit deep supervision for the early-fusion ablation (spec:
+    # docs/superpowers/specs/2026-06-05-aux-exit-loss-design.md): at each
+    # listed decoder layer k (1-based output index, valid [1, n_layers-1])
+    # decode through the SHARED final RMSNorm + lm_head and add the CE to
+    # the main loss: L = L_final + aux_exit_weight * sum_k L_k. Empty = off
+    # (bit-identical baseline path). Requires loss_chunk_size > 0.
+    aux_exit_layers: list[int] = field(default_factory=list)
+    # EE-LLM's validated few-exit weight range is 0.1-0.5 (arXiv:2312.04916);
+    # only read when aux_exit_layers is non-empty.
+    aux_exit_weight: float = 0.25
+    # True = detach the shared norm/lm_head weights inside the aux branch so
+    # its gradient flows only into layers <= k (fuse for the tied-embedding
+    # gradient coupling, arXiv:2603.26663); default False follows the
+    # LayerSkip shared-with-grad recipe (arXiv:2404.16710).
+    aux_exit_detach: bool = False
     # Native transformers token accounting, surfaced per log step in wandb
     # (num_input_tokens_seen + train tokens/sec): "non_padding" sums
     # attention_mask across ranks (small per-step gather), "all" counts
