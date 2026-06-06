@@ -1,7 +1,7 @@
 # Pluggable Visual Auxiliary Losses at Image Positions (visual-aux)
 
 **Date:** 2026-06-06
-**Status:** approved (design); implementation pending
+**Status:** implemented 2026-06-06 (branch worktree-visual-aux; GPU gate devtools/test_visual_aux.py passed)
 **Owner experiment:** visual-target deep supervision ablation on the encoder-free unified VLM
 **Sibling spec:** `2026-06-05-aux-exit-loss-design.md` (same mount point, orthogonal axis:
 aux-exit varies *where* CE supervision attaches; this spec varies *what* image positions predict)
@@ -207,6 +207,7 @@ Running jobs relaunch from this working tree on requeue. With
 | Hook re-fire under gradient checkpointing (mid-layer arm) | scoped register/remove + `requires_grad` guard, identical to aux-exit §3.2 |
 | OmegaConf types leaking into `config.json` | cast to plain int/float/str in train.py (aux-exit pattern) |
 | Cross-rank log desync | components stashed every step incl. zeros on degenerate batches |
+| Rank-asymmetric stash on a fully image-free microbatch (`images is None` → splice early-return → no va keys while other ranks stash them → all-reduce hang) | dormant in the shipped vision-only arms: the collator always injects a dummy image entry, so `images` is never None; track before reusing on text-containing blends — safe fix is stashing va zeros whenever the head is active, independent of ids presence |
 | bf16 loss noise | head output and targets upcast to fp32 before the loss, matching chunked-CE convention |
 
 ## 5. Testing (before any cluster launch)
