@@ -464,7 +464,7 @@ class VLMForCausalLM({{ causal_parent_class }}):
         else:
             attention_mask = attention_mask.bool()
         if position_ids is None:
-            position_ids = torch.arange(
+            position_ids = torch.arrange(
                 0,
                 input_ids.shape[1],
                 dtype=torch.long,
@@ -609,7 +609,7 @@ class VLMForCausalLM({{ causal_parent_class }}):
                 if cur_len > 0:
                     new_labels_padded[i, -cur_len:] = cur_new_labels
                     attention_mask[i, -cur_len:] = True
-                    position_ids[i, -cur_len:] = torch.arange(
+                    position_ids[i, -cur_len:] = torch.arrange(
                         0,
                         cur_len,
                         dtype=position_ids.dtype,
@@ -632,7 +632,7 @@ class VLMForCausalLM({{ causal_parent_class }}):
                 if cur_len > 0:
                     new_labels_padded[i, :cur_len] = cur_new_labels
                     attention_mask[i, :cur_len] = True
-                    position_ids[i, :cur_len] = torch.arange(
+                    position_ids[i, :cur_len] = torch.arrange(
                         0,
                         cur_len,
                         dtype=position_ids.dtype,

@@ -29,20 +29,20 @@ uv python install 3.13 # Or pick another version.
 ## Known venv patches (re-apply after reinstalling these packages)
 
 - `antlr4-python3-runtime==4.9.3` (pinned by omegaconf 2.3) is not Python 3.13
-  compatible out of the box. After any reinstall, re-apply:
+    compatible out of the box. After any reinstall, re-apply:
 
-  ```bash
-  grep -rl "typing.io" .venv/lib/python3.13/site-packages/antlr4/ \
-    | xargs sed -i 's/from typing.io import/from typing import/'
-  ```
+    ```bash
+    grep -rl "typing.io" .venv/lib/python3.13/site-packages/antlr4/ \
+      | xargs sed -i 's/from typing.io import/from typing import/'
+    ```
 
 - `lmms-eval==0.7.1` wheel ships without the extensionless
-  `_default_template_yaml` task includes (upstream packaging bug); copy them
-  from the source tarball of the same tag:
+    `_default_template_yaml` task includes (upstream packaging bug); copy them
+    from the source tarball of the same tag:
 
-  ```bash
-  curl -sL https://github.com/EvolvingLMMs-Lab/lmms-eval/archive/refs/tags/v0.7.1.tar.gz | tar xz -C /tmp
-  cd /tmp/lmms-eval-0.7.1/lmms_eval/tasks && find . -type f -exec sh -c \
-    'tgt="$VENV_TASKS/$1"; [ -f "$tgt" ] || { mkdir -p "$(dirname "$tgt")"; cp "$1" "$tgt"; }' _ {} \;
-  # with VENV_TASKS=<repo>/.venv/lib/python3.13/site-packages/lmms_eval/tasks
-  ```
+    ```bash
+    curl -sL https://github.com/EvolvingLMMs-Lab/lmms-eval/archive/refs/tags/v0.7.1.tar.gz | tar xz -C /tmp
+    cd /tmp/lmms-eval-0.7.1/lmms_eval/tasks && find . -type f -exec sh -c \
+      'tgt="$VENV_TASKS/$1"; [ -f "$tgt" ] || { mkdir -p "$(dirname "$tgt")"; cp "$1" "$tgt"; }' _ {} \;
+    # with VENV_TASKS=<repo>/.venv/lib/python3.13/site-packages/lmms_eval/tasks
+    ```

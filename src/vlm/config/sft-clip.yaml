@@ -1,11 +1,11 @@
 defaults:
-    - cfg
-    - model: qwen3-1.7b-clip
-    - trainer: finetune
-    - inference: default
-    - dataset: energon-vision
-    - override hydra/job_logging: rich
-    - _self_
+  - cfg
+  - model: qwen3-1.7b-clip
+  - trainer: finetune
+  - inference: default
+  - dataset: energon-vision
+  - override hydra/job_logging: rich
+  - _self_
 
 # Encoder-ablation arm of sft-unified: identical data (energon-vision blend),
 # template (qwen_2_5), schedule, batch shape and learning rate — the only
@@ -16,41 +16,41 @@ defaults:
 # Cluster launch: CONFIG_NAME=sft-clip sbatch train8.slurm
 
 trainer:
-    version: qwen_2_5
-    deepspeed: zero2.json
-    group_by_modality_length: false
-    from_pretrained: null
-    # Full-parameter: unfreeze the CLIP tower as well (finetune's unfreeze
-    # group keeps it frozen by default).
-    unfreeze:
-        train_vision_model: true
-    # Nominal only under dataset.batch_token_budget (the loader sizes each
-    # bucket batch itself); acc=1 -> one token-budget micro per optimizer step.
-    per_device_train_batch_size: 256
-    gradient_accumulation_steps: 1
-    # Same sqrt-scaled lr as sft-unified, uniformly on all groups — including
-    # the tower (deliberate experimental choice; 1/10 tower lr is the usual
-    # CLIP-preserving alternative).
-    learning_rate:
-        language_model_learning_rate: 6e-5
-        connector_learning_rate: 6e-5
-        visual_encoder_learning_rate: 6e-5
-        default_lr: 6e-5
-    max_steps: 20000
-    save_steps: 1000
-    # Keep EVERY checkpoint (20 x ~29GB) for checkpoint-wise eval curves.
-    save_total_limit: null
-    loss_chunk_size: 1024
-    include_num_input_tokens_seen: non_padding
+  version: qwen_2_5
+  deepspeed: zero2.json
+  group_by_modality_length: false
+  from_pretrained: null
+  # Full-parameter: unfreeze the CLIP tower as well (finetune's unfreeze
+  # group keeps it frozen by default).
+  unfreeze:
+    train_vision_model: true
+  # Nominal only under dataset.batch_token_budget (the loader sizes each
+  # bucket batch itself); acc=1 -> one token-budget micro per optimizer step.
+  per_device_train_batch_size: 256
+  gradient_accumulation_steps: 1
+  # Same sqrt-scaled lr as sft-unified, uniformly on all groups — including
+  # the tower (deliberate experimental choice; 1/10 tower lr is the usual
+  # CLIP-preserving alternative).
+  learning_rate:
+    language_model_learning_rate: 6e-5
+    connector_learning_rate: 6e-5
+    visual_encoder_learning_rate: 6e-5
+    default_lr: 6e-5
+  max_steps: 20000
+  save_steps: 1000
+  # Keep EVERY checkpoint (20 x ~29GB) for checkpoint-wise eval curves.
+  save_total_limit: null
+  loss_chunk_size: 1024
+  include_num_input_tokens_seen: non_padding
 
 hydra:
-    job:
-        chdir: true
-    job_logging:
-        root:
-            level: INFO
-    run:
-        dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
-    sweep:
-        dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
-        subdir: ${hydra.job.num}
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: INFO
+  run:
+    dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

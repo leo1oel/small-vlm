@@ -389,9 +389,7 @@ def prepare_media_inputs(
             from types import SimpleNamespace
 
             if image_aspect_ratio is None:
-                image_aspect_ratio = (
-                    getattr(model.config, "image_aspect_ratio", None) or "pad"
-                )
+                image_aspect_ratio = getattr(model.config, "image_aspect_ratio", None) or "pad"
             if len(pil_images) > 1:
                 # Training forces square-padding for multi-image samples on the
                 # classic path (energon _process_images; dataset.py overwrite).

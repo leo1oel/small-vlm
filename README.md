@@ -92,8 +92,8 @@ from vlm.inference import eval_model
 eval_model(
     "outputs/qwen3-1.7b-unified/finetune/.../checkpoint-20000",
     query="What is in the image?",
-    image_path="cat.jpg",      # also accepts a list of paths/PIL images
-    audio_path="speech.wav",   # optional (unified models with audio enabled)
+    image_path="cat.jpg",  # also accepts a list of paths/PIL images
+    audio_path="speech.wav",  # optional (unified models with audio enabled)
 )
 ```
 
@@ -109,15 +109,15 @@ print(generate_response(model, processor, "Describe the image.", images="cat.jpg
 Notes:
 
 - The conversation template is read from `conversation_version` in the checkpoint's
-  `config.json` (recorded at training time from `trainer.version`). For older checkpoints
-  pass `conv_mode=` explicitly: `"plain"` for stage-1 pretrain, `"qwen_2_5"` for SFT.
+    `config.json` (recorded at training time from `trainer.version`). For older checkpoints
+    pass `conv_mode=` explicitly: `"plain"` for stage-1 pretrain, `"qwen_2_5"` for SFT.
 - Stage-1 (`plain`) models are caption/transcript models: the query text is ignored and the
-  model continues from the media placeholders directly.
+    model continues from the media placeholders directly.
 - Interleaved/multi-image prompts: put one `<image>`/`<audio>` placeholder per item in the
-  query; without placeholders they are prepended automatically (images first).
+    query; without placeholders they are prepended automatically (images first).
 - Input preprocessing mirrors training exactly (RawImageProcessor raw patches +
-  `image_position_ids` for encoder-free checkpoints, square-pad pixel batches for legacy
-  ones, 16 kHz waveform frames for audio); `tests/test_inference.py` pins the parity.
+    `image_position_ids` for encoder-free checkpoints, square-pad pixel batches for legacy
+    ones, 16 kHz waveform frames for audio); `tests/test_inference.py` pins the parity.
 
 ## LLaVA Reproduction Results (Using [lmms-eval](https://github.com/EvolvingLMMs-Lab/lmms-eval))
 

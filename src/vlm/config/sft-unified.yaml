@@ -1,11 +1,11 @@
 defaults:
-    - cfg
-    - model: qwen3-1.7b-unified
-    - trainer: finetune # unfreeze=LM+connector
-    - inference: default
-    - dataset: energon-vision
-    - override hydra/job_logging: rich
-    - _self_
+  - cfg
+  - model: qwen3-1.7b-unified
+  - trainer: finetune # unfreeze=LM+connector
+  - inference: default
+  - dataset: energon-vision
+  - override hydra/job_logging: rich
+  - _self_
 
 # Direct SFT for the encoder-free unified model: no stage-1 connector
 # pretrain — train the randomly-initialized image connector jointly with the
@@ -21,65 +21,65 @@ defaults:
 #     trainer.attn_implementation=sdpa trainer.report_to=none
 
 model:
-    audio:
-        # Vision-only run: skip the audio connector entirely (no audio data
-        # in the blend; flip back on when training the full unified model).
-        enabled: false
+  audio:
+    # Vision-only run: skip the audio connector entirely (no audio data
+    # in the blend; flip back on when training the full unified model).
+    enabled: false
 
 trainer:
-    # Multi-turn Qwen chatml template. The finetune default (v1/vicuna) is the
-    # wrong dialect for Qwen3, and the plain caption template hard-asserts
-    # exactly 2 turns — both would break on this instruct data.
-    version: qwen_2_5
-    # 1.7B trainable fits ZeRO-2 comfortably on 4x L40; cheaper than the zero3
-    # default the finetune trainer carries for 7B-scale runs.
-    deepspeed: zero2.json
-    # Length-grouped sampling needs a map-style dataset; energon streams.
-    group_by_modality_length: false
-    # Direct SFT from the HF backbone — ignore any stage-1 checkpoint env var.
-    from_pretrained: null
-    # Nominal only under dataset.batch_token_budget (the loader sizes each
-    # bucket batch itself); acc=1 -> one token-budget micro per optimizer step.
-    per_device_train_batch_size: 256
-    gradient_accumulation_steps: 1
-    # sqrt-scaled from the 2e-5 @ effective-64 baseline for effective ~1024.
-    learning_rate:
-        language_model_learning_rate: 6e-5
-        connector_learning_rate: 6e-5
-        visual_encoder_learning_rate: 6e-5 # no-op for encoder-free; pinned for the CLIP ablation
-        default_lr: 6e-5
-    # energon streaming has no epoch length — step-based stopping is required.
-    # 20k steps @ ~1000 samples/step (token budget tuned against the
-    # measured samples_seen_session rate) ≈ 20M samples (~43% of the blend);
-    # save_steps 1000 -> exactly 20 checkpoints.
-    max_steps: 20000
-    # ckpt-partition jobs get preempted well within train.slurm's 4h walltime —
-    # checkpoint often enough that requeues never lose much progress
-    # (save_only_model is already false in trainer/finetune.yaml, so these
-    # checkpoints resume exactly: optimizer + scheduler + energon stream).
-    save_steps: 1000
-    # Keep EVERY checkpoint (20 x ~27GB ≈ 550GB/arm) for checkpoint-wise
-    # eval curves; /gscratch/krishna group quota is the constraint to watch.
-    save_total_limit: null
-    # Chunked CE: never materialize the (batch*seq, 152k-vocab) fp32 logits
-    # (~10-25GB at bs4) — drops ignored positions before lm_head, then fp32
-    # CE in 1024-token chunks. Exact same math as the full-logits loss
-    # (parity-tested); frees the VRAM that previously capped the batch size.
-    loss_chunk_size: 1024
-    # Extra wandb accounting: per-log-step real (non-padding) input tokens +
-    # tokens/sec from transformers; total_flos / samples_seen / TFLOPs-per-GPU
-    # are added by VLMTrainer.log (FLOPs use the spliced effective length —
-    # each image counts as its soft tokens, not 1 sentinel).
-    include_num_input_tokens_seen: non_padding
+  # Multi-turn Qwen chatml template. The finetune default (v1/vicuna) is the
+  # wrong dialect for Qwen3, and the plain caption template hard-asserts
+  # exactly 2 turns — both would break on this instruct data.
+  version: qwen_2_5
+  # 1.7B trainable fits ZeRO-2 comfortably on 4x L40; cheaper than the zero3
+  # default the finetune trainer carries for 7B-scale runs.
+  deepspeed: zero2.json
+  # Length-grouped sampling needs a map-style dataset; energon streams.
+  group_by_modality_length: false
+  # Direct SFT from the HF backbone — ignore any stage-1 checkpoint env var.
+  from_pretrained: null
+  # Nominal only under dataset.batch_token_budget (the loader sizes each
+  # bucket batch itself); acc=1 -> one token-budget micro per optimizer step.
+  per_device_train_batch_size: 256
+  gradient_accumulation_steps: 1
+  # sqrt-scaled from the 2e-5 @ effective-64 baseline for effective ~1024.
+  learning_rate:
+    language_model_learning_rate: 6e-5
+    connector_learning_rate: 6e-5
+    visual_encoder_learning_rate: 6e-5 # no-op for encoder-free; pinned for the CLIP ablation
+    default_lr: 6e-5
+  # energon streaming has no epoch length — step-based stopping is required.
+  # 20k steps @ ~1000 samples/step (token budget tuned against the
+  # measured samples_seen_session rate) ≈ 20M samples (~43% of the blend);
+  # save_steps 1000 -> exactly 20 checkpoints.
+  max_steps: 20000
+  # ckpt-partition jobs get preempted well within train.slurm's 4h walltime —
+  # checkpoint often enough that requeues never lose much progress
+  # (save_only_model is already false in trainer/finetune.yaml, so these
+  # checkpoints resume exactly: optimizer + scheduler + energon stream).
+  save_steps: 1000
+  # Keep EVERY checkpoint (20 x ~27GB ≈ 550GB/arm) for checkpoint-wise
+  # eval curves; /gscratch/krishna group quota is the constraint to watch.
+  save_total_limit: null
+  # Chunked CE: never materialize the (batch*seq, 152k-vocab) fp32 logits
+  # (~10-25GB at bs4) — drops ignored positions before lm_head, then fp32
+  # CE in 1024-token chunks. Exact same math as the full-logits loss
+  # (parity-tested); frees the VRAM that previously capped the batch size.
+  loss_chunk_size: 1024
+  # Extra wandb accounting: per-log-step real (non-padding) input tokens +
+  # tokens/sec from transformers; total_flos / samples_seen / TFLOPs-per-GPU
+  # are added by VLMTrainer.log (FLOPs use the spliced effective length —
+  # each image counts as its soft tokens, not 1 sentinel).
+  include_num_input_tokens_seen: non_padding
 
 hydra:
-    job:
-        chdir: true
-    job_logging:
-        root:
-            level: INFO
-    run:
-        dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
-    sweep:
-        dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
-        subdir: ${hydra.job.num}
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: INFO
+  run:
+    dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}
