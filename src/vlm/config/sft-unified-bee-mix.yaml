@@ -18,3 +18,7 @@ defaults:
 trainer:
     max_steps: 5000
     save_steps: 500
+    # Pairs with batch_token_budget 32000 (see energon-vision-bee.yaml):
+    # 32k x 4 x 2 = 256k tokens/optimizer step, same effective batch as the
+    # 64k/acc1 plan that OOMed on 48G tail batches.
+    gradient_accumulation_steps: 2

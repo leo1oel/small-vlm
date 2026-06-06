@@ -34,14 +34,16 @@ shuffle_buffer_size: 1000
 # cluster is ~19% of all samples — worth its own bucket to avoid padding it
 # to 512.
 length_buckets: [320, 512, 768, 1024, 1536, 2304, 4096]
-# 48GB (A40/L40/L40S) budget, probed 2026-06-06 on 4x A40 with THIS config
-# (devtools/budget_probe_l40s.slurm): 76750 OOMed at step 43 (long-bucket
-# tail batch, peak = capacity); 68000 passed 50 steps clean but with only
-# ~7% true headroom — production runs meet ~100x more tail batches and an
-# OOM mid-run crash-loops on requeue (exact stream resume replays the same
-# batch). 64000 buys real margin for ~5% effective batch. ~480 samples/step
-# at acc=1 (~256k tokens/step; 6e-5 stays on the repo's sqrt lr rule).
-batch_token_budget: 64000
+# 48GB (A40/L40/L40S) budget, settled the hard way (2026-06-06, 4x A40/L40S):
+# 76750 OOMed at probe step 43; 68000 passed 50 probe steps at ~44.7G true
+# peak; 64000 STILL OOMed in production at step 434 (deep-tail batch) — the
+# unmodeled fixed overhead on 48G leaves ~1GB margin at 64k. Fix: HALVE the
+# micro-batch tokens and recover the effective batch with
+# gradient_accumulation_steps=2 in the trainer (32000 x 4 GPUs x acc2 =
+# 256k tokens/optimizer step — identical optimizer trajectory semantics,
+# ~480 samples/step, ~8-10GB headroom). Token-budget bucketing keeps micros
+# ~equal-tokens, so acc averaging stays ≈ token-weighted.
+batch_token_budget: 32000
 max_samples_per_sequence: 100 # randomness vs. sequential-read efficiency
 # Azure blob fetch latency is fat-tailed (median ~50ms, p90 5-14s measured
 # 2026-06): workers fetch media synchronously per sample, so throughput ≈
