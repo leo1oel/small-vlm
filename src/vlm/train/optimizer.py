@@ -27,6 +27,7 @@ def configure_optimizers(model: PreTrainedModel | nn.Module, trainer_config: Tra
         "vision_model": "vision_model",
         "connector": "connector",
         "lm_head": "model",
+        "visual_aux_head": "visual_aux_head",
     }
 
     for component, params_list in grouped_params.items():
@@ -84,6 +85,16 @@ def build_optimizer_params(
         "connector": {
             "weight_decay": trainer_config.connector_wd,
             "learning_rate": trainer_config.connector_lr,
+        },
+        "visual_aux_head": {
+            # None falls back to the run's default lr / the LM weight decay —
+            # the head is fresh, so a higher dedicated lr is a legitimate dial.
+            "weight_decay": trainer_config.visual_aux_head_wd
+            if trainer_config.visual_aux_head_wd is not None
+            else trainer_config.language_model_wd,
+            "learning_rate": trainer_config.visual_aux_head_lr
+            if trainer_config.visual_aux_head_lr is not None
+            else trainer_config.learning_rate,
         },
     }
 

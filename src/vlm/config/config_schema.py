@@ -71,12 +71,32 @@ class AudioConfig:
 
 
 @dataclass
+class VisualAuxConfig:
+    """Visual auxiliary prediction loss at image positions (spec:
+    docs/superpowers/specs/2026-06-06-visual-aux-loss-design.md). Structural
+    dials only — they size the head module, so they live on the model config
+    (the loss weight/layer are trainer dials). "none" = no head built,
+    bit-identical baseline path."""
+
+    # none | aim_pixel (next-patch z-scored pixel MSE, AIM/AIMv2-style)
+    #      | nepa (next-patch connector-embedding cosine, stop-grad target)
+    objective: str = "none"
+    # Head MLP: depth 1 = single Linear; depth d = (d-1) x [Linear, GELU] + Linear.
+    head_depth: int = 2
+    # Internal width of the head MLP (input is always the LM hidden size).
+    # Default matches the Qwen3-1.7B hidden size — set explicitly for other
+    # backbone sizes (the head does not auto-scale).
+    head_hidden: int = 2048
+
+
+@dataclass
 class ModelConfig:
     name: str = MISSING
     visual_encoder: VisualEncoderConfig = field(default_factory=VisualEncoderConfig)
     language_model: LanguageModelConfig = field(default_factory=LanguageModelConfig)
     connector: ConnectorConfig = field(default_factory=ConnectorConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
+    visual_aux: VisualAuxConfig = field(default_factory=VisualAuxConfig)
 
 
 @dataclass
@@ -215,6 +235,19 @@ class TrainerConfig:
     # gradient coupling, arXiv:2603.26663); default False follows the
     # LayerSkip shared-with-grad recipe (arXiv:2404.16710).
     aux_exit_detach: bool = False
+    # Visual-aux loss weight λ (spec 2026-06-06): only read when
+    # model.visual_aux.objective != "none". L = L_CE + λ·L_visual.
+    # AIMv2's literature prior is α=0.4 (arXiv:2411.14402); 0.5 is the
+    # user-set value for both v1 arms (spec decision 2026-06-06).
+    visual_aux_weight: float = 0.5
+    # null = attach the head to the post-final-norm last hidden state;
+    # k = decode layer k's output through the shared final RMSNorm first
+    # (aux-exit capture mechanism; valid [1, n_layers-1]).
+    visual_aux_layer: int | None = None
+    # Optimizer dials for the (always-trainable) head; None falls back to
+    # default_lr / language_model weight decay.
+    visual_aux_head_lr: float | None = None
+    visual_aux_head_wd: float | None = None
     # Native transformers token accounting, surfaced per log step in wandb
     # (num_input_tokens_seen + train tokens/sec): "non_padding" sums
     # attention_mask across ranks (small per-step gather), "all" counts

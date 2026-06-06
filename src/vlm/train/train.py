@@ -54,6 +54,43 @@ def validate_aux_exit_config(
     return layers
 
 
+def validate_visual_aux_config(
+    objective: Any,
+    layer: Any,
+    num_hidden_layers: int,
+    loss_chunk_size: int,
+    encoder_free: bool,
+) -> tuple[str, int | None]:
+    """Validate the visual-aux dials (spec:
+    docs/superpowers/specs/2026-06-06-visual-aux-loss-design.md). Returns the
+    normalized (objective, layer) as plain python types (config.json-safe)."""
+    objective = str(objective or "none")
+    if objective == "none":
+        return "none", None
+    if objective not in ("aim_pixel", "nepa"):
+        raise ValueError(f"model.visual_aux.objective {objective!r} not in (none, aim_pixel, nepa)")
+    if loss_chunk_size <= 0:
+        raise ValueError(
+            "model.visual_aux.objective requires trainer.loss_chunk_size > 0 — the "
+            "visual aux loss is implemented only in the chunked-CE training path"
+        )
+    if not encoder_free:
+        raise ValueError(
+            "visual_aux supports only the encoder-free (raw_patch) path: targets "
+            "are raw patch rows / connector embedding rows, which the classic "
+            "vision-tower path does not produce"
+        )
+    if layer is None:
+        return objective, None
+    k = int(layer)
+    if not 1 <= k <= num_hidden_layers - 1:
+        raise ValueError(
+            f"trainer.visual_aux_layer {k} out of range [1, {num_hidden_layers - 1}] "
+            f"for a {num_hidden_layers}-layer backbone"
+        )
+    return objective, k
+
+
 def validate_energon_args(training_args: TrainingArguments) -> None:
     """The streaming loader has no epoch length and does its own sampling, so a
     few HF Trainer features are structurally unavailable — fail loud upfront.
@@ -126,6 +163,33 @@ def train(
             "(weight must be > 0) — this run is an exact baseline duplicate",
             model.config.aux_exit_layers,
             model.config.aux_exit_weight,
+        )
+
+    # Visual-aux (spec 2026-06-06): objective/head dials were placed on
+    # model.config at build time (load_model); validate them against the real
+    # backbone and copy the trainer-side dials next to them.
+    va_objective, va_layer = validate_visual_aux_config(
+        getattr(model.config, "visual_aux_objective", "none"),
+        training_args.visual_aux_layer,
+        num_hidden_layers=len(model.model.layers),
+        loss_chunk_size=int(training_args.loss_chunk_size),
+        encoder_free=model.model.vision_model is None,
+    )
+    model.config.visual_aux_weight = float(training_args.visual_aux_weight)
+    model.config.visual_aux_layer = va_layer
+    if va_objective != "none" and getattr(model, "visual_aux_head", None) is None:
+        raise ValueError(
+            "visual_aux objective is set but the model has no visual_aux_head — "
+            "was the model loaded from an understanding-only checkpoint?"
+        )
+    if va_objective != "none" and model.config.visual_aux_weight <= 0.0:
+        # Loud, mirroring the aux-exit guard: this arm would silently train
+        # as a pure baseline duplicate — almost certainly a run-config typo.
+        log.warning(
+            "visual_aux_objective=%s but visual_aux_weight=%s: the visual aux loss "
+            "is DISABLED (weight must be > 0) — this run is an exact baseline duplicate",
+            va_objective,
+            model.config.visual_aux_weight,
         )
 
     model.config.use_cache = False
