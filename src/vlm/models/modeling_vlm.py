@@ -428,6 +428,13 @@ def create_dynamic_causal_vlm_class(
         )
         aux_weight = float(getattr(self.config, "aux_exit_weight", 0.0) or 0.0)
         aux_active = bool(aux_layers) and aux_weight > 0.0
+        # Visual-aux loss (spec 2026-06-06): forward only passes
+        # image_block_ids when the head exists, λ > 0 and we're training,
+        # so its presence is the single activation signal here.
+        va_objective = str(getattr(self.config, "visual_aux_objective", "none") or "none")
+        va_weight = float(getattr(self.config, "visual_aux_weight", 0.0) or 0.0)
+        va_layer = getattr(self.config, "visual_aux_layer", None)
+        va_active = image_block_ids is not None and va_objective != "none" and va_weight > 0.0
         captured: dict[int, Tensor] = {}
         handles = []
         if aux_active:
@@ -440,16 +447,20 @@ def create_dynamic_causal_vlm_class(
                     f"k == {num_layers} would duplicate the main loss"
                 )
 
-            def _make_capture(k: int):
-                def _capture(_mod: Any, _args: Any, out: Any) -> None:
-                    captured[k] = out[0] if isinstance(out, tuple) else out
+        def _make_capture(k: int):
+            def _capture(_mod: Any, _args: Any, out: Any) -> None:
+                captured[k] = out[0] if isinstance(out, tuple) else out
 
-                return _capture
+            return _capture
 
-            for k in aux_layers:
-                handles.append(
-                    self.model.layers[k - 1].register_forward_hook(_make_capture(k))
-                )
+        capture_layers = sorted(
+            set(aux_layers if aux_active else [])
+            | ({int(va_layer)} if (va_active and va_layer) else set())
+        )
+        for k in capture_layers:
+            handles.append(
+                self.model.layers[k - 1].register_forward_hook(_make_capture(k))
+            )
         try:
             outputs = self.model(
                 input_ids=input_ids,
@@ -474,6 +485,8 @@ def create_dynamic_causal_vlm_class(
         flat_targets = shift_targets.reshape(-1).to(flat_hidden.device)
         valid = flat_targets != -100
         n_valid = int(valid.sum())
+        components: dict[str, Tensor] = {}
+        zero = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
         if n_valid == 0:
             # Degenerate batch with every target ignored (the reference path
             # would produce NaN): emit an exact-zero loss that still touches
@@ -482,8 +495,8 @@ def create_dynamic_causal_vlm_class(
             if aux_active:
                 # Keep the log-time component stash rank-symmetric even on
                 # all-ignored batches (VLMTrainer.log all-reduces it).
-                zero = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
-                self._last_ce_components = {"ce_final": zero, "ce_aux": zero}
+                components["ce_final"] = zero
+                components["ce_aux"] = zero
         else:
             hidden_valid = flat_hidden[valid]
             targets_valid = flat_targets[valid]
@@ -543,11 +556,79 @@ def create_dynamic_causal_vlm_class(
                     aux_sum = aux_sum + total_k / n_valid
                 # ce_aux = unweighted sum of per-exit mean CEs (λ-independent);
                 # VLMTrainer.log all-reduces and emits both components.
-                self._last_ce_components = {
-                    "ce_final": loss.detach(),
-                    "ce_aux": aux_sum.detach(),
-                }
+                components["ce_final"] = loss.detach()
+                components["ce_aux"] = aux_sum.detach()
                 loss = loss + aux_weight * aux_sum
+
+        if va_active:
+            # Visual-aux loss (spec 2026-06-06 §2): predict the NEXT patch of
+            # each image block from the hidden state at the current patch.
+            # aim_pixel: z-scored pixel MSE (mean over patch dims — sum would
+            # silently re-weight CE:visual whenever patch geometry changes).
+            # nepa: bidirectional L2-norm negative cosine vs the DETACHED
+            # connector embedding (SimSiam stop-grad collapse guard).
+            h_for_va = hidden_states
+            if va_layer:
+                h_k = captured.get(int(va_layer))
+                if h_k is None:
+                    raise RuntimeError(
+                        f"visual_aux_layer {va_layer}: forward hook captured nothing"
+                    )
+                if torch.is_grad_enabled() and not h_k.requires_grad:
+                    raise RuntimeError(
+                        f"visual_aux_layer {va_layer}: captured hidden states are "
+                        "not graph-connected — the visual aux loss would silently "
+                        "train nothing"
+                    )
+                # Raw layer outputs are unnormed; decode through the shared
+                # final norm exactly like the aux-exit branch above.
+                h_for_va = self.model.norm(h_k)
+            targets_src = images if va_objective == "aim_pixel" else image_features
+            num_rows = [int(t.shape[0]) for t in (targets_src or [])]
+            flat_pos, segments = build_visual_aux_pairs(
+                image_block_ids.to(flat_hidden.device), num_rows
+            )
+            if not segments:
+                # No prediction pairs in this microbatch (text-only / 1-patch
+                # images): exact-zero anchor keeps the head's params in the
+                # graph every step (deepspeed pattern, same as the n_valid==0
+                # lm_head anchor above).
+                loss = loss + self.visual_aux_head(flat_hidden[:1]).float().sum() * 0.0
+                components["visual_aux"] = zero
+                if va_objective == "nepa":
+                    components["visual_aux_cos"] = zero
+                    components["visual_aux_tgt_std"] = zero
+            else:
+                flat_va_hidden = h_for_va.reshape(-1, h_for_va.shape[-1])
+                preds_in = flat_va_hidden[flat_pos]
+                targets = prepare_visual_aux_targets(va_objective, targets_src, segments).to(
+                    preds_in.device
+                )
+                n_pairs = preds_in.shape[0]
+                va_total = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
+                cos_total = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
+                for pred_chunk, target_chunk in zip(
+                    preds_in.split(chunk_size), targets.split(chunk_size), strict=True
+                ):
+                    pred = self.visual_aux_head(pred_chunk).float()
+                    if va_objective == "aim_pixel":
+                        va_total = va_total + (pred - target_chunk).pow(2).mean(dim=-1).sum()
+                    else:
+                        pred = nn.functional.normalize(pred, dim=-1)
+                        cos = (pred * target_chunk).sum(dim=-1)
+                        cos_total = cos_total + cos.sum()
+                        va_total = va_total - cos.sum()
+                va_loss = va_total / n_pairs
+                loss = loss + va_weight * va_loss
+                # Unweighted (λ-independent) component + nepa collapse alarms:
+                # cos → 1 with tgt_std → 0 is the collapse signature.
+                components["visual_aux"] = va_loss.detach()
+                if va_objective == "nepa":
+                    components["visual_aux_cos"] = (cos_total / n_pairs).detach()
+                    components["visual_aux_tgt_std"] = targets.std(dim=0).mean().detach()
+
+        if components:
+            self._last_ce_components = components
         return CausalLMOutputWithPast(
             loss=loss,
             logits=None,
