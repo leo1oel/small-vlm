@@ -308,5 +308,6 @@ def get_training_args(config: TrainerConfig) -> TrainingArguments:
         resume_from_checkpoint=config.resume_from_checkpoint,
         seed=config.seed,
         data_seed=config.seed,
+        ddp_timeout=config.ddp_timeout,
         optim=config.optim,
     )
