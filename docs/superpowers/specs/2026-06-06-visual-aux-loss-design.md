@@ -163,14 +163,18 @@ objective is `nepa`), `image_block_ids`.
 
 | File | Change |
 |---|---|
-| `src/vlm/config/config_schema.py` (`TrainerConfig`) | `visual_aux_objective: str = "none"` (`none\|aim_pixel\|nepa`; registry leaves room for `flow_matching`/`ross_denoise` later), `visual_aux_weight: float = 0.4`, `visual_aux_head_depth: int = 2`, `visual_aux_head_hidden: int = 2048`, `visual_aux_layer: int \| None = None`, `visual_aux_head_lr: float \| None = None` (None → default_lr), `visual_aux_head_wd: float \| None = None` (None → language_model_wd) + doc comments |
+| `src/vlm/config/config_schema.py` (`TrainerConfig`) | structural dials `model.visual_aux.{objective, head_depth, head_hidden}` (ModelConfig section) + trainer dials `visual_aux_weight: float = 0.5`, `visual_aux_layer: int | None`, `visual_aux_head_lr/wd: float | None` on TrainerConfig |
 | `src/vlm/train/training_arguments.py` | same fields; pass through in `get_training_args` |
 | `src/vlm/train/train.py` | validate: objective in the registry; `loss_chunk_size > 0` when active; `visual_aux_layer` in `[1, num_hidden_layers − 1]` when set; weight > 0 warning-if-zero (mirror aux-exit's loud-warning commit 63bd8c9). Copy plain Python scalars to `model.config` (no OmegaConf leakage into `config.json`). The model **builds the head in `__init__`** from `model.config` fields (so `from_pretrained` re-creates it); train.py only validates + copies trainer-side knobs (λ, lr). |
 | `src/vlm/models/modeling_vlm.py` + `templates/modeling_vlm.py.j2` | head construction gated on `config.visual_aux_objective != "none"` (audio-connector pattern: absent → attribute is `None`); loss per §3.4; template mirrored so exported checkpoints carry the head code |
-| `src/vlm/models/configuration_vlm.py` + `.j2` | persist `visual_aux_objective/head_depth/head_hidden/layer` on the config (needed to rebuild the head at load) |
+| `src/vlm/models/configuration_vlm.py` + `.j2` | no change needed — `visual_aux_*` keys ride the config kwargs passthrough (`conversation_version` precedent) |
 | `src/vlm/train/set_trainable.py` | `component_prefixes["visual_aux_head"] = ["visual_aux_head"]` — **without this the head's params silently fall through to the `language_model` group** (set_trainable.py:61–66) and take the LM lr; also verify the freeze flags never touch it (it must stay trainable in every recipe) |
 | `src/vlm/train/optimizer.py` | `component_to_config["visual_aux_head"] = "visual_aux_head"`; `component_configs["visual_aux_head"] = {lr: visual_aux_head_lr or default, wd: visual_aux_head_wd or language_model_wd}` |
 | `src/vlm/config/sft-unified-aimpixel.yaml`, `sft-unified-nepa.yaml` (new) | `defaults: [sft-unified, _self_]` + the objective/λ; seeds untouched → identical energon data order to the baseline |
+
+Refinement during implementation (2026-06-06): structural dials moved from
+TrainerConfig to `model.visual_aux` so the causal `__init__` can build the
+head from the config it is constructed with.
 
 ### 3.6 What must NOT change (live-baseline safety)
 

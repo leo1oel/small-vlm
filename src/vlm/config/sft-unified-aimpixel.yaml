@@ -1,0 +1,15 @@
+defaults:
+    - sft-unified
+    - _self_
+
+# Visual-aux arm 1 (spec 2026-06-06): next-patch PIXEL prediction at image
+# positions (AIM/AIMv2-style; per-patch z-scored MSE through a fresh 2-layer
+# MLP head). Same data order/seed as the sft-unified baseline.
+# Launch: CONFIG_NAME=sft-unified-aimpixel sbatch train.slurm
+
+model:
+    visual_aux:
+        objective: aim_pixel
+
+trainer:
+    visual_aux_weight: 0.5
