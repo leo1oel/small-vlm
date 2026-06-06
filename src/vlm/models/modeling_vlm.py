@@ -318,17 +318,33 @@ def create_dynamic_causal_vlm_class(
                 image_features, _ = self.encode_images(images)
         if audios is not None:
             audio_features = self.encode_raw_audio(audios)
+        # Visual-aux gating (spec 2026-06-06): block ids are built only when
+        # the head exists, λ > 0, and we are on the training-loss path.
+        visual_aux_on = (
+            self.training
+            and labels is not None
+            and getattr(self, "visual_aux_head", None) is not None
+            and float(getattr(self.config, "visual_aux_weight", 0.0) or 0.0) > 0.0
+        )
+        image_block_ids = None
         if inputs_embeds is None:
-            (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = (
-                self.prepare_inputs_labels_for_multimodal(
-                    input_ids,
-                    position_ids,
-                    attention_mask,
-                    past_key_values,
-                    labels,
-                    image_features,
-                    audio_features,
-                )
+            (
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                inputs_embeds,
+                labels,
+                image_block_ids,
+            ) = self.prepare_inputs_labels_for_multimodal(
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                labels,
+                image_features,
+                audio_features,
+                with_image_block_ids=visual_aux_on,
             )
         loss_chunk_size = getattr(self.config, "loss_chunk_size", 0) or 0
         if (
@@ -338,6 +354,7 @@ def create_dynamic_causal_vlm_class(
             and not output_attentions
             and not output_hidden_states
         ):
+            va_objective = str(getattr(self.config, "visual_aux_objective", "none") or "none")
             return self.chunked_ce_forward(
                 input_ids=input_ids,
                 inputs_embeds=inputs_embeds,
@@ -347,6 +364,11 @@ def create_dynamic_causal_vlm_class(
                 labels=labels,
                 use_cache=use_cache,
                 chunk_size=loss_chunk_size,
+                images=images if (visual_aux_on and va_objective == "aim_pixel") else None,
+                image_features=image_features
+                if (visual_aux_on and va_objective == "nepa")
+                else None,
+                image_block_ids=image_block_ids,
             )
         return super(self.__class__, self).forward(
             input_ids=input_ids,
@@ -371,6 +393,10 @@ def create_dynamic_causal_vlm_class(
         labels: LongTensor,
         use_cache: bool | None,
         chunk_size: int,
+        # consumed by the visual-aux loss (wired in the loss body below)
+        images: list[Tensor] | None = None,
+        image_features: list[Tensor] | None = None,
+        image_block_ids: LongTensor | None = None,
     ) -> CausalLMOutputWithPast:
         """Training-only loss path that never materializes the full
         (batch*seq, vocab) fp32 logits: ignore_index positions are dropped
@@ -553,7 +579,7 @@ def create_dynamic_causal_vlm_class(
                     image_features, _ = self.encode_images(images)
             if audios is not None:
                 audio_features = self.encode_raw_audio(audios)
-            (_, position_ids, attention_mask, _, inputs_embeds, _) = (
+            (_, position_ids, attention_mask, _, inputs_embeds, _, _) = (
                 self.prepare_inputs_labels_for_multimodal(
                     inputs,
                     position_ids,
@@ -757,6 +783,7 @@ def create_dynamic_causal_vlm_class(
         labels: LongTensor | None = None,
         image_features: Tensor | None = None,
         audio_features: list[Tensor] | None = None,
+        with_image_block_ids: bool = False,
     ) -> tuple[
         Tensor | None,
         LongTensor | None,
@@ -764,9 +791,10 @@ def create_dynamic_causal_vlm_class(
         list[FloatTensor] | None,
         Tensor | None,
         LongTensor | None,
+        LongTensor | None,
     ]:
         if (image_features is None and audio_features is None) or input_ids.shape[1] == 1:  # pyright: ignore
-            return input_ids, position_ids, attention_mask, past_key_values, None, labels
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None
 
         # Let's just add dummy tensors if they do not exist,
         # it is a headache to deal with None all the time.
@@ -817,6 +845,10 @@ def create_dynamic_causal_vlm_class(
 
         new_input_embeds = []
         new_labels = []
+        # Visual-aux block-id tracking (spec 2026-06-06 §3.2): which spliced
+        # positions belong to which image (flat batch-cursor index). Built only
+        # on request so the baseline assembly loop stays byte-identical.
+        new_image_block_ids: list[Tensor] | None = [] if with_image_block_ids else None
         for batch_idx, cur_input_ids in enumerate(input_ids):
             is_mm_token = torch.zeros_like(cur_input_ids, dtype=torch.bool)
             for token_index in modality_features:
@@ -835,6 +867,10 @@ def create_dynamic_causal_vlm_class(
                 cur_input_embeds = torch.cat([cur_input_embeds_1, *absent_dummies], dim=0)
                 new_input_embeds.append(cur_input_embeds)
                 new_labels.append(labels[batch_idx])  # pyright: ignore
+                if new_image_block_ids is not None:
+                    new_image_block_ids.append(
+                        torch.full_like(labels[batch_idx], -1)  # pyright: ignore
+                    )
                 continue
 
             # Split the row into text segments around the (interleaved) modality
@@ -852,14 +888,20 @@ def create_dynamic_causal_vlm_class(
             text_segment_embeds = torch.split(cur_input_embeds, split_sizes, dim=0)
             cur_new_input_embeds = []
             cur_new_labels = []
+            cur_new_block_ids: list[Tensor] = []
 
             for i in range(len(mm_positions) + 1):
                 cur_new_input_embeds.append(text_segment_embeds[i])
                 cur_new_labels.append(cur_labels_segments[i])
+                if new_image_block_ids is not None:
+                    cur_new_block_ids.append(
+                        torch.full_like(cur_labels_segments[i], -1)
+                    )
                 if i < len(mm_positions):
                     token_index = int(cur_input_ids[mm_positions[i]].item())
                     features, cursor = modality_features[token_index]
-                    cur_features = features[cursor[0]]
+                    feature_index = cursor[0]
+                    cur_features = features[feature_index]
                     cursor[0] += 1
                     cur_new_input_embeds.append(cur_features)
                     cur_new_labels.append(
@@ -870,6 +912,17 @@ def create_dynamic_causal_vlm_class(
                             dtype=cur_labels.dtype,
                         )
                     )
+                    if new_image_block_ids is not None:
+                        cur_new_block_ids.append(
+                            torch.full(
+                                (cur_features.shape[0],),
+                                feature_index
+                                if token_index == self.config.image_token_index
+                                else -1,
+                                device=cur_labels.device,
+                                dtype=cur_labels.dtype,
+                            )
+                        )
 
             cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
             cur_new_input_embeds.extend(absent_dummies)
@@ -879,12 +932,18 @@ def create_dynamic_causal_vlm_class(
 
             new_input_embeds.append(cur_new_input_embeds)
             new_labels.append(cur_new_labels)
+            if new_image_block_ids is not None:
+                new_image_block_ids.append(torch.cat(cur_new_block_ids))
 
         # Truncate sequences to max length as image embeddings can make the sequence longer
         tokenizer_model_max_length = self.config.max_seq_length
         if tokenizer_model_max_length is not None:
             new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
             new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
+            if new_image_block_ids is not None:
+                new_image_block_ids = [
+                    x[:tokenizer_model_max_length] for x in new_image_block_ids
+                ]
 
         # Combine them
         max_len = max(x.shape[0] for x in new_input_embeds)
@@ -896,6 +955,16 @@ def create_dynamic_causal_vlm_class(
             self.config.ignore_index,
             dtype=new_labels[0].dtype,
             device=new_labels[0].device,
+        )
+        image_block_ids_padded = (
+            torch.full(
+                (batch_size, max_len),
+                -1,
+                dtype=new_labels[0].dtype,
+                device=new_labels[0].device,
+            )
+            if new_image_block_ids is not None
+            else None
         )
         attention_mask = torch.zeros(
             (batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device
@@ -926,6 +995,8 @@ def create_dynamic_causal_vlm_class(
                 )
                 if cur_len > 0:
                     new_labels_padded[i, -cur_len:] = cur_new_labels
+                    if image_block_ids_padded is not None:
+                        image_block_ids_padded[i, -cur_len:] = new_image_block_ids[i]
                     attention_mask[i, -cur_len:] = True
                     position_ids[i, -cur_len:] = torch.arange(  # pyright: ignore
                         0,
@@ -949,6 +1020,8 @@ def create_dynamic_causal_vlm_class(
                 )
                 if cur_len > 0:
                     new_labels_padded[i, :cur_len] = cur_new_labels
+                    if image_block_ids_padded is not None:
+                        image_block_ids_padded[i, :cur_len] = new_image_block_ids[i]
                     attention_mask[i, :cur_len] = True
                     position_ids[i, :cur_len] = torch.arange(  # pyright: ignore
                         0,
@@ -972,7 +1045,7 @@ def create_dynamic_causal_vlm_class(
         if _position_ids is None:
             position_ids = None
 
-        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels  # pyright: ignore
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels, image_block_ids_padded  # pyright: ignore
 
     def floating_point_ops(
         self: Any, input_dict: dict[str, Any], exclude_embeddings: bool = True
