@@ -21,6 +21,9 @@ class DataArguments:
     ignore_index: int = -100
     image_token_index: int = -200
     image_aspect_ratio: str = "square"
+    # Drop the empty `<think>...</think>` prefix from assistant turns
+    # (energon path; see dataset config strip_empty_think).
+    strip_empty_think: bool = False
     # Soft tokens each image splices into (encoder path only: a fixed
     # (image_size/patch_size)^2 per tower; None on the encoder-free path,
     # where the per-image patch count is variable and read off the entry).
@@ -68,6 +71,7 @@ def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> Da
         ignore_index=trainer_config.language_model.ignore_index,
         image_token_index=trainer_config.language_model.image_token_index,
         image_aspect_ratio=data_config.image_aspect_ratio,
+        strip_empty_think=data_config.strip_empty_think,
         audio_token=trainer_config.language_model.audio_token,
         audio_token_index=trainer_config.language_model.audio_token_index,
         audio_folder=data_config.audio_folder,

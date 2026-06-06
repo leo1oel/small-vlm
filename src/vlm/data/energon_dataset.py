@@ -44,6 +44,7 @@ import hashlib
 import io
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
@@ -628,6 +629,11 @@ def cook_mm_chat(sample: dict, media_root: FileStore) -> MMChatRawSample:
 
 _ROLE_MAP = {"user": "human", "human": "human", "assistant": "gpt", "gpt": "gpt"}
 
+# Empty reasoning block some distilled caption sets (e.g. Bee Stage-1) prepend
+# to every assistant turn. Only a whitespace-bodied block is boilerplate —
+# real reasoning content must never be stripped.
+_EMPTY_THINK_RE = re.compile(r"^<think>\s*</think>\s*")
+
 
 def messages_to_conversations(messages: list[dict], data_args: DataArguments) -> list[dict]:
     """Convert messages-style records (typed content items) to the LLaVA
@@ -656,7 +662,10 @@ def messages_to_conversations(messages: list[dict], data_args: DataArguments) ->
             text = "\n".join(parts)
         else:
             raise ValueError(f"message has no usable content: {msg!r}")
-        conversations.append({"from": _ROLE_MAP.get(role, role), "value": text})
+        mapped_role = _ROLE_MAP.get(role, role)
+        if data_args.strip_empty_think and mapped_role == "gpt":
+            text = _EMPTY_THINK_RE.sub("", text)
+        conversations.append({"from": mapped_role, "value": text})
     return conversations
 
 

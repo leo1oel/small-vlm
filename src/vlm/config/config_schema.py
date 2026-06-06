@@ -120,6 +120,11 @@ class DatasetConfig:
     # default only. None = fixed batch size per bucket.
     batch_token_budget: int | None = None
     use_local_jsonl: bool | None = None  # None = prefer a local jsonl copy if present
+    # Strip the empty `<think>\n\n</think>` prefix that distilled caption sets
+    # (e.g. Bee Stage-1) prepend to every assistant turn, so the boilerplate
+    # never enters the loss. Whitespace-bodied blocks only — real reasoning
+    # text is preserved. Energon path only.
+    strip_empty_think: bool = False
 
 
 @dataclass
