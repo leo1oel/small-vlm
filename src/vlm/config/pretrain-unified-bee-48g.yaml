@@ -19,6 +19,8 @@ defaults:
 trainer:
     max_steps: 1900
     save_steps: 200
+    # 32k budget x acc2: same ~525 samples/step as the 64k/acc1 plan, 48G-safe.
+    gradient_accumulation_steps: 2
 
 dataset:
-    batch_token_budget: 64000
+    batch_token_budget: 32000

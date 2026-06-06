@@ -17,10 +17,13 @@ defaults:
 trainer:
     max_steps: 5000
     save_steps: 500
+    # See energon-vision-bee.yaml: 32k budget x acc2 = the 48G-safe shape of
+    # the same 256k-token optimizer step.
+    gradient_accumulation_steps: 2
     # Re-enable the stage-1 checkpoint env hook that sft-unified pins to null.
     from_pretrained: ${oc.env:VLM_PRETRAIN_CKPT}
 
 dataset:
     # 48G token budget — same value as energon-vision-bee.yaml; see the
     # probe-derived rationale there.
-    batch_token_budget: 64000
+    batch_token_budget: 32000
