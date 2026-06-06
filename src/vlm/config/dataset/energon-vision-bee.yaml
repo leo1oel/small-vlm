@@ -1,0 +1,49 @@
+# Three-way caption+instruct mix for the 48G (L40S) experiment matrix:
+# the SFT blend (LLaVA-OneVision-1.5-Instruct + FineVision) plus the Bee
+# Stage-1 caption pairs, sampled 1:1:1 — captions are ~1/3 of the stream
+# (NEO/EVE-style caption-rich unified training). Bee (~998k records) repeats
+# ~once per 3M mixed samples; OV/FV (~46M combined) never repeat at this
+# run scale. Bee records are 2-turn (user: <image> -> assistant: caption) and
+# render as single-round chats under trainer.version=qwen_2_5.
+#
+# Credentials: AZURE_SAS_TOKEN (env or .env). Each folder's jsonl is
+# auto-downloaded + indexed once (resumable); media streams lazily through
+# the MSC range cache. REQUIRED with this dataset type: trainer.max_steps > 0.
+
+name: energon-vision-bee
+type: energon
+
+# blob folder -> blend weight (sampling ratio, normalized automatically)
+folders:
+    LLaVA-OneVision-1.5-Instruct: 1.0
+    FineVision: 1.0
+    yiming/Bee-Training-Data-Stage1: 1.0
+
+# Bee assistant turns carry a constant empty "<think>\n\n</think>\n\n" prefix
+# (4 tokens; 15-25% of short captions' loss mass) — strip it at the
+# messages->conversations bridge. Exact-empty-prefix match only, so this is a
+# no-op for OV/FV turns (pinned by tests/test_strip_empty_think.py).
+strip_empty_think: true
+
+# PER-WORKER buffer that must FILL before the first sample is yielded; 1000
+# (the SFT mix's setting) still mixes >=10 sequential read runs per worker on
+# top of the 3-way blend mixing.
+shuffle_buffer_size: 1000
+# Union of the SFT edges (512 floor) and bee-caption's 320 edge: ~56% of Bee
+# mass sits on the image-token floor (272-320), and at 1/3 of the stream that
+# cluster is ~19% of all samples — worth its own bucket to avoid padding it
+# to 512.
+length_buckets: [320, 512, 768, 1024, 1536, 2304, 4096]
+# 48GB (A40/L40/L40S) budget, probed 2026-06-06 on 4x A40 with THIS config
+# (devtools/budget_probe_l40s.slurm): 76750 OOMed at step 43 (long-bucket
+# tail batch, peak = capacity); 68000 passed 50 steps clean but with only
+# ~7% true headroom — production runs meet ~100x more tail batches and an
+# OOM mid-run crash-loops on requeue (exact stream resume replays the same
+# batch). 64000 buys real margin for ~5% effective batch. ~480 samples/step
+# at acc=1 (~256k tokens/step; 6e-5 stays on the repo's sqrt lr rule).
+batch_token_budget: 64000
+max_samples_per_sequence: 100 # randomness vs. sequential-read efficiency
+# Azure blob fetch latency is fat-tailed (median ~50ms, p90 5-14s measured
+# 2026-06): workers fetch media synchronously per sample, so throughput ≈
+# workers / mean_latency — keep this high to amortize stragglers.
+num_workers: 12
