@@ -118,6 +118,15 @@ def train(
     )
     model.config.aux_exit_weight = float(training_args.aux_exit_weight)
     model.config.aux_exit_detach = bool(training_args.aux_exit_detach)
+    if model.config.aux_exit_layers and model.config.aux_exit_weight <= 0.0:
+        # Loud, because this arm would silently train as a pure baseline
+        # duplicate — almost certainly a typo in the run config.
+        log.warning(
+            "aux_exit_layers=%s but aux_exit_weight=%s: the aux loss is DISABLED "
+            "(weight must be > 0) — this run is an exact baseline duplicate",
+            model.config.aux_exit_layers,
+            model.config.aux_exit_weight,
+        )
 
     model.config.use_cache = False
     set_trainable_params(model, training_args)
