@@ -76,6 +76,9 @@ def prepare_visual_aux_targets(
     loss. Per segment (k, n): rows 1..n of targets_src[k] (the shift-by-one
     "next patch" — row 0 is target-only, nothing predicts it).
 
+    Precondition: `segments` is non-empty — callers gate on it (the no-pairs
+    microbatch takes the zero-loss anchor path in chunked_ce_forward instead).
+
     aim_pixel: targets are REAL pixels (external ground truth — no stop-grad
     needed, no degenerate zero-loss solution exists); per-patch z-score with
     the MAE formula (mean/unbiased-var over the patch dim, eps 1e-6).

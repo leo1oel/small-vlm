@@ -97,3 +97,10 @@ def test_multi_image_target_concat_order():
     raw = torch.cat([a[1:3], b[1:2]]).float()
     ref = torch.nn.functional.normalize(raw, dim=-1)
     assert torch.allclose(tgt, ref, atol=1e-6)
+
+
+def test_unknown_objective_raises():
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown visual_aux objective"):
+        prepare_visual_aux_targets("flow_matching", [torch.ones(2, 4)], [(0, 1)])
