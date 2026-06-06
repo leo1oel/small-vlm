@@ -252,8 +252,42 @@ def create_dynamic_causal_vlm_class(
         super(self.__class__, self).__init__(config)
         self.model = pretrain_class(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # Visual-aux head (spec 2026-06-06): None unless the config carries an
+        # objective — fresh HF-backbone loads leave it randomly initialized
+        # ("newly initialized" warning is expected; the head is always fresh).
+        self.visual_aux_head = self._build_visual_aux_head(config)
         self.post_init()
         log.info(f"DynamicCausalVLM class {self.__class__.__name__} initialized.")
+
+    def _build_visual_aux_head(self: Any, config: Any) -> nn.Sequential | None:
+        """Visual-aux prediction head (spec 2026-06-06): a small MLP on trunk
+        hidden states at image positions, predicting the NEXT patch's pixels
+        (aim_pixel; out = vision_config.hidden_size = patch_dim) or connector
+        embedding (nepa; out = hidden_size). None when the objective is off —
+        baseline models carry no extra module (audio-connector pattern), and
+        old checkpoints (no visual_aux_* keys in config.json) load unchanged."""
+        objective = str(getattr(config, "visual_aux_objective", "none") or "none")
+        if objective == "none":
+            return None
+        if objective == "aim_pixel":
+            # Encoder-free single source of truth: (model patch px)^2 * 3,
+            # set by load_model. train.py rejects encoder-present configs.
+            out_dim = int(config.vision_config.hidden_size)
+        elif objective == "nepa":
+            out_dim = int(config.hidden_size)
+        else:
+            raise ValueError(
+                f"unknown visual_aux_objective {objective!r} (none|aim_pixel|nepa)"
+            )
+        depth = int(getattr(config, "visual_aux_head_depth", 2) or 2)
+        hidden = int(getattr(config, "visual_aux_head_hidden", 0) or config.hidden_size)
+        layers: list[nn.Module] = []
+        in_dim = int(config.hidden_size)
+        for _ in range(depth - 1):
+            layers.extend([nn.Linear(in_dim, hidden), nn.GELU()])
+            in_dim = hidden
+        layers.append(nn.Linear(in_dim, out_dim))
+        return nn.Sequential(*layers)
 
     @override
     def forward(
@@ -998,6 +1032,7 @@ def create_dynamic_causal_vlm_class(
         {
             "config_class": config_class,
             "__init__": __init__,
+            "_build_visual_aux_head": _build_visual_aux_head,
             "forward": forward,
             "chunked_ce_forward": chunked_ce_forward,
             "floating_point_ops": floating_point_ops,

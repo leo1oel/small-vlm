@@ -119,6 +119,19 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             model.model.resize_token_embeddings(len(processor.tokenizer))
         # Audio pathway follows the checkpoint's model config on reload.
         attach_audio_feature_extractor(processor, getattr(model.config, "audio_config", None))
+        # Visual-aux retrofit guard: enabling the head on an understanding-only
+        # checkpoint needs post-hoc init wiring that is deliberately out of v1
+        # scope (spec §7) — fail loud instead of silently training without it.
+        if (
+            str(model_cfg.visual_aux.objective) != "none"
+            and getattr(model, "visual_aux_head", None) is None
+        ):
+            raise ValueError(
+                "model.visual_aux.objective is set but the loaded checkpoint has "
+                "no visual_aux_head — retrofit from understanding-only checkpoints "
+                "is not supported yet; train from scratch (sft-unified-aimpixel / "
+                "sft-unified-nepa) or load a checkpoint trained with the head"
+            )
     else:
         if model_cfg.visual_encoder.hf_name is None:
             # Encoder-free (gemma4_unified-style raw-patch) path: no vision tower,
@@ -192,6 +205,13 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             lazy_load=True,
             **language_config,
         )
+        # Visual-aux structural fields (spec 2026-06-06) must be on the config
+        # BEFORE model construction — the causal __init__ builds the head from
+        # them. Plain python types; they serialize into checkpoint config.json
+        # (conversation_version pattern) so reloads rebuild the head.
+        config.visual_aux_objective = str(model_cfg.visual_aux.objective)
+        config.visual_aux_head_depth = int(model_cfg.visual_aux.head_depth)
+        config.visual_aux_head_hidden = int(model_cfg.visual_aux.head_hidden)
         model = VLMForCausalLM.from_pretrained(
             model_cfg.language_model.hf_name,
             config=config,
