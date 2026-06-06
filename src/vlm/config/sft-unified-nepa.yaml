@@ -1,0 +1,16 @@
+defaults:
+    - sft-unified
+    - _self_
+
+# Visual-aux arm 2 (spec 2026-06-06): next-patch EMBEDDING prediction (NEPA,
+# arXiv:2512.16922; stop-grad connector-output target, L2-norm cosine).
+# Collapse alarms land in wandb as visual_aux_cos / visual_aux_tgt_std —
+# cos -> 1 with tgt_std -> 0 is the collapse signature.
+# Launch: CONFIG_NAME=sft-unified-nepa sbatch train.slurm
+
+model:
+    visual_aux:
+        objective: nepa
+
+trainer:
+    visual_aux_weight: 0.5
