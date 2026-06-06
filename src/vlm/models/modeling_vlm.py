@@ -32,6 +32,68 @@ def _rms_norm(hidden: Tensor, weight: Tensor, eps: float) -> Tensor:
     return weight * h.to(input_dtype)
 
 
+def build_visual_aux_pairs(
+    image_block_ids: Tensor, num_target_rows: list[int]
+) -> tuple[Tensor, list[tuple[int, int]]]:
+    """Shift-by-one prediction pairs for the visual-aux loss, strictly within
+    image blocks (spec: docs/superpowers/specs/2026-06-06-visual-aux-loss-design.md).
+
+    image_block_ids: (B, L) long; -1 on text/audio/padding; the spliced patch
+    positions of image k (flat batch-cursor index into the per-image lists)
+    carry k. Splice truncation only ever removes a block's TAIL, so the
+    surviving positions of block k are its first m patches and position i of
+    the block predicts target row i+1 — valid while i+1 <= N_k - 1.
+
+    Returns (flat_positions, segments): flat_positions indexes rows of the
+    (B*L, D) flattened hidden states whose hidden state predicts the NEXT
+    patch; segments is [(k, n_pairs)] in the same order — the matching
+    targets are rows 1..n_pairs of image k (see prepare_visual_aux_targets).
+    Blocks with < 2 patches (incl. zero-width dummy images, which never
+    receive a block id) contribute nothing.
+    """
+    _, seq_len = image_block_ids.shape
+    flat_positions: list[Tensor] = []
+    segments: list[tuple[int, int]] = []
+    for batch_idx in range(image_block_ids.shape[0]):
+        row = image_block_ids[batch_idx]
+        for k_t in torch.unique(row[row >= 0]).tolist():
+            k = int(k_t)
+            pos = (row == k).nonzero(as_tuple=True)[0]
+            n_pairs = min(int(pos.numel()), num_target_rows[k] - 1)
+            if n_pairs <= 0:
+                continue
+            flat_positions.append(batch_idx * seq_len + pos[:n_pairs])
+            segments.append((k, n_pairs))
+    if not flat_positions:
+        return image_block_ids.new_zeros((0,)), []
+    return torch.cat(flat_positions), segments
+
+
+def prepare_visual_aux_targets(
+    objective: str, targets_src: list[Tensor], segments: list[tuple[int, int]]
+) -> Tensor:
+    """Assemble the (n_pairs_total, dim) fp32 target matrix for the visual-aux
+    loss. Per segment (k, n): rows 1..n of targets_src[k] (the shift-by-one
+    "next patch" — row 0 is target-only, nothing predicts it).
+
+    aim_pixel: targets are REAL pixels (external ground truth — no stop-grad
+    needed, no degenerate zero-loss solution exists); per-patch z-score with
+    the MAE formula (mean/unbiased-var over the patch dim, eps 1e-6).
+    nepa: targets are the connector outputs; detach() is the SimSiam-style
+    stop-grad that prevents representational collapse (NEPA ablation: without
+    it the cosine slides to 1 and training collapses), then L2-normalize.
+    """
+    rows = torch.cat([targets_src[k][1 : 1 + n] for k, n in segments])
+    if objective == "aim_pixel":
+        rows = rows.float()
+        mean = rows.mean(dim=-1, keepdim=True)
+        var = rows.var(dim=-1, keepdim=True)
+        return (rows - mean) / (var + 1.0e-6).sqrt()
+    if objective == "nepa":
+        return nn.functional.normalize(rows.detach().float(), dim=-1)
+    raise ValueError(f"unknown visual_aux objective: {objective!r}")
+
+
 def get_dynamic_vlm_class(
     base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
 ):
