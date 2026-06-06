@@ -84,6 +84,8 @@ class VisualAuxConfig:
     # Head MLP: depth 1 = single Linear; depth d = (d-1) x [Linear, GELU] + Linear.
     head_depth: int = 2
     # Internal width of the head MLP (input is always the LM hidden size).
+    # Default matches the Qwen3-1.7B hidden size — set explicitly for other
+    # backbone sizes (the head does not auto-scale).
     head_hidden: int = 2048
 
 
@@ -235,6 +237,8 @@ class TrainerConfig:
     aux_exit_detach: bool = False
     # Visual-aux loss weight λ (spec 2026-06-06): only read when
     # model.visual_aux.objective != "none". L = L_CE + λ·L_visual.
+    # AIMv2's literature prior is α=0.4 (arXiv:2411.14402); 0.5 is the
+    # user-set value for both v1 arms (spec decision 2026-06-06).
     visual_aux_weight: float = 0.5
     # null = attach the head to the post-final-norm last hidden state;
     # k = decode layer k's output through the shared final RMSNorm first
