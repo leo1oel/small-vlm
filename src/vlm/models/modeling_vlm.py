@@ -19,6 +19,19 @@ from .connectors import Connector, connector_map
 log: logging.Logger = logging.getLogger(name=__name__)
 
 
+def _rms_norm(hidden: Tensor, weight: Tensor, eps: float) -> Tensor:
+    """Functional replica of Qwen3RMSNorm.forward (transformers 5.10.2,
+    models/qwen3/modeling_qwen3.py): fp32 upcast -> x * rsqrt(mean-square +
+    eps) -> downcast to the input dtype -> THEN scale by weight (the order
+    matters for bit-parity). Exists so the aux-exit detach path can decode
+    through `weight.detach()` without touching the shared module; pinned to
+    the real module by devtools/test_aux_exit.py."""
+    input_dtype = hidden.dtype
+    h = hidden.to(torch.float32)
+    h = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + eps)
+    return weight * h.to(input_dtype)
+
+
 def get_dynamic_vlm_class(
     base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
 ):
@@ -278,14 +291,55 @@ def create_dynamic_causal_vlm_class(
         training, and the eval/generation paths keep the full-logits
         super().forward (this method is gated on self.training).
         """
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
+        # Aux-exit deep supervision (early-fusion ablation; spec:
+        # docs/superpowers/specs/2026-06-05-aux-exit-loss-design.md). Layer-k
+        # outputs are captured with scoped forward hooks rather than
+        # output_hidden_states: the 5.x capture machinery resolves
+        # _CAN_RECORD_REGISTRY by str(self.__class__), which is not guaranteed
+        # for this dynamically generated backbone class, and a scoped hook
+        # also only keeps the layers we need.
+        aux_layers = sorted(
+            {int(k) for k in (getattr(self.config, "aux_exit_layers", None) or [])}
         )
+        aux_weight = float(getattr(self.config, "aux_exit_weight", 0.0) or 0.0)
+        aux_active = bool(aux_layers) and aux_weight > 0.0
+        captured: dict[int, Tensor] = {}
+        handles = []
+        if aux_active:
+            num_layers = len(self.model.layers)
+            bad = [k for k in aux_layers if not 1 <= k <= num_layers - 1]
+            if bad:
+                raise ValueError(
+                    f"aux_exit_layers {bad} out of range [1, {num_layers - 1}]: k is "
+                    f"the 1-based decoder layer whose output feeds the exit, and "
+                    f"k == {num_layers} would duplicate the main loss"
+                )
+
+            def _make_capture(k: int):
+                def _capture(_mod: Any, _args: Any, out: Any) -> None:
+                    captured[k] = out[0] if isinstance(out, tuple) else out
+
+                return _capture
+
+            for k in aux_layers:
+                handles.append(
+                    self.model.layers[k - 1].register_forward_hook(_make_capture(k))
+                )
+        try:
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+            )
+        finally:
+            # Removed before backward ever runs, so gradient-checkpointing
+            # recomputation (which re-executes layer __call__ during backward)
+            # can never re-fire these hooks.
+            for h in handles:
+                h.remove()
         hidden_states = outputs.last_hidden_state
         # ForCausalLMLoss's shift: pad labels right with ignore_index, drop
         # the first -> target[i] = labels[i+1], last target ignored. -100 is
@@ -300,6 +354,11 @@ def create_dynamic_causal_vlm_class(
             # would produce NaN): emit an exact-zero loss that still touches
             # lm_head so all trainable params keep grads under deepspeed.
             loss = self.lm_head(flat_hidden[:1]).float().sum() * 0.0
+            if aux_active:
+                # Keep the log-time component stash rank-symmetric even on
+                # all-ignored batches (VLMTrainer.log all-reduces it).
+                zero = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
+                self._last_ce_components = {"ce_final": zero, "ce_aux": zero}
         else:
             hidden_valid = flat_hidden[valid]
             targets_valid = flat_targets[valid]
@@ -312,6 +371,58 @@ def create_dynamic_causal_vlm_class(
                     chunk_logits, target_chunk, reduction="sum"
                 )
             loss = total / n_valid
+            if aux_active:
+                detach = bool(getattr(self.config, "aux_exit_detach", False))
+                final_norm = self.model.norm
+                if detach and not hasattr(final_norm, "variance_epsilon"):
+                    raise ValueError(
+                        "aux_exit_detach=True needs an RMSNorm-style final norm "
+                        f"with .variance_epsilon (got {type(final_norm).__name__})"
+                    )
+                head_weight = (
+                    self.lm_head.weight.detach() if detach else self.lm_head.weight
+                )
+                aux_sum = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
+                for k in aux_layers:
+                    h_k = captured.get(k)
+                    if h_k is None:
+                        raise RuntimeError(
+                            f"aux exit layer {k}: forward hook captured nothing"
+                        )
+                    if torch.is_grad_enabled() and not h_k.requires_grad:
+                        raise RuntimeError(
+                            f"aux exit layer {k}: captured hidden states are not "
+                            "graph-connected (reentrant gradient checkpointing?) — "
+                            "the aux loss would silently train nothing"
+                        )
+                    h_k_valid = h_k.reshape(-1, h_k.shape[-1])[valid]
+                    # Same recipe as LayerSkip's forward_early: shared final
+                    # norm, then the shared lm_head (h_final is already normed
+                    # inside the backbone; raw layer outputs are not).
+                    if detach:
+                        normed = _rms_norm(
+                            h_k_valid, final_norm.weight.detach(), final_norm.variance_epsilon
+                        )
+                    else:
+                        normed = final_norm(h_k_valid)
+                    total_k = torch.zeros(
+                        (), dtype=torch.float32, device=flat_hidden.device
+                    )
+                    for hidden_chunk, target_chunk in zip(
+                        normed.split(chunk_size), targets_valid.split(chunk_size), strict=True
+                    ):
+                        chunk_logits = nn.functional.linear(hidden_chunk, head_weight).float()
+                        total_k = total_k + nn.functional.cross_entropy(
+                            chunk_logits, target_chunk, reduction="sum"
+                        )
+                    aux_sum = aux_sum + total_k / n_valid
+                # ce_aux = unweighted sum of per-exit mean CEs (λ-independent);
+                # VLMTrainer.log all-reduces and emits both components.
+                self._last_ce_components = {
+                    "ce_final": loss.detach(),
+                    "ce_aux": aux_sum.detach(),
+                }
+                loss = loss + aux_weight * aux_sum
         return CausalLMOutputWithPast(
             loss=loss,
             logits=None,

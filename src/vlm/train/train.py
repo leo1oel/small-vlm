@@ -28,6 +28,32 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
     trainer._save(output_dir, state_dict=cpu_state_dict)  # pyright: ignore
 
 
+def validate_aux_exit_config(
+    aux_exit_layers: Any, num_hidden_layers: int, loss_chunk_size: int
+) -> list[int]:
+    """Validate + normalize the aux-exit deep-supervision layer list (spec:
+    docs/superpowers/specs/2026-06-05-aux-exit-loss-design.md). k is the
+    1-based index of the decoder layer whose output feeds the shared
+    norm+lm_head exit; k == num_hidden_layers would duplicate the main loss.
+    Returns plain sorted unique ints (no OmegaConf types — the result lands
+    on model.config and must serialize into checkpoint config.json)."""
+    layers = sorted({int(k) for k in (aux_exit_layers or [])})
+    if not layers:
+        return []
+    bad = [k for k in layers if not 1 <= k <= num_hidden_layers - 1]
+    if bad:
+        raise ValueError(
+            f"trainer.aux_exit_layers {bad} out of range [1, {num_hidden_layers - 1}] "
+            f"for a {num_hidden_layers}-layer backbone"
+        )
+    if loss_chunk_size <= 0:
+        raise ValueError(
+            "trainer.aux_exit_layers requires trainer.loss_chunk_size > 0 — the aux "
+            "loss is implemented only in the chunked-CE training path"
+        )
+    return layers
+
+
 def validate_energon_args(training_args: TrainingArguments) -> None:
     """The streaming loader has no epoch length and does its own sampling, so a
     few HF Trainer features are structurally unavailable — fail loud upfront.
@@ -82,6 +108,16 @@ def train(
     model.config.conversation_version = training_args.version
     # Training-only chunked CE switch; the model's forward reads it (0 = off).
     model.config.loss_chunk_size = training_args.loss_chunk_size
+    # Aux-exit deep supervision (early-fusion ablation): validated against the
+    # real layer count, then copied next to loss_chunk_size for the model's
+    # chunked-CE forward to read. Plain python types only (config.json-safe).
+    model.config.aux_exit_layers = validate_aux_exit_config(
+        training_args.aux_exit_layers,
+        num_hidden_layers=len(model.model.layers),
+        loss_chunk_size=int(training_args.loss_chunk_size),
+    )
+    model.config.aux_exit_weight = float(training_args.aux_exit_weight)
+    model.config.aux_exit_detach = bool(training_args.aux_exit_detach)
 
     model.config.use_cache = False
     set_trainable_params(model, training_args)
