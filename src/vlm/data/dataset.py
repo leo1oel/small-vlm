@@ -348,6 +348,64 @@ def preprocess_multimodal(sources: Sequence[str], data_args: DataArguments) -> d
     return sources  # pyright: ignore
 
 
+def apply_image_position(
+    conversations: list[dict],
+    mode: str,
+    image_token: str,
+    seed: int | None = None,
+) -> None:
+    """Reposition the image placeholder inside human turns, in place (plan
+    docs/superpowers/plans/2026-06-10-early-fusion-access-arms.md).
+
+    Only human/user turns containing EXACTLY ONE image token and non-empty
+    text are rewritten; everything else (gpt turns, image-only turns,
+    multi-image turns) is left untouched. Modes:
+      keep           - no-op (default; preserves both paths' current layout)
+      question_first - "Q\\n<image>"
+      sandwich       - "Q\\n<image>\\nQ"  (question repeated after the image)
+      random         - seed-deterministic choice of first / middle / last
+
+    Note: the question text is derived by removing the single image token and
+    collapsing the resulting whitespace runs ("Look at  and answer." ->
+    "Look at and answer."), which also normalizes any stray newline the token
+    removal would have left.
+    """
+    if mode == "keep":
+        return
+    if mode not in ("question_first", "sandwich", "random"):
+        raise ValueError(f"unknown image_position mode: {mode!r}")
+    rng = random.Random(seed)
+    for turn in conversations:
+        if (turn.get("from") or turn.get("role")) not in ("human", "user"):
+            continue
+        key = "value" if "value" in turn else "content"
+        text = str(turn[key])
+        if text.count(image_token) != 1:
+            continue
+        # Collapse all whitespace introduced by removing the token (and any
+        # pre-existing runs) so no double space / stray newline survives.
+        question = " ".join(text.replace(image_token, " ").split())
+        if not question:
+            continue
+        if mode == "question_first":
+            new = f"{question}\n{image_token}"
+        elif mode == "sandwich":
+            new = f"{question}\n{image_token}\n{question}"
+        else:  # random
+            words = question.split()
+            placements = ["first", "last"] + (["middle"] if len(words) >= 2 else [])
+            choice = rng.choice(placements)
+            if choice == "first":
+                new = f"{image_token}\n{question}"
+            elif choice == "last":
+                new = f"{question}\n{image_token}"
+            else:
+                mid = len(words) // 2
+                head, tail = " ".join(words[:mid]), " ".join(words[mid:])
+                new = f"{head}\n{image_token}\n{tail}"
+        turn[key] = new
+
+
 def preprocess_llama_2(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
