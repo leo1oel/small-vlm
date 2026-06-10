@@ -66,3 +66,26 @@ def build_cross_modal_mask(
     else:
         raise ValueError(f"unknown cross_modal_mask mode: {mode!r}")
     return base | extra.unsqueeze(1)
+
+
+from transformers.integrations.sdpa_attention import sdpa_attention_forward
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+
+def sdpa_xmodal_forward(module, query, key, value, attention_mask, **kwargs):
+    """Stock SDPA, but a layer can carry its own 4D mask override
+    (module._xmodal_mask, stashed by the model before the decoder runs). The
+    shape guard makes decode steps (q_len 1) fall back to the passed-in
+    causal row automatically, so generation needs no per-step bookkeeping."""
+    override = getattr(module, "_xmodal_mask", None)
+    if (
+        override is not None
+        and attention_mask is not None
+        and override.shape[-2] == query.shape[-2]
+        and override.shape[-1] == attention_mask.shape[-1]
+    ):
+        attention_mask = override
+    return sdpa_attention_forward(module, query, key, value, attention_mask, **kwargs)
+
+
+ALL_ATTENTION_FUNCTIONS["sdpa_xmodal"] = sdpa_xmodal_forward

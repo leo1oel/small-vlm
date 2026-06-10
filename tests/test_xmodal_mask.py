@@ -146,3 +146,43 @@ def test_batch_mixed_prefix_lengths_and_padding_sides():
     assert bool(mw[1, 0, 2, 4]) and bool(mw[1, 0, 3, 4])
     assert not bool(mw[1, 0, 2, 5])      # answer blocked
     assert not bool(mw[1, 0, 2, 0])      # left-pad key blocked
+
+
+def test_sdpa_xmodal_registered_and_swaps_per_module_mask():
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    import vlm.models.xmodal_mask  # noqa: F401  (registration import)
+
+    assert "sdpa_xmodal" in ALL_ATTENTION_FUNCTIONS
+
+    fn = ALL_ATTENTION_FUNCTIONS["sdpa_xmodal"]
+
+    class _Stub(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = type("C", (), {"_attn_implementation": "sdpa_xmodal"})()
+            self.layer_idx = 0
+            self.num_key_value_groups = 1
+            self.is_causal = True
+
+    torch.manual_seed(0)
+    m = _Stub()
+    B, H, L, D = 1, 2, 4, 8
+    q = torch.randn(B, H, L, D)
+    k = torch.randn(B, H, L, D)
+    v = torch.randn(B, H, L, D)
+    base = build_base_mask(torch.ones(B, L, dtype=torch.bool))
+    full = torch.ones(B, 1, L, L, dtype=torch.bool)
+
+    out_base, _ = fn(m, q, k, v, base, dropout=0.0, scaling=None)
+    m._xmodal_mask = full
+    out_full, _ = fn(m, q, k, v, base, dropout=0.0, scaling=None)
+    assert not torch.allclose(out_base, out_full)   # override took effect
+
+    # decode-step shape guard: q_len 1 != override L -> override ignored
+    # (no exception from feeding the (B,1,1,L) row into the unmodified path).
+    # sdpa_attention_forward returns (B, q_len, H, D), so q_len is axis 1.
+    q1 = torch.randn(B, H, 1, D)
+    row = torch.ones(B, 1, 1, L, dtype=torch.bool)
+    out_dec, _ = fn(m, q1, k, v, row, dropout=0.0, scaling=None)
+    assert out_dec.shape[1] == 1
