@@ -186,3 +186,64 @@ def test_sdpa_xmodal_registered_and_swaps_per_module_mask():
     row = torch.ones(B, 1, 1, L, dtype=torch.bool)
     out_dec, _ = fn(m, q1, k, v, row, dropout=0.0, scaling=None)
     assert out_dec.shape[1] == 1
+
+
+def test_cross_modal_mask_config_defaults():
+    from vlm.config.config_schema import CrossModalMaskConfig
+
+    c = CrossModalMaskConfig()
+    assert c.mode == "none" and c.window == [1, 9] and c.bidirectional is False
+
+
+def _validate(mode, attn, window=(1, 9), bidirectional=False, n_layers=28):
+    from vlm.train.train import validate_cross_modal_mask_config
+
+    return validate_cross_modal_mask_config(
+        mode,
+        list(window),
+        bidirectional,
+        attn_implementation=attn,
+        num_hidden_layers=n_layers,
+    )
+
+
+def test_cross_modal_mask_validation():
+    import pytest
+
+    # mode none passes regardless of attn (bit-identical baseline path)
+    assert _validate("none", "flash_attention_2") == ("none", [1, 9])
+    assert _validate(None, "sdpa") == ("none", [1, 9])
+
+    # unknown mode raises
+    with pytest.raises(ValueError, match="must be none"):
+        _validate("banana", "sdpa")
+
+    # bidirectional=True is rejected (not implemented in v1)
+    with pytest.raises(ValueError, match="bidirectional"):
+        _validate("prefix_lm", "sdpa", bidirectional=True)
+
+    # prefix_lm needs sdpa/sdpa_xmodal — flash_attention_2 raises
+    with pytest.raises(ValueError, match="prefix_lm needs"):
+        _validate("prefix_lm", "flash_attention_2")
+    assert _validate("prefix_lm", "sdpa") == ("prefix_lm", [1, 9])
+    assert _validate("prefix_lm", "sdpa_xmodal") == ("prefix_lm", [1, 9])
+
+    # img2q_window needs sdpa_xmodal specifically — plain sdpa raises
+    with pytest.raises(ValueError, match="img2q_window needs"):
+        _validate("img2q_window", "sdpa")
+
+    # window bounds: [0, 9] (lo < 1) and [1, 99] (hi > n_layers) raise
+    with pytest.raises(ValueError, match="out of range"):
+        _validate("img2q_window", "sdpa_xmodal", window=(0, 9))
+    with pytest.raises(ValueError, match="out of range"):
+        _validate("img2q_window", "sdpa_xmodal", window=(1, 99), n_layers=28)
+    # inverted window (lo > hi) also out of range
+    with pytest.raises(ValueError, match="out of range"):
+        _validate("img2q_window", "sdpa_xmodal", window=(9, 1))
+
+    # valid img2q_window combos pass and round-trip the window
+    assert _validate("img2q_window", "sdpa_xmodal", window=(1, 9)) == ("img2q_window", [1, 9])
+    assert _validate("img2q_window", "sdpa_xmodal", window=(1, 28), n_layers=28) == (
+        "img2q_window",
+        [1, 28],
+    )

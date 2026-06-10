@@ -13,6 +13,7 @@ from transformers.models.auto.modeling_auto import (
     MODEL_MAPPING,
 )
 
+from . import xmodal_mask as _xmodal_mask  # noqa: F401  (registers sdpa_xmodal)
 from .configuration_vlm import create_dynamic_vlm_config_class
 from .connectors import Connector, connector_map
 

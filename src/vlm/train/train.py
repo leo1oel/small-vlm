@@ -91,6 +91,50 @@ def validate_visual_aux_config(
     return objective, k
 
 
+def validate_cross_modal_mask_config(
+    mode: Any,
+    window: Any,
+    bidirectional: Any,
+    attn_implementation: Any,
+    num_hidden_layers: int,
+) -> tuple[str, list[int]]:
+    """Validate the cross-modal 4D mask dials for the early-fusion access arms
+    (plan docs/superpowers/plans/2026-06-10-early-fusion-access-arms.md).
+    Returns the normalized (mode, window) as plain python types (config.json-
+    safe; window is meaningful only for img2q_window but always returned so the
+    checkpoint self-describes). "none" is the bit-identical baseline path.
+
+    Adapts the sibling validators' call style: it reads the individual dials
+    (model.cross_modal_mask.* + trainer.attn_implementation) rather than a full
+    cfg, so it can run in train() against the real backbone layer count, with
+    persistence flowing through model.config like visual_aux_objective."""
+    mode = str(mode or "none")
+    if mode == "none":
+        return "none", [int(x) for x in (window or [1, 9])]
+    if mode not in ("prefix_lm", "img2q_window"):
+        raise ValueError(
+            f"cross_modal_mask.mode must be none|prefix_lm|img2q_window, got {mode!r}"
+        )
+    if bool(bidirectional):
+        raise ValueError(
+            "cross_modal_mask.bidirectional=true is not implemented in v1 "
+            "(mutual windowing needs per-layer decode masking)"
+        )
+    attn = str(attn_implementation or "")
+    if mode == "prefix_lm" and attn not in ("sdpa", "sdpa_xmodal"):
+        raise ValueError("prefix_lm needs trainer.attn_implementation=sdpa (4D masks bypass FA2)")
+    win = [int(x) for x in (window or [1, 9])]
+    if mode == "img2q_window":
+        if attn != "sdpa_xmodal":
+            raise ValueError("img2q_window needs trainer.attn_implementation=sdpa_xmodal")
+        lo, hi = int(win[0]), int(win[1])
+        if not (1 <= lo <= hi <= num_hidden_layers):
+            raise ValueError(
+                f"cross_modal_mask.window {win} out of range 1..{num_hidden_layers}"
+            )
+    return mode, win
+
+
 def validate_energon_args(training_args: TrainingArguments) -> None:
     """The streaming loader has no epoch length and does its own sampling, so a
     few HF Trainer features are structurally unavailable — fail loud upfront.
@@ -191,6 +235,21 @@ def train(
             va_objective,
             model.config.visual_aux_weight,
         )
+
+    # Cross-modal 4D mask (early-fusion access arms, plan 2026-06-10): the mode/
+    # window/bidirectional dials were placed on model.config at build time
+    # (load_model, like visual_aux_objective). Validate against the real layer
+    # count + the requested attn impl, then copy the normalized result back as
+    # flat fields so the checkpoint config.json self-describes for inference.
+    cmm_mode, cmm_window = validate_cross_modal_mask_config(
+        getattr(model.config, "cross_modal_mask_mode", "none"),
+        getattr(model.config, "cross_modal_mask_window", [1, 9]),
+        getattr(model.config, "cross_modal_mask_bidirectional", False),
+        attn_implementation=training_args.attn_implementation,
+        num_hidden_layers=len(model.model.layers),
+    )
+    model.config.cross_modal_mask_mode = cmm_mode
+    model.config.cross_modal_mask_window = cmm_window
 
     model.config.use_cache = False
     set_trainable_params(model, training_args)

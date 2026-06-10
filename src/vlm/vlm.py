@@ -261,6 +261,19 @@ def vlm(cfg: AppConfig) -> None:
         # Self-describing checkpoints: inference must rebuild prompts with the
         # SAME image layout the model was trained on (plan 2026-06-10).
         model.config.image_position = str(data_args.image_position)
+        # Cross-modal 4D mask dials (early-fusion access arms, plan 2026-06-10):
+        # place the model-config dials onto model.config (applies on both fresh
+        # and from_pretrained paths) BEFORE train() validates them against the
+        # real layer count and re-copies the normalized result. Flat names mirror
+        # visual_aux_objective so they serialize into checkpoint config.json and
+        # inference self-describes the mask mode/window.
+        model.config.cross_modal_mask_mode = str(cfg.model.cross_modal_mask.mode)
+        model.config.cross_modal_mask_window = [
+            int(x) for x in cfg.model.cross_modal_mask.window
+        ]
+        model.config.cross_modal_mask_bidirectional = bool(
+            cfg.model.cross_modal_mask.bidirectional
+        )
         log.info("Creating data module")
         if cfg.dataset.type == "energon":
             # lazy import: needs megatron-energon + multistorageclient, which

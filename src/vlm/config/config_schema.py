@@ -90,6 +90,21 @@ class VisualAuxConfig:
 
 
 @dataclass
+class CrossModalMaskConfig:
+    # "none" (default, bit-identical baseline) | "prefix_lm" | "img2q_window".
+    # prefix_lm: bidirectional attention over [system+image+question], causal
+    # suffix, loss unchanged (PaliGemma masking). img2q_window: image-query
+    # rows attend question keys in decoder layers window[0]..window[1] only
+    # (1-based, inclusive) — the forced-early-fusion arm.
+    mode: str = "none"
+    window: list[int] = field(default_factory=lambda: [1, 9])
+    # Mutual windowing (also confining text->image attention to the window)
+    # is NOT implemented in v1: it requires per-layer decode-step masking.
+    # The field exists so the config surface is stable; True is rejected.
+    bidirectional: bool = False
+
+
+@dataclass
 class ModelConfig:
     name: str = MISSING
     visual_encoder: VisualEncoderConfig = field(default_factory=VisualEncoderConfig)
@@ -97,6 +112,7 @@ class ModelConfig:
     connector: ConnectorConfig = field(default_factory=ConnectorConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     visual_aux: VisualAuxConfig = field(default_factory=VisualAuxConfig)
+    cross_modal_mask: CrossModalMaskConfig = field(default_factory=CrossModalMaskConfig)
 
 
 @dataclass
