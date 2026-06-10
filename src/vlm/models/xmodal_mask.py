@@ -89,3 +89,18 @@ def sdpa_xmodal_forward(module, query, key, value, attention_mask, **kwargs):
 
 
 ALL_ATTENTION_FUNCTIONS["sdpa_xmodal"] = sdpa_xmodal_forward
+
+# Mask-builder registry (masking_utils.py): _preprocess_mask_arguments early-
+# exits with a None mask when config._attn_implementation is absent from
+# ALL_MASK_ATTENTION_FUNCTIONS._global_mapping (5.10.2, masking_utils.py:848),
+# so decode under "sdpa_xmodal" would otherwise fall back to is_causal=True
+# WITHOUT key-side padding — silently dropping padding on batched padded
+# decode. Register the SAME builder stock "sdpa" uses (sdpa_mask): the
+# non-4D path (decode steps, q_len 1) then builds the identical padding-aware
+# causal mask, while the 4D-override loss path is handled by
+# sdpa_xmodal_forward above (it ignores the passed mask when its shape guard
+# matches). Prefill 4D bool masks still pass through create_causal_mask
+# untouched.
+from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS, sdpa_mask
+
+ALL_MASK_ATTENTION_FUNCTIONS.register("sdpa_xmodal", sdpa_mask)

@@ -188,6 +188,29 @@ def test_sdpa_xmodal_registered_and_swaps_per_module_mask():
     assert out_dec.shape[1] == 1
 
 
+def test_sdpa_xmodal_mask_builder_registered():
+    """The non-4D decode path goes through ALL_MASK_ATTENTION_FUNCTIONS;
+    sdpa_xmodal must resolve to the same builder as stock sdpa so batched
+    padded decode keeps key-side padding (masking_utils.py:848 early-exits to
+    a None mask if the impl is absent)."""
+    from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
+
+    import vlm.models.xmodal_mask  # noqa: F401  (registration import)
+
+    assert "sdpa_xmodal" in ALL_MASK_ATTENTION_FUNCTIONS._global_mapping
+    assert ALL_MASK_ATTENTION_FUNCTIONS["sdpa_xmodal"] is ALL_MASK_ATTENTION_FUNCTIONS["sdpa"]
+
+
+def test_gen_mask_stash_shape_contract():
+    import torch
+
+    gen_mask = torch.ones(1, 1, 6, 6, dtype=torch.bool)
+    embeds_prefill = torch.zeros(1, 6, 4)
+    embeds_decode = torch.zeros(1, 1, 4)
+    assert embeds_prefill.shape[1] == gen_mask.shape[-2]
+    assert embeds_decode.shape[1] != gen_mask.shape[-2]
+
+
 def test_install_xmodal_masks_window_stash():
     """install_xmodal_masks stashes the windowed mask on layers lo..hi only."""
     import types

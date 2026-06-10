@@ -705,7 +705,8 @@ def create_dynamic_causal_vlm_class(
                     image_features, _ = self.encode_images(images)
             if audios is not None:
                 audio_features = self.encode_raw_audio(audios)
-            (_, position_ids, attention_mask, _, inputs_embeds, _, _) = (
+            xmodal_mode = str(getattr(self.config, "cross_modal_mask_mode", "none") or "none")
+            (_, position_ids, attention_mask, _, inputs_embeds, _, image_block_ids) = (
                 self.prepare_inputs_labels_for_multimodal(
                     inputs,
                     position_ids,
@@ -714,8 +715,19 @@ def create_dynamic_causal_vlm_class(
                     None,
                     image_features,
                     audio_features,
+                    with_image_block_ids=xmodal_mode == "img2q_window",
                 )
             )
+            if xmodal_mode != "none" and attention_mask is not None:
+                # Prefill-only custom mask; whole prompt = prefix (labels=None).
+                # forward() swaps it in via the shape-matched one-shot stash;
+                # decode steps are plain causal text rows in both arms. v1
+                # installs the custom mask only on the IMAGE path (this branch):
+                # the experiment is about image arms, lmms-eval vision tasks
+                # always carry an image, and text-only prompts keep stock causal.
+                self._xmodal_gen_mask = self.install_xmodal_masks(
+                    attention_mask, image_block_ids, None
+                )
         else:
             inputs_embeds = self.get_input_embeddings()(inputs)
 
