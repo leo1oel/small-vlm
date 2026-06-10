@@ -36,6 +36,31 @@ def test_image_token_inside_text_is_extracted():
     assert c[0]["value"].endswith(TOK)
 
 
+def test_multiline_mcq_options_preserved():
+    c = conv(("human", f"{TOK}\nWhich animal?\nA. cat\nB. dog"),)
+    apply_image_position(c, mode="question_first", image_token=TOK, seed=0)
+    assert c[0]["value"] == f"Which animal?\nA. cat\nB. dog\n{TOK}"
+    c2 = conv(("human", f"{TOK}\nWhich animal?\nA. cat\nB. dog"),)
+    apply_image_position(c2, mode="sandwich", image_token=TOK, seed=0)
+    assert c2[0]["value"] == (
+        f"Which animal?\nA. cat\nB. dog\n{TOK}\nWhich animal?\nA. cat\nB. dog"
+    )
+
+
+def test_double_application_is_guarded_by_fresh_copies():
+    """The data paths deep-copy/rebuild conversations per access, so the
+    transform never sees its own output. Pin the upstream contract that
+    makes this safe: LazySupervisedDataset deep-copies before transforming."""
+    import inspect
+
+    from vlm.data import dataset as ds
+
+    src = inspect.getsource(ds.LazySupervisedDataset)
+    deepcopy_pos = src.find("copy.deepcopy")
+    apply_pos = src.find("apply_image_position")
+    assert deepcopy_pos != -1 and apply_pos != -1 and deepcopy_pos < apply_pos
+
+
 def test_random_is_deterministic_per_seed():
     base = conv(("human", f"{TOK}\nIs the red car left of the blue truck?"),)
     a = [dict(t) for t in base]

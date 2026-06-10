@@ -366,9 +366,11 @@ def apply_image_position(
       random         - seed-deterministic choice of first / middle / last
 
     Note: the question text is derived by removing the single image token and
-    collapsing the resulting whitespace runs ("Look at  and answer." ->
-    "Look at and answer."), which also normalizes any stray newline the token
-    removal would have left.
+    the horizontal spacing / own-line newline directly adjacent to it. Internal
+    newlines in the prompt are preserved, so multi-line MCQ options survive
+    intact ("<image>\\nQ?\\nA. cat\\nB. dog" -> "Q?\\nA. cat\\nB. dog"). A
+    token embedded mid-line ("Look at <image> and answer.") collapses to a
+    single separating space ("Look at and answer.") rather than gluing words.
     """
     if mode == "keep":
         return
@@ -382,9 +384,15 @@ def apply_image_position(
         text = str(turn[key])
         if text.count(image_token) != 1:
             continue
-        # Collapse all whitespace introduced by removing the token (and any
-        # pre-existing runs) so no double space / stray newline survives.
-        question = " ".join(text.replace(image_token, " ").split())
+        # Remove the token plus its own-line newline (token-on-its-own-line
+        # case), else replace token + adjacent horizontal whitespace with a
+        # single space. Collapse stray horizontal-space runs but keep internal
+        # newlines so multi-line MCQ options survive.
+        tok = re.escape(image_token)
+        question = re.sub(r"[ \t]*" + tok + r"[ \t]*\n", "", text)
+        question = re.sub(r"[ \t]*" + tok + r"[ \t]*", " ", question)
+        question = re.sub(r"[ \t]+", " ", question)
+        question = "\n".join(line.strip() for line in question.split("\n")).strip()
         if not question:
             continue
         if mode == "question_first":
