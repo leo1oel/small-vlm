@@ -1,0 +1,12 @@
+defaults:
+    - sft-unified-bee-mix-sandwich
+    - _self_
+
+# Force arm aux-exit-retry (plan 2026-06-10): the existing early-exit CE
+# (k=6, shared norm+lm_head) re-run ON TOP OF sandwich ordering — under
+# access the early CE can finally reward question-conditioned image
+# reads; detach=true per the postmortem (FUSION_METRICS_EXPLAINED.md §5).
+trainer:
+    aux_exit_layers: [6]
+    aux_exit_weight: 0.25
+    aux_exit_detach: true

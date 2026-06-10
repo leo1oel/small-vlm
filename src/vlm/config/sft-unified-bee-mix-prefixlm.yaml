@@ -1,0 +1,13 @@
+defaults:
+    - sft-unified-bee-mix
+    - _self_
+
+# Access arm C (plan 2026-06-10): PaliGemma-style prefix-LM — bidirectional
+# attention over [system+image+question], causal suffix, loss unchanged.
+# 4D masks bypass FA2; SDPA carries them (masking_utils passthrough).
+model:
+    cross_modal_mask:
+        mode: prefix_lm
+
+trainer:
+    attn_implementation: sdpa
