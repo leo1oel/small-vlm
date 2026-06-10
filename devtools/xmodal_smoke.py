@@ -224,15 +224,25 @@ def main() -> int:
     pos0 = int(img_rows[0]) if img_rows.numel() else 1
     d2 = (h_pl[0, pos0] - h_2d[0, pos0]).abs().max().item()
     record("2.prefix_lm_shifts_prefix", d2 > 1e-3, f"max|Δ| at prefix pos {pos0}={d2:.2e}")
-    # degenerate: the LAST prefix token (just before the first answer label) is
-    # already causally-complete, so prefix_lm leaves it identical to base — a
-    # single-token-prefix-style invariance check at the prefix boundary.
-    first_lbl_a = (mlabels[0].ne(model.config.ignore_index)).nonzero().flatten()
-    last_prefix = int(first_lbl_a[0]) - 1 if first_lbl_a.numel() else pos0
-    d2b = (h_pl[0, last_prefix] - h_2d[0, last_prefix]).abs().max().item()
-    # NOTE: last prefix token CAN move (it gains visibility into nothing new
-    # since it is the rightmost prefix col; under prefix_lm it stays causal-eq).
-    record("2b.last_prefix_token_unchanged", d2b < 2e-2, f"max|Δ| at last prefix={d2b:.2e}")
+    # degenerate check (mask-level, exact): a single-token prefix gains no
+    # edges under prefix_lm — prefix×prefix collapses to the self-edge the
+    # causal base already has, so the masks must be bit-identical. (The
+    # rightmost prefix TOKEN's deep hidden state legitimately moves — at
+    # layer >= 2 it attends other prefix states that changed at layer 1 —
+    # so a hidden-state invariance check there would be wrong.)
+    from vlm.models.xmodal_mask import build_cross_modal_mask
+
+    one_attn = torch.ones(1, 4, dtype=torch.bool, device=device)
+    one_lab = torch.tensor(
+        [[model.config.ignore_index, 5, 6, 7]], device=device
+    )  # prefix = position 0 only
+    eq = bool(
+        (
+            build_cross_modal_mask(one_attn, None, one_lab, "prefix_lm")
+            == build_base_mask(one_attn)
+        ).all()
+    )
+    record("2b.single_token_prefix_mask_eq_base", eq, "prefix_lm == base for 1-token prefix")
     model.config.cross_modal_mask_mode = "none"
 
     # === Assertion 3: THEOREM (question sensitivity) ===
