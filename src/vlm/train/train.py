@@ -245,7 +245,9 @@ def train(
         getattr(model.config, "cross_modal_mask_mode", "none"),
         getattr(model.config, "cross_modal_mask_window", [1, 9]),
         getattr(model.config, "cross_modal_mask_bidirectional", False),
-        attn_implementation=training_args.attn_implementation,
+        # The live impl on the built model (vlm.py from_pretrained), NOT
+        # training_args: HF TrainingArguments never carries this field.
+        attn_implementation=str(getattr(model.config, "_attn_implementation", "") or ""),
         num_hidden_layers=len(model.model.layers),
     )
     model.config.cross_modal_mask_mode = cmm_mode
