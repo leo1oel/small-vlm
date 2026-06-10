@@ -227,7 +227,18 @@ def load_model(
                 "'namespace/name' if you meant one)"
             )
     processor = VLMProcessor.from_pretrained(pretrained)
-    VLMForCausalLM, _ = get_dynamic_vlm(pretrained)
+    VLMForCausalLM, VLMConfig = get_dynamic_vlm(pretrained)
+    # Self-describing mask arms (plan 2026-06-10): the img2q_window arm's
+    # per-layer masks are consumed only by the registered "sdpa_xmodal"
+    # attention function — plain sdpa would silently drop them and evaluate
+    # the model as text-blind causal. _attn_implementation never serializes
+    # into config.json, so auto-upgrade from the persisted mask mode instead.
+    ckpt_config = VLMConfig.from_pretrained(pretrained)
+    if (
+        str(getattr(ckpt_config, "cross_modal_mask_mode", "none") or "none") == "img2q_window"
+        and attn_implementation == "sdpa"
+    ):
+        attn_implementation = "sdpa_xmodal"
     model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
         pretrained,
         dtype=torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,
