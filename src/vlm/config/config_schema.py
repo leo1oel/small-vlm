@@ -145,6 +145,12 @@ class DatasetConfig:
     # never enters the loss. Whitespace-bodied blocks only — real reasoning
     # text is preserved. Energon path only.
     strip_empty_think: bool = False
+    # Image-placeholder layout inside human turns (plan 2026-06-10, access
+    # arms): "keep" preserves today's layout on both paths; "question_first"
+    # / "sandwich" / "random" rewrite single-image human turns. Applied on
+    # the energon path after placeholder injection and on the local-json
+    # path after preprocess_multimodal's image-first normalization.
+    image_position: str = "keep"
 
 
 @dataclass

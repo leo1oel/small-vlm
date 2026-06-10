@@ -1313,6 +1313,13 @@ class LazySupervisedDataset(Dataset):
         )
         if image is not None:
             sources = preprocess_multimodal(sources, self.data_args)
+            for source in sources:
+                apply_image_position(
+                    source,
+                    mode=self.data_args.image_position,
+                    image_token=self.data_args.image_token,
+                    seed=i,
+                )
 
         # elif "video" in sources[0]:
         #     video_file = self.list_data_dict[i]["video"]
