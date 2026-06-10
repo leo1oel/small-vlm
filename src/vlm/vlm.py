@@ -258,6 +258,9 @@ def vlm(cfg: AppConfig) -> None:
         # conversation_version in train.py) so inference reproduces training
         # preprocessing without guessing. Encoder-free checkpoints ignore it.
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
+        # Self-describing checkpoints: inference must rebuild prompts with the
+        # SAME image layout the model was trained on (plan 2026-06-10).
+        model.config.image_position = str(data_args.image_position)
         log.info("Creating data module")
         if cfg.dataset.type == "energon":
             # lazy import: needs megatron-energon + multistorageclient, which

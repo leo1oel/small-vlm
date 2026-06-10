@@ -36,6 +36,7 @@ or, keeping the model loaded across calls::
 import logging
 import re
 import warnings
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ from PIL import Image
 
 from ..data.data_arguments import DataArguments
 from ..data.dataset import (
+    apply_image_position,
     load_audio_frames,
     tokenizer_multimodal_token,
 )
@@ -469,6 +471,22 @@ def generate_response(
             "audio inputs are only supported with the 'plain' or 'qwen' conversation "
             f"templates, got conv_mode={conv_mode!r}"
         )
+
+    # Self-describing checkpoints: rebuild the prompt with the SAME image
+    # layout the model was trained on (plan 2026-06-10). Only the single-image
+    # case is repositioned (mirrors apply_image_position's training-side guard);
+    # the seed mirrors the energon path (crc32 of the rendered query).
+    image_token = str(getattr(model.config, "image_token", "<image>") or "<image>")
+    image_position = str(getattr(model.config, "image_position", "keep") or "keep")
+    if image_position != "keep" and query.count(image_token) == 1:
+        _turns = [{"from": "human", "value": query}]
+        apply_image_position(
+            _turns,
+            mode=image_position,
+            image_token=image_token,
+            seed=zlib.crc32(query.encode()),
+        )
+        query = _turns[0]["value"]
 
     query = ensure_placeholders(query, len(images), len(audios), data_args)
     prompt = build_prompt(conv_mode, query, data_args)
