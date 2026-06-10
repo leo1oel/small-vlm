@@ -47,6 +47,7 @@ import os
 import re
 import threading
 import time
+import zlib
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +60,7 @@ from ..models.image_processing_raw import RawImageProcessor
 from .data_arguments import DataArguments
 from .dataset import (
     DataCollatorForSupervisedDataset,
+    apply_image_position,
     check_audio_template_supported,
     inject_missing_media_tokens,
     load_audio_frames,
@@ -718,6 +720,13 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
         conversations = messages_to_conversations(sample.messages, self.data_args)
         inject_missing_media_tokens(
             conversations, n_images=len(images), n_audios=len(audios), data_args=self.data_args
+        )
+        apply_image_position(
+            conversations,
+            mode=self.data_args.image_position,
+            image_token=self.data_args.image_token,
+            # Stable per-sample seed: deterministic across epochs/resumes.
+            seed=zlib.crc32(str(sample.__key__).encode()),
         )
 
         has_media = bool(images) or bool(audios)
