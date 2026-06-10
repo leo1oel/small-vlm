@@ -188,6 +188,47 @@ def test_sdpa_xmodal_registered_and_swaps_per_module_mask():
     assert out_dec.shape[1] == 1
 
 
+def test_install_xmodal_masks_window_stash():
+    """install_xmodal_masks stashes the windowed mask on layers lo..hi only."""
+    import types
+
+    import torch
+
+    from vlm.models import modeling_vlm
+
+    class Attn:
+        pass
+
+    class Layer:
+        def __init__(self):
+            self.self_attn = Attn()
+
+    fake = types.SimpleNamespace(
+        config=types.SimpleNamespace(
+            cross_modal_mask_mode="img2q_window",
+            cross_modal_mask_window=[1, 2],
+            ignore_index=-100,
+        ),
+        model=types.SimpleNamespace(layers=[Layer(), Layer(), Layer()]),
+    )
+    attn = torch.ones(1, 5, dtype=torch.bool)
+    labels = torch.tensor([[-100, -100, -100, 4, 5]])
+    blocks = torch.tensor([[-1, 0, -1, -1, -1]])
+
+    out = modeling_vlm.install_xmodal_masks(fake, attn, blocks, labels)
+    assert out.shape == (1, 1, 5, 5)
+    assert fake.model.layers[0].self_attn._xmodal_mask is not None
+    assert fake.model.layers[1].self_attn._xmodal_mask is not None
+    assert fake.model.layers[2].self_attn._xmodal_mask is None
+    # prefix_lm returns the merged mask and does not touch layers.
+    # labels [-100,-100,-100,4,5] -> first supervised pos = 3, prefix = {0,1,2}.
+    fake.config.cross_modal_mask_mode = "prefix_lm"
+    out2 = modeling_vlm.install_xmodal_masks(fake, attn, None, labels)
+    assert out2.shape == (1, 1, 5, 5)
+    assert bool(out2[0, 0, 0, 2])  # genuinely non-causal prefix edge: row 0 sees col 2
+    assert not bool(out2[0, 0, 0, 3])  # prefix row does not see the supervised suffix
+
+
 def test_cross_modal_mask_config_defaults():
     from vlm.config.config_schema import CrossModalMaskConfig
 

@@ -242,6 +242,35 @@ def create_dynamic_vlm_class(
     return DynamicVLMClass
 
 
+def install_xmodal_masks(
+    self: Any,
+    attn2d: Tensor,
+    image_block_ids: Tensor | None,
+    labels: Tensor | None,
+) -> Tensor:
+    """Build the cross-modal-arm 4D mask(s) (plan 2026-06-10). Returns the
+    tensor to pass downstream as attention_mask; for img2q_window additionally
+    stashes the windowed mask on the in-window layers' attention modules
+    (consumed by sdpa_xmodal_forward; decode steps shape-guard it away) and
+    clears the stash on out-of-window layers. Module-level (like forward) so
+    tests can call it unbound with a SimpleNamespace self; attached to the
+    dynamic class in the assembly dict below."""
+    mode = str(getattr(self.config, "cross_modal_mask_mode", "none") or "none")
+    ignore_index = int(getattr(self.config, "ignore_index", -100))
+    if mode == "prefix_lm":
+        return _xmodal_mask.build_cross_modal_mask(
+            attn2d, None, labels, mode, ignore_index=ignore_index
+        )
+    win = _xmodal_mask.build_cross_modal_mask(
+        attn2d, image_block_ids, labels, mode, ignore_index=ignore_index
+    )
+    base = _xmodal_mask.build_base_mask(attn2d)
+    lo, hi = (int(x) for x in getattr(self.config, "cross_modal_mask_window", [1, 9]))
+    for idx, layer in enumerate(self.model.layers):
+        layer.self_attn._xmodal_mask = win if (lo - 1) <= idx <= (hi - 1) else None
+    return base
+
+
 def create_dynamic_causal_vlm_class(
     base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
     pretrain_class: Any,
@@ -325,6 +354,7 @@ def create_dynamic_causal_vlm_class(
             and getattr(self, "visual_aux_head", None) is not None
             and float(getattr(self.config, "visual_aux_weight", 0.0) or 0.0) > 0.0
         )
+        xmodal_mode = str(getattr(self.config, "cross_modal_mask_mode", "none") or "none")
         image_block_ids = None
         if inputs_embeds is None:
             (
@@ -343,8 +373,26 @@ def create_dynamic_causal_vlm_class(
                 labels,
                 image_features,
                 audio_features,
-                with_image_block_ids=visual_aux_on,
+                with_image_block_ids=visual_aux_on or xmodal_mode == "img2q_window",
             )
+        # Cross-modal mask arms (plan 2026-06-10): swap the 2D padding mask
+        # for the arm's 4D mask on the loss path; generation prefill installs
+        # its mask via the one-shot _xmodal_gen_mask stash set in generate().
+        if (
+            xmodal_mode != "none"
+            and labels is not None
+            and attention_mask is not None
+            and attention_mask.dim() == 2
+        ):
+            attention_mask = self.install_xmodal_masks(attention_mask, image_block_ids, labels)
+        gen_mask = getattr(self, "_xmodal_gen_mask", None)
+        if (
+            gen_mask is not None
+            and inputs_embeds is not None
+            and inputs_embeds.shape[1] == gen_mask.shape[-2]
+        ):
+            attention_mask = gen_mask
+            self._xmodal_gen_mask = None
         loss_chunk_size = getattr(self.config, "loss_chunk_size", 0) or 0
         if (
             loss_chunk_size > 0
@@ -1189,6 +1237,7 @@ def create_dynamic_causal_vlm_class(
             "__init__": __init__,
             "_build_visual_aux_head": _build_visual_aux_head,
             "forward": forward,
+            "install_xmodal_masks": install_xmodal_masks,
             "chunked_ce_forward": chunked_ce_forward,
             "floating_point_ops": floating_point_ops,
             "generate": generate,
