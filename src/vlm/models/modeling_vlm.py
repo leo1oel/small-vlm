@@ -140,6 +140,11 @@ def create_dynamic_vlm_class(
     @override
     def __init__(self: Any, config):  # pyright: ignore
         super(self.__class__, self).__init__(config)
+        # Visual FFN experts (spec 2026-06-14): attach the per-layer
+        # modality-routed expert structure on BOTH paths (no-op unless
+        # config.visual_expert), so checkpoint shards have a module to load
+        # into; the text->visual weight copy is fresh-build-only (vlm.py).
+        install_visual_experts(self, config)
         if not config.lazy_load:
             self.vision_model = self._build_vision_model(config)
             self.connector = self._build_connector(config)
@@ -271,6 +276,75 @@ def install_xmodal_masks(
     return base
 
 
+def _routed_mlp_forward(self: Any, hidden_states: Tensor) -> Tensor:
+    """Instance-level FFN forward for a decoder layer carrying a visual expert
+    (Mono-InternVL arXiv:2410.08202 / BREEN). Routes each token through the
+    text FFN (`_text_mlp_cls_forward`, the original unbound class forward) or
+    the visual FFN (`mlp_visual`), blended by the per-token image mask stashed
+    on the module by the causal forward. Training always runs BOTH experts (the
+    mask is all-zero for text-only batches) so the visual FFN keeps a gradient
+    every step — required so DeepSpeed ZeRO does not assert on uneven param
+    participation across ranks; with no mask set (cached decode / eval text-only)
+    only the text FFN runs. The mask is a non-grad (B, N, 1) tensor that persists
+    on the module across the forward+backward of a step, so gradient-checkpoint
+    recompute reproduces the same routing."""
+    text_out = self._text_mlp_cls_forward(self, hidden_states)
+    mask = self._visual_mask
+    if mask is None:
+        return text_out
+    visual_out = self.mlp_visual(hidden_states)
+    return text_out * (1.0 - mask) + visual_out * mask
+
+
+def install_visual_experts(model: Any, config: Any) -> None:
+    """Attach a per-decoder-layer modality-routed visual FFN expert to a built
+    LM backbone (spec 2026-06-14). The original `layer.mlp` keeps its parameter
+    names (so the HF backbone and any checkpoint still load unchanged); we add a
+    sibling `layer.mlp.mlp_visual` (a fresh same-class FFN) and override that
+    mlp's forward to route by modality. Called from __init__ on BOTH the
+    fresh-build and checkpoint-reload paths so the structure exists when weights
+    land; the text->visual weight copy is a separate fresh-build-only step
+    (init_visual_experts_from_text). Idempotent."""
+    if not getattr(config, "visual_expert", False):
+        return
+    layers_cfg = getattr(config, "visual_expert_layers", None)
+    n = len(model.layers)
+    idxs = list(range(n)) if not layers_cfg else [int(i) for i in layers_cfg if 0 <= int(i) < n]
+    routed: list[nn.Module] = []
+    for i in idxs:
+        mlp = model.layers[i].mlp
+        if getattr(mlp, "_visual_expert_installed", False):
+            routed.append(mlp)
+            continue
+        # Fresh same-class FFN (built under meta during from_pretrained;
+        # materialized by _init_weights on fresh build, or by the checkpoint
+        # shards on reload — exactly like visual_aux_head).
+        mlp.mlp_visual = type(mlp)(config)
+        mlp._visual_mask = None
+        # The ORIGINAL (text) FFN computation as the unbound class forward:
+        # calling it on `self` runs only gate/up/down and never recurses into
+        # mlp_visual or this override.
+        mlp._text_mlp_cls_forward = type(mlp).forward
+        mlp.forward = _routed_mlp_forward.__get__(mlp, type(mlp))
+        mlp._visual_expert_installed = True
+        routed.append(mlp)
+    model._visual_expert_mlps = routed
+    log.info(f"Installed visual FFN experts on {len(routed)}/{n} decoder layers.")
+
+
+def init_visual_experts_from_text(model: Any) -> None:
+    """Fresh-build only: copy each layer's text FFN weights into its visual
+    expert so the expert starts identical to the text FFN and diverges from
+    there (Mono-InternVL init-from-LLM-FFN). No-op when no experts installed."""
+    count = 0
+    for mlp in getattr(model, "_visual_expert_mlps", []):
+        text_sd = {k: v for k, v in mlp.state_dict().items() if not k.startswith("mlp_visual.")}
+        mlp.mlp_visual.load_state_dict(text_sd)
+        count += 1
+    if count:
+        log.info(f"Initialized {count} visual FFN experts from their text FFN weights.")
+
+
 def create_dynamic_causal_vlm_class(
     base_language_model_name_or_path: str,  # e.g., "google/gemma-3-4b-it"
     pretrain_class: Any,
@@ -355,6 +429,10 @@ def create_dynamic_causal_vlm_class(
             and float(getattr(self.config, "visual_aux_weight", 0.0) or 0.0) > 0.0
         )
         xmodal_mode = str(getattr(self.config, "cross_modal_mask_mode", "none") or "none")
+        # Visual FFN experts (spec 2026-06-14) need the per-token image mask, so
+        # request image_block_ids whenever they are enabled (same source the
+        # visual-aux / img2q_window paths use).
+        has_ve = bool(getattr(self.config, "visual_expert", False))
         image_block_ids = None
         if inputs_embeds is None:
             (
@@ -373,7 +451,7 @@ def create_dynamic_causal_vlm_class(
                 labels,
                 image_features,
                 audio_features,
-                with_image_block_ids=visual_aux_on or xmodal_mode == "img2q_window",
+                with_image_block_ids=visual_aux_on or xmodal_mode == "img2q_window" or has_ve,
             )
         # Cross-modal mask arms (plan 2026-06-10): swap the 2D padding mask
         # for the arm's 4D mask on the loss path; generation prefill installs
@@ -393,6 +471,41 @@ def create_dynamic_causal_vlm_class(
         ):
             attention_mask = gen_mask
             self._xmodal_gen_mask = None
+        # Visual FFN expert routing (spec 2026-06-14): stash the per-token image
+        # mask on each expert layer's mlp before the backbone runs. Training
+        # always provides a mask (all-zero for text-only batches) so both
+        # experts get a gradient every step (DeepSpeed ZeRO uneven-participation
+        # guard); eval / cached-decode with no image leaves it None -> text only.
+        if has_ve:
+            ve_gen = getattr(self, "_ve_gen_mask", None)
+            if (
+                ve_gen is not None
+                and inputs_embeds is not None
+                and inputs_embeds.shape[1] == ve_gen.shape[1]
+            ):
+                # Generation prefill: consume the one-shot mask stashed by
+                # generate() (image_block_ids are unavailable here because
+                # inputs_embeds is already spliced). Decode steps don't match
+                # the prefill length -> fall through to text-only (mask=None).
+                vmask = ve_gen.to(inputs_embeds.dtype)
+                self._ve_gen_mask = None
+            elif image_block_ids is not None:
+                vmask = (image_block_ids >= 0).unsqueeze(-1).to(
+                    inputs_embeds.dtype if inputs_embeds is not None else self.dtype
+                )
+            elif self.training and inputs_embeds is not None:
+                vmask = inputs_embeds.new_zeros(
+                    (inputs_embeds.shape[0], inputs_embeds.shape[1], 1)
+                )
+            elif self.training and input_ids is not None:
+                vmask = torch.zeros(
+                    (input_ids.shape[0], input_ids.shape[1], 1),
+                    dtype=self.dtype,
+                    device=input_ids.device,
+                )
+            else:
+                vmask = None
+            self._set_visual_mask(vmask)
         loss_chunk_size = getattr(self.config, "loss_chunk_size", 0) or 0
         if (
             loss_chunk_size > 0
@@ -715,7 +828,8 @@ def create_dynamic_causal_vlm_class(
                     None,
                     image_features,
                     audio_features,
-                    with_image_block_ids=xmodal_mode == "img2q_window",
+                    with_image_block_ids=(xmodal_mode == "img2q_window")
+                    or bool(getattr(self.config, "visual_expert", False)),
                 )
             )
             if xmodal_mode != "none" and attention_mask is not None:
@@ -728,6 +842,12 @@ def create_dynamic_causal_vlm_class(
                 self._xmodal_gen_mask = self.install_xmodal_masks(
                     attention_mask, image_block_ids, None
                 )
+            # Visual FFN experts (spec 2026-06-14): stash a one-shot prefill
+            # image mask so generation routes image tokens through the expert
+            # (forward consumes it by shape-match, like _xmodal_gen_mask). Decode
+            # steps emit text tokens -> text FFN, correct by construction.
+            if bool(getattr(self.config, "visual_expert", False)) and image_block_ids is not None:
+                self._ve_gen_mask = (image_block_ids >= 0).unsqueeze(-1).to(inputs_embeds.dtype)
         else:
             inputs_embeds = self.get_input_embeddings()(inputs)
 
@@ -1189,6 +1309,15 @@ def create_dynamic_causal_vlm_class(
             image_block_ids_padded,
         )
 
+    def _set_visual_mask(self: Any, mask: Tensor | None) -> None:
+        """Stash the per-token image mask (B, N, 1) on every visual-expert mlp
+        so _routed_mlp_forward can blend text/visual FFN outputs. No-op unless
+        experts are installed (install_visual_experts populated the list)."""
+        mlps = getattr(self.model, "_visual_expert_mlps", None)
+        if mlps:
+            for mlp in mlps:
+                mlp._visual_mask = mask
+
     def floating_point_ops(
         self: Any, input_dict: dict[str, Any], exclude_embeddings: bool = True
     ) -> int:
@@ -1248,6 +1377,7 @@ def create_dynamic_causal_vlm_class(
             "config_class": config_class,
             "__init__": __init__,
             "_build_visual_aux_head": _build_visual_aux_head,
+            "_set_visual_mask": _set_visual_mask,
             "forward": forward,
             "install_xmodal_masks": install_xmodal_masks,
             "chunked_ce_forward": chunked_ce_forward,

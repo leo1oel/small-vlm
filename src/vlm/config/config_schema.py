@@ -90,6 +90,25 @@ class VisualAuxConfig:
 
 
 @dataclass
+class VisualExpertConfig:
+    """Per-decoder-layer modality-routed visual FFN expert (Mono-InternVL
+    arXiv:2410.08202 / BREEN arXiv:2503.12446 style; spec:
+    docs/superpowers/specs/2026-06-14-native-vlm-capacity-readiness-design.md).
+    Structural — it attaches a sibling `mlp.mlp_visual` to each selected decoder
+    layer and routes the FFN by the per-token image mask, so it lives on the
+    model config and serializes into checkpoint config.json (visual_aux pattern).
+    enabled=False = bit-identical baseline (no module attached, no routing)."""
+
+    # Attach the per-layer visual FFN expert and route image tokens through it.
+    enabled: bool = False
+    # null = every decoder layer; else explicit 0-based layer indices.
+    layers: list[int] | None = None
+    # Fresh-build only: initialize each visual FFN by copying the text FFN's
+    # weights (so training starts from an identical, then diverging, FFN).
+    init_from_text: bool = True
+
+
+@dataclass
 class CrossModalMaskConfig:
     # "none" (default, bit-identical baseline) | "prefix_lm" | "img2q_window".
     # prefix_lm: bidirectional attention over [system+image+question], causal
@@ -112,6 +131,7 @@ class ModelConfig:
     connector: ConnectorConfig = field(default_factory=ConnectorConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     visual_aux: VisualAuxConfig = field(default_factory=VisualAuxConfig)
+    visual_expert: VisualExpertConfig = field(default_factory=VisualExpertConfig)
     cross_modal_mask: CrossModalMaskConfig = field(default_factory=CrossModalMaskConfig)
 
 

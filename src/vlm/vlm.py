@@ -212,6 +212,17 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         config.visual_aux_objective = str(model_cfg.visual_aux.objective)
         config.visual_aux_head_depth = int(model_cfg.visual_aux.head_depth)
         config.visual_aux_head_hidden = int(model_cfg.visual_aux.head_hidden)
+        # Visual-FFN expert structural fields (spec 2026-06-14) must be on the
+        # config BEFORE construction — the inner __init__ attaches the per-layer
+        # experts from them. Plain types; they serialize into checkpoint
+        # config.json so reloads rebuild the structure (visual_aux pattern).
+        config.visual_expert = bool(model_cfg.visual_expert.enabled)
+        config.visual_expert_layers = (
+            [int(x) for x in model_cfg.visual_expert.layers]
+            if model_cfg.visual_expert.layers is not None
+            else None
+        )
+        config.visual_expert_init_from_text = bool(model_cfg.visual_expert.init_from_text)
         model = VLMForCausalLM.from_pretrained(
             model_cfg.language_model.hf_name,
             config=config,
@@ -226,6 +237,13 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         if model.config.vocab_size < len(processor.tokenizer):
             model.model.resize_token_embeddings(len(processor.tokenizer))
         model.model.init_other_components()
+        # Fresh-build only: copy each text FFN's weights into its visual expert
+        # AFTER the HF backbone weights are loaded (Mono-InternVL init-from-LLM).
+        # Reloads skip this — the checkpoint already carries trained experts.
+        if getattr(config, "visual_expert", False) and config.visual_expert_init_from_text:
+            from .models.modeling_vlm import init_visual_experts_from_text
+
+            init_visual_experts_from_text(model.model)
         model.config.lazy_load = False
 
     log.info(model.config)
