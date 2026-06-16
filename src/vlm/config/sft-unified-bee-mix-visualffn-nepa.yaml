@@ -1,0 +1,29 @@
+defaults:
+    - sft-unified-bee-mix-visualffn
+    - _self_
+
+# capacity + from-data supervision (spec 2026-06-14, B sub-study). The
+# visual-FFN expert (dedicated capacity) PLUS the NEPA next-patch-embedding aux
+# loss (a from-data visual readiness signal — stop-grad cosine to the connector
+# output, arXiv:2512.16922). This is the cell that tests whether adding a
+# direct visual training signal on top of dedicated capacity helps BEYOND
+# capacity alone (vs sft-unified-bee-mix-visualffn) and beyond supervision
+# alone (vs sft-unified-bee-mix-nepa). Same blend / steps / seed / budget ->
+# clean 2x2 with baseline-mix.
+#
+# Honest prior: BREEN/EVEv2 suggest the supervision delta may be SMALL (BREEN
+# +0.9 from CLIP-distill; EVEv2 dropped recon objectives) — a clean dissociation
+# either way, not a guaranteed win.
+#
+# Cluster launch:
+#   CONFIG_NAME=sft-unified-bee-mix-visualffn-nepa sbatch train_l40s.slurm
+
+model:
+    visual_aux:
+        objective: nepa
+
+trainer:
+    # Match sft-unified-bee-mix-nepa so the {nepa-only} vs {capacity+nepa} arm
+    # is a clean +capacity comparison.
+    visual_aux_weight: 0.5
+    run_name: visualffn-nepa-beemix-2b
