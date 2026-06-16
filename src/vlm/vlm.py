@@ -223,6 +223,13 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             else None
         )
         config.visual_expert_init_from_text = bool(model_cfg.visual_expert.init_from_text)
+        # Visual-prefix structural fields (spec 2026-06-14): on the config BEFORE
+        # construction so the inner __init__/init_other_components build the stack
+        # from them; serialized into checkpoint config.json so reloads rebuild it.
+        config.visual_prefix = bool(model_cfg.visual_prefix.enabled)
+        config.visual_prefix_depth = int(model_cfg.visual_prefix.depth)
+        config.visual_prefix_heads = int(model_cfg.visual_prefix.heads)
+        config.visual_prefix_intermediate = int(model_cfg.visual_prefix.intermediate)
         model = VLMForCausalLM.from_pretrained(
             model_cfg.language_model.hf_name,
             config=config,

@@ -345,6 +345,82 @@ class RawWaveformConnector(Connector):
         )
 
 
+class _VisualPrefixLayer(nn.Module):
+    """One bidirectional pre-norm SwiGLU transformer block — a set-encoder over
+    an image's connector tokens. No RoPE: 2D spatial position already lives in
+    the connector's factorized XY posemb, so the prefix is a permutation-aware
+    set encoder, not a sequence model. Standard Qwen-style sublayers (RMSNorm,
+    separate Q/K/V/O, SwiGLU) so the geometry matches the backbone."""
+
+    def __init__(self, dim: int, n_heads: int, intermediate: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        if dim % n_heads != 0:
+            raise ValueError(f"VisualPrefix dim {dim} not divisible by n_heads {n_heads}")
+        self.n_heads: int = n_heads
+        self.head_dim: int = dim // n_heads
+        self.input_norm: nn.RMSNorm = nn.RMSNorm(dim, eps=eps)
+        self.q_proj: nn.Linear = nn.Linear(dim, dim, bias=False)
+        self.k_proj: nn.Linear = nn.Linear(dim, dim, bias=False)
+        self.v_proj: nn.Linear = nn.Linear(dim, dim, bias=False)
+        self.o_proj: nn.Linear = nn.Linear(dim, dim, bias=False)
+        self.post_norm: nn.RMSNorm = nn.RMSNorm(dim, eps=eps)
+        self.gate_proj: nn.Linear = nn.Linear(dim, intermediate, bias=False)
+        self.up_proj: nn.Linear = nn.Linear(dim, intermediate, bias=False)
+        self.down_proj: nn.Linear = nn.Linear(intermediate, dim, bias=False)
+        for lin in (self.q_proj, self.k_proj, self.v_proj, self.o_proj,
+                    self.gate_proj, self.up_proj, self.down_proj):
+            nn.init.normal_(lin.weight, std=0.02)
+
+    @override
+    def forward(self, x: Tensor, attn_mask: Tensor) -> Tensor:
+        """x (B, n, dim); attn_mask (B, 1, 1, n) additive (-inf on padded keys).
+        Bidirectional within each image's valid tokens."""
+        b, n, dim = x.shape
+        h = self.input_norm(x)
+        q = self.q_proj(h).view(b, n, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(h).view(b, n, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(h).view(b, n, self.n_heads, self.head_dim).transpose(1, 2)
+        o = nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        x = x + self.o_proj(o.transpose(1, 2).reshape(b, n, dim))
+        h = self.post_norm(x)
+        x = x + self.down_proj(nn.functional.silu(self.gate_proj(h)) * self.up_proj(h))
+        return x
+
+
+class VisualPrefix(nn.Module):
+    """K bidirectional layers applied to each image's connector tokens BEFORE
+    they enter the shared LLM (NEO pre-Buffer / spec 2026-06-14 "early-capacity"
+    arm). Grows a data-trained visual encoder *inside* the model with dedicated
+    params, instead of importing a ViT. Operates per-image (tokens of one image
+    attend only among themselves), batched via padding + a key-padding mask."""
+
+    def __init__(self, dim: int, depth: int, n_heads: int, intermediate: int) -> None:
+        super().__init__()
+        self.layers: nn.ModuleList = nn.ModuleList(
+            [_VisualPrefixLayer(dim, n_heads, intermediate) for _ in range(depth)]
+        )
+
+    @override
+    def forward(self, features: list[Tensor]) -> list[Tensor]:
+        """features: list of per-image (N_i, dim). Returns the same layout."""
+        if not features:
+            return features
+        sizes = [int(f.shape[0]) for f in features]
+        m, maxn, dim = len(features), max(sizes), int(features[0].shape[1])
+        x = features[0].new_zeros((m, maxn, dim))
+        keep = torch.zeros((m, maxn), dtype=torch.bool, device=features[0].device)
+        for i, f in enumerate(features):
+            x[i, : sizes[i]] = f
+            keep[i, : sizes[i]] = True
+        # (B,1,1,n) additive mask: a valid query attends to all valid keys of its
+        # own image, never to padding; padded query rows are computed then dropped.
+        attn_mask = torch.zeros((m, 1, 1, maxn), dtype=x.dtype, device=x.device)
+        attn_mask = attn_mask.masked_fill(~keep[:, None, None, :], float("-inf"))
+        for layer in self.layers:
+            x = layer(x, attn_mask)
+        return [x[i, : sizes[i]] for i in range(m)]
+
+
 # --- Connector Mapping and Exports ---
 
 # This map is used by your _build_connector function to instantiate the correct connector type.
