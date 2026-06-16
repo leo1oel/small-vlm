@@ -21,3 +21,4 @@ model:
 
 trainer:
     visual_aux_weight: 0.5
+    run_name: nepa-beemix-2b

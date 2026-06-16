@@ -109,6 +109,23 @@ class VisualExpertConfig:
 
 
 @dataclass
+class VisualPrefixConfig:
+    """Dedicated internal "visual prefix" stack (spec 2026-06-14, early-capacity
+    arm; NEO pre-Buffer style). K bidirectional layers process each image's
+    connector tokens BEFORE they enter the shared LLM — a data-grown visual
+    encoder with its own params, no imported ViT. Structural: built next to the
+    connector and serialized into checkpoint config.json. enabled=False = no
+    module (bit-identical baseline)."""
+
+    enabled: bool = False
+    # Number of bidirectional prefix layers (NEO 2B uses ~0.3*depth).
+    depth: int = 6
+    # 0 -> inherit the LM's num_attention_heads / intermediate_size.
+    heads: int = 0
+    intermediate: int = 0
+
+
+@dataclass
 class CrossModalMaskConfig:
     # "none" (default, bit-identical baseline) | "prefix_lm" | "img2q_window".
     # prefix_lm: bidirectional attention over [system+image+question], causal
@@ -132,6 +149,7 @@ class ModelConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     visual_aux: VisualAuxConfig = field(default_factory=VisualAuxConfig)
     visual_expert: VisualExpertConfig = field(default_factory=VisualExpertConfig)
+    visual_prefix: VisualPrefixConfig = field(default_factory=VisualPrefixConfig)
     cross_modal_mask: CrossModalMaskConfig = field(default_factory=CrossModalMaskConfig)
 
 

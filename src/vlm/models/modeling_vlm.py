@@ -15,7 +15,7 @@ from transformers.models.auto.modeling_auto import (
 
 from . import xmodal_mask as _xmodal_mask  # noqa: F401  (registers sdpa_xmodal)
 from .configuration_vlm import create_dynamic_vlm_config_class
-from .connectors import Connector, connector_map
+from .connectors import Connector, VisualPrefix, connector_map
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
@@ -149,12 +149,14 @@ def create_dynamic_vlm_class(
             self.vision_model = self._build_vision_model(config)
             self.connector = self._build_connector(config)
             self.audio_connector = self._build_audio_connector(config)
+            self.visual_prefix = self._build_visual_prefix(config)
         log.info(f"DynamicVLM class {self.__class__.__name__} initialized.")
 
     def init_other_components(self: Any) -> None:
         self.vision_model = self._build_vision_model(self.config)
         self.connector = self._build_connector(self.config)
         self.audio_connector = self._build_audio_connector(self.config)
+        self.visual_prefix = self._build_visual_prefix(self.config)
 
     def _build_vision_model(self: Any, config: Any) -> PreTrainedModel | None:
         vision_config = config.vision_config
@@ -232,6 +234,23 @@ def create_dynamic_vlm_class(
             config.hidden_size,
         )
 
+    def _build_visual_prefix(self: Any, config: Any) -> VisualPrefix | None:
+        """Dedicated internal visual-prefix stack (spec 2026-06-14): K
+        bidirectional layers over each image's connector tokens before they
+        enter the shared LLM. None unless config.visual_prefix — baseline models
+        carry no extra module (audio-connector / visual_aux_head pattern), and
+        old checkpoints (no visual_prefix_* keys) load unchanged."""
+        if not getattr(config, "visual_prefix", False):
+            return None
+        depth = int(getattr(config, "visual_prefix_depth", 6) or 6)
+        n_heads = int(getattr(config, "visual_prefix_heads", 0) or config.num_attention_heads)
+        intermediate = int(
+            getattr(config, "visual_prefix_intermediate", 0) or config.intermediate_size
+        )
+        return VisualPrefix(
+            dim=config.hidden_size, depth=depth, n_heads=n_heads, intermediate=intermediate
+        )
+
     DynamicVLMClass = type(
         "VLM",
         (ParentLLMClass,),  # Inherit from the specific LLM class
@@ -242,6 +261,7 @@ def create_dynamic_vlm_class(
             "_build_connector": _build_connector,
             "_build_audio_connector": _build_audio_connector,
             "_build_vision_model": _build_vision_model,
+            "_build_visual_prefix": _build_visual_prefix,
         },
     )
     return DynamicVLMClass
@@ -929,7 +949,13 @@ def create_dynamic_causal_vlm_class(
         packed = torch.cat([patches.to(self.device) for patches in images], dim=0)
         positions = torch.cat([pos.to(self.device) for pos in image_position_ids], dim=0)
         features = self.model.connector(packed, positions)
-        return list(torch.split(features, split_sizes, dim=0))
+        features_list = list(torch.split(features, split_sizes, dim=0))
+        # Visual-prefix stack (spec 2026-06-14): grow features with K dedicated
+        # bidirectional layers per image before they enter the shared LLM.
+        prefix = getattr(self.model, "visual_prefix", None)
+        if prefix is not None:
+            features_list = prefix(features_list)
+        return features_list
 
     def encode_raw_audio(
         self: Any,
