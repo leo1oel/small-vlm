@@ -449,6 +449,14 @@ def create_dynamic_causal_vlm_class(
             and float(getattr(self.config, "visual_aux_weight", 0.0) or 0.0) > 0.0
         )
         xmodal_mode = str(getattr(self.config, "cross_modal_mask_mode", "none") or "none")
+        # Image-grounding margin loss (spec 2026-06-18): needs image_block_ids to
+        # locate the image span (zero it for the blank null) and to restrict the
+        # margin to answer tokens of image-bearing samples. Training-loss only.
+        grounding_on = (
+            self.training
+            and labels is not None
+            and float(getattr(self.config, "grounding_weight", 0.0) or 0.0) > 0.0
+        )
         # Visual FFN experts (spec 2026-06-14) need the per-token image mask, so
         # request image_block_ids whenever they are enabled (same source the
         # visual-aux / img2q_window paths use).
@@ -471,7 +479,10 @@ def create_dynamic_causal_vlm_class(
                 labels,
                 image_features,
                 audio_features,
-                with_image_block_ids=visual_aux_on or xmodal_mode == "img2q_window" or has_ve,
+                with_image_block_ids=visual_aux_on
+                or xmodal_mode == "img2q_window"
+                or has_ve
+                or grounding_on,
             )
         # Cross-modal mask arms (plan 2026-06-10): swap the 2D padding mask
         # for the arm's 4D mask on the loss path; generation prefill installs
@@ -804,6 +815,83 @@ def create_dynamic_causal_vlm_class(
                 if va_objective == "nepa":
                     components["visual_aux_cos"] = (cos_total / n_pairs).detach()
                     components["visual_aux_tgt_std"] = targets.std(dim=0).mean().detach()
+
+        # Image-grounding margin loss (spec 2026-06-18): the gold answer must be
+        # more likely WITH the real image than with a blanked image. Re-run the
+        # backbone once with the image-position embeddings zeroed (no_grad null),
+        # then a per-answer-token hinge relu(margin + logp_blank - logp_real)
+        # pulls logp_real up — directly optimizing the R0 (intact - swap) signal
+        # the FDI probe measures, pushing the model out of the language-prior
+        # basin. Only the negative pass is detached, so no gradient teaches the
+        # blank path to be worse; we only reward USING the image. Fires only when
+        # the microbatch carries image tokens (text-only -> graph-symmetric zero).
+        g_weight = float(getattr(self.config, "grounding_weight", 0.0) or 0.0)
+        if g_weight > 0.0:
+            # image_block_ids is None when the microbatch carried NO image at all
+            # (prepare_inputs_labels early return, independent of
+            # with_image_block_ids). The "grounding" component MUST be stashed on
+            # every training step regardless: vlm_trainer.log all-reduces
+            # sorted(components), and a key missing on one rank (e.g. an all-text
+            # microbatch) while present on another deadlocks the collective.
+            img_pos = (
+                (image_block_ids.to(flat_hidden.device) >= 0)
+                if image_block_ids is not None
+                else None
+            )
+            g_valid = None
+            if img_pos is not None and inputs_embeds is not None:
+                B, T = img_pos.shape
+                has_img_row = img_pos.any(dim=1)  # [B]
+                row_of_pos = torch.arange(B * T, device=flat_hidden.device) // T
+                g_valid = valid & has_img_row[row_of_pos]  # answer tokens of image rows
+            if g_valid is None or n_valid == 0 or not bool(g_valid.any()):
+                # No image-bearing answer token (no-image microbatch, all targets
+                # ignored, or no image rows): anchor on lm_head so the path is
+                # graph-symmetric across ranks (deepspeed uneven-participation)
+                # and the component key is present every step.
+                loss = loss + self.lm_head(flat_hidden[:1]).float().sum() * 0.0
+                components["grounding"] = zero
+            else:
+                margin = float(getattr(self.config, "grounding_margin", 1.0) or 1.0)
+                tgt_g = flat_targets[g_valid]
+                # Blank null: zero the image-position embeddings, re-run the
+                # backbone under no_grad, and read the gold-token logp without
+                # the image. Fully detached (no_grad + lm_head under no_grad).
+                blank_embeds = inputs_embeds.detach().clone()
+                blank_embeds[img_pos] = 0.0
+                with torch.no_grad():
+                    blank_out = self.model(
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        inputs_embeds=blank_embeds,
+                        use_cache=False,
+                    )
+                    flat_blank = blank_out.last_hidden_state.reshape(
+                        -1, hidden_states.shape[-1]
+                    )[g_valid]
+                    lp_blank = torch.cat(
+                        [
+                            self.lm_head(hb).float().log_softmax(-1).gather(1, tc[:, None]).squeeze(1)
+                            for hb, tc in zip(
+                                flat_blank.split(chunk_size), tgt_g.split(chunk_size), strict=True
+                            )
+                        ]
+                    )
+                # Real (graph-connected) gold-token logp at the same positions.
+                hidden_g = flat_hidden[g_valid]
+                n_g = int(g_valid.sum())
+                g_total = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
+                for hr, tc, lpb in zip(
+                    hidden_g.split(chunk_size),
+                    tgt_g.split(chunk_size),
+                    lp_blank.split(chunk_size),
+                    strict=True,
+                ):
+                    lp_real = self.lm_head(hr).float().log_softmax(-1).gather(1, tc[:, None]).squeeze(1)
+                    g_total = g_total + torch.clamp(margin + lpb - lp_real, min=0.0).sum()
+                g_loss = g_total / n_g
+                loss = loss + g_weight * g_loss
+                components["grounding"] = g_loss.detach()
 
         if components:
             self._last_ce_components = components

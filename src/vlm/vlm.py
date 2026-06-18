@@ -299,6 +299,18 @@ def vlm(cfg: AppConfig) -> None:
         model.config.cross_modal_mask_bidirectional = bool(
             cfg.model.cross_modal_mask.bidirectional
         )
+        # Image-grounding margin loss dials (spec 2026-06-18). Pure training
+        # loss, no module to build -> set here on model.config like the
+        # cross_modal dials (branch-agnostic, before train()); flat names so
+        # they serialize into checkpoint config.json (visual_aux pattern) and a
+        # resume re-reads the same loss. weight=0.0 -> bit-identical baseline.
+        model.config.grounding_weight = (
+            float(cfg.model.grounding.weight)
+            if bool(cfg.model.grounding.enabled)
+            else 0.0
+        )
+        model.config.grounding_margin = float(cfg.model.grounding.margin)
+        model.config.grounding_corruption = str(cfg.model.grounding.corruption)
         log.info("Creating data module")
         if cfg.dataset.type == "energon":
             # lazy import: needs megatron-energon + multistorageclient, which
