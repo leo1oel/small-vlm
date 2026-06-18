@@ -126,6 +126,26 @@ class VisualPrefixConfig:
 
 
 @dataclass
+class GroundingConfig:
+    """Image-grounding margin loss (spec 2026-06-18): the gold answer must be
+    more likely WITH the real image than with a blanked image. A pure training
+    loss (no module/head), so all dials live on the model config and are read in
+    chunked_ce_forward; weight=0.0 = bit-identical baseline (loss never built).
+    Directly optimizes the R0 (intact - swap) quantity the FDI probe measures —
+    pushes the model out of the language-prior basin so it conditions on pixels."""
+
+    enabled: bool = False
+    # Loss weight λ_g: L = L_CE + λ_g · L_ground. 0.0 -> off.
+    weight: float = 0.0
+    # Hinge margin m (nats): the gold-token logp with the real image must beat
+    # the blanked-image logp by at least m, else a per-token penalty applies.
+    margin: float = 1.0
+    # How to build the negative ("no usable image") pass. "blank": zero the
+    # image-position embeddings (shape-preserving ablation; the robust default).
+    corruption: str = "blank"
+
+
+@dataclass
 class CrossModalMaskConfig:
     # "none" (default, bit-identical baseline) | "prefix_lm" | "img2q_window".
     # prefix_lm: bidirectional attention over [system+image+question], causal
@@ -151,6 +171,7 @@ class ModelConfig:
     visual_expert: VisualExpertConfig = field(default_factory=VisualExpertConfig)
     visual_prefix: VisualPrefixConfig = field(default_factory=VisualPrefixConfig)
     cross_modal_mask: CrossModalMaskConfig = field(default_factory=CrossModalMaskConfig)
+    grounding: GroundingConfig = field(default_factory=GroundingConfig)
 
 
 @dataclass
