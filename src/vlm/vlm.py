@@ -251,6 +251,31 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             from .models.modeling_vlm import init_visual_experts_from_text
 
             init_visual_experts_from_text(model.model)
+        # E1 causal control (spec 2026-06-18): destroy the pretrained text prior
+        # by re-initializing ONLY the LM backbone (embeddings, decoder layers,
+        # final norm, untied lm_head) to the config initializer — connector and
+        # vision params keep their fresh init. Tests whether, with no cheap prior
+        # to ride, the native model is forced to condition on the image.
+        if bool(getattr(model_cfg.language_model, "random_init", False)):
+            inner = model.model
+            lm_mods = [inner.embed_tokens, inner.norm, *list(inner.layers)]
+            # transformers 5.x init.normal_/ones_/zeros_ SKIP any tensor flagged
+            # _is_hf_initialized=True (which every from_pretrained param carries),
+            # so a bare .apply(_init_weights) is a silent no-op. Clear the flag on
+            # the targeted LM tensors first so the re-init actually overwrites them.
+            def _reinit(mod: Any) -> None:
+                for t in (*mod.parameters(recurse=True), *mod.buffers(recurse=True)):
+                    t._is_hf_initialized = False
+                mod.apply(model._init_weights)
+
+            for mod in lm_mods:
+                _reinit(mod)
+            if not bool(getattr(model.config, "tie_word_embeddings", False)):
+                _reinit(model.lm_head)
+            log.warning(
+                "random_init=True: LM backbone re-initialized — pretrained text "
+                "prior DESTROYED (connector/vision preserved). E1 causal control."
+            )
         model.config.lazy_load = False
 
     log.info(model.config)

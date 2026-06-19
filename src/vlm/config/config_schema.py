@@ -28,6 +28,13 @@ class VisualEncoderConfig:
 class LanguageModelConfig:
     hf_name: str = MISSING
     max_seq_length: int | None = None
+    # Causal control for the text-prior hypothesis (E1, spec 2026-06-18): after
+    # building the model, re-initialize ONLY the LM backbone (embeddings/layers/
+    # norm/untied lm_head) to the config initializer, destroying the pretrained
+    # language prior while keeping the connector + vision params. Tests whether,
+    # with no cheap prior to ride, the native model is forced to use the image.
+    # Fresh-build only; False = normal pretrained load (bit-identical baseline).
+    random_init: bool = False
     use_start_end_tokens: bool = False
     use_image_patch_token: bool = False
     image_start_token: str = "<im_start>"
