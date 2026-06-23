@@ -174,6 +174,33 @@ class GroundingConfig:
 
 
 @dataclass
+class VisualDistillConfig:
+    """Visual-encoder distillation for the native VLM (spec 2026-06-21): align
+    the LLM's hidden states at image positions to a frozen vision encoder's
+    per-patch features, so the visual pathway is supervised directly instead of
+    discovered through next-token loss alone. Structural dials (they size the
+    projection head + select the teacher, and serialize into checkpoint
+    config.json — visual_aux pattern) live here; the loss WEIGHT is a trainer
+    dial. enabled=False = no head built, bit-identical baseline."""
+
+    enabled: bool = False
+    # repa | eve | vora | softdepth | relational | vae (see models/visual_distill.py).
+    method: str = "repa"
+    # Teacher: "clip" loads a CLIPVisionModel, "vae" a diffusers AutoencoderKL.
+    teacher_kind: str = "clip"
+    teacher_name: str = "openai/clip-vit-base-patch16"
+    # 1-based decoder-output layer index/indices to align. null = method default
+    # (repa/relational/vae: ~0.3 depth; vora: first half block-wise; softdepth:
+    # all intermediate layers as the selection pool; eve: ignored, uses final).
+    layers: list[int] | None = None
+    # Internal width of the MLP projection head (input = LM hidden). 0 = LM hidden.
+    head_hidden: int = 0
+    # Per-token alignment: "cosine" (neg cosine, CLIP) or "smoothl1" (huber, vae).
+    # "" = method default (cosine for clip, smoothl1 for vae).
+    loss: str = ""
+
+
+@dataclass
 class CrossModalMaskConfig:
     # "none" (default, bit-identical baseline) | "prefix_lm" | "img2q_window".
     # prefix_lm: bidirectional attention over [system+image+question], causal
@@ -271,6 +298,7 @@ class ModelConfig:
     visual_prefix: VisualPrefixConfig = field(default_factory=VisualPrefixConfig)
     cross_modal_mask: CrossModalMaskConfig = field(default_factory=CrossModalMaskConfig)
     grounding: GroundingConfig = field(default_factory=GroundingConfig)
+    visual_distill: VisualDistillConfig = field(default_factory=VisualDistillConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
 
 
@@ -445,6 +473,11 @@ class TrainerConfig:
     # default_lr / language_model weight decay.
     visual_aux_head_lr: float | None = None
     visual_aux_head_wd: float | None = None
+    # Visual-distill loss weight λ_d (spec 2026-06-21): only read when
+    # model.visual_distill.enabled. L = L_CE + λ_d·L_distill. REPA/VoRA use an
+    # equal-ish weighting (~0.5-1.0); the head trains with the LM (it falls
+    # through to the language_model optimizer group, so no separate lr dial).
+    visual_distill_weight: float = 1.0
     # Native transformers token accounting, surfaced per log step in wandb
     # (num_input_tokens_seen + train tokens/sec): "non_padding" sums
     # attention_mask across ranks (small per-step gather), "all" counts

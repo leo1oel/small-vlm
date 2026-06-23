@@ -394,9 +394,49 @@ def create_dynamic_causal_vlm_class(
         # visual_distill — fresh builds leave it randomly initialized (it is the
         # module the distill loss trains). The frozen teacher is attached
         # separately by vlm.attach_distill_teacher (off the module tree).
+        self.visual_distill_head = self._build_visual_distill_head(config)
         self._build_generation_modules(config)
         self.post_init()
         log.info(f"DynamicCausalVLM class {self.__class__.__name__} initialized.")
+
+    def _build_visual_distill_head(self: Any, config: Any) -> nn.Module | None:
+        """Projection head for visual-encoder distillation (spec 2026-06-21).
+        None when disabled — baseline models carry no extra module (audio /
+        visual_aux pattern), and old checkpoints (no visual_distill_* keys) load
+        unchanged. The frozen teacher is NOT built here."""
+        if not bool(getattr(config, "visual_distill", False)):
+            return None
+        from .visual_distill import (
+            DISTILL_METHODS,
+            VisualDistillHead,
+            resolve_distill_layers,
+        )
+
+        method = str(getattr(config, "visual_distill_method", "repa"))
+        if method not in DISTILL_METHODS:
+            raise ValueError(f"visual_distill_method {method!r} not in {DISTILL_METHODS}")
+        teacher_dim = int(getattr(config, "visual_distill_teacher_dim", 0) or 0)
+        if teacher_dim <= 0:
+            raise ValueError(
+                "visual_distill_teacher_dim is unset/zero on the config — it must "
+                "be resolved (vlm.load_model) before the head is built"
+            )
+        num_layers = int(config.num_hidden_layers)
+        layers = resolve_distill_layers(
+            method, getattr(config, "visual_distill_layers", None), num_layers
+        )
+        teacher_kind = str(getattr(config, "visual_distill_teacher_kind", "clip"))
+        loss_type = str(getattr(config, "visual_distill_loss", "") or "")
+        if not loss_type:
+            loss_type = "smoothl1" if teacher_kind == "vae" else "cosine"
+        return VisualDistillHead(
+            method=method,
+            llm_dim=int(config.hidden_size),
+            teacher_dim=teacher_dim,
+            layers=layers,
+            head_hidden=int(getattr(config, "visual_distill_head_hidden", 0) or 0),
+            loss_type=loss_type,
+        )
 
     def _build_visual_aux_head(self: Any, config: Any) -> nn.Sequential | None:
         """Visual-aux prediction head (spec 2026-06-06): a small MLP on trunk
@@ -480,6 +520,15 @@ def create_dynamic_causal_vlm_class(
             and labels is not None
             and float(getattr(self.config, "grounding_weight", 0.0) or 0.0) > 0.0
         )
+        # Visual-distill loss (spec 2026-06-21): needs image_block_ids to locate
+        # each image's patch positions (to gather the LLM hidden states there and
+        # match them to the teacher's per-patch features). Training-loss only.
+        distill_on = (
+            self.training
+            and labels is not None
+            and getattr(self, "visual_distill_head", None) is not None
+            and float(getattr(self.config, "visual_distill_weight", 0.0) or 0.0) > 0.0
+        )
         # Visual FFN experts (spec 2026-06-14) need the per-token image mask, so
         # request image_block_ids whenever they are enabled (same source the
         # visual-aux / img2q_window paths use).
@@ -505,7 +554,8 @@ def create_dynamic_causal_vlm_class(
                 with_image_block_ids=visual_aux_on
                 or xmodal_mode == "img2q_window"
                 or has_ve
-                or grounding_on,
+                or grounding_on
+                or distill_on,
             )
         # Cross-modal mask arms (plan 2026-06-10): swap the 2D padding mask
         # for the arm's 4D mask on the loss path; generation prefill installs
@@ -583,6 +633,8 @@ def create_dynamic_causal_vlm_class(
                 if (visual_aux_on and va_objective == "nepa")
                 else None,
                 image_block_ids=image_block_ids,
+                distill_images=images if distill_on else None,
+                distill_positions=image_position_ids if distill_on else None,
             )
         return super(self.__class__, self).forward(
             input_ids=input_ids,
@@ -611,6 +663,10 @@ def create_dynamic_causal_vlm_class(
         images: list[Tensor] | None = None,
         image_features: list[Tensor] | None = None,
         image_block_ids: LongTensor | None = None,
+        # consumed by the visual-distill loss (raw patches + grid coords to
+        # reconstruct the teacher's view and locate per-image patch positions)
+        distill_images: list[Tensor] | None = None,
+        distill_positions: list[Tensor] | None = None,
     ) -> CausalLMOutputWithPast:
         """Training-only loss path that never materializes the full
         (batch*seq, vocab) fp32 logits: ignore_index positions are dropped
@@ -649,6 +705,20 @@ def create_dynamic_causal_vlm_class(
         va_weight = float(getattr(self.config, "visual_aux_weight", 0.0) or 0.0)
         va_layer = getattr(self.config, "visual_aux_layer", None)
         va_active = image_block_ids is not None and va_objective != "none" and va_weight > 0.0
+        # Visual-distill loss (spec 2026-06-21): align LLM hidden at image
+        # positions to a frozen vision encoder. Active when the head exists, λ>0,
+        # and the raw patches were threaded in. Its layers need capture hooks too
+        # (eve uses the final post-norm hidden, so its layer list is empty).
+        distill_weight = float(getattr(self.config, "visual_distill_weight", 0.0) or 0.0)
+        distill_head = getattr(self, "visual_distill_head", None)
+        # Gate on config ONLY (head + weight), NOT on whether this microbatch
+        # carries images: compute_distill_loss anchors when there are no images,
+        # so the "distill" component is stashed on EVERY step regardless. This is
+        # what keeps the trainer's cross-rank sorted(components) all-reduce
+        # deadlock-free when one rank's microbatch is image-free (same reason the
+        # grounding loss is gated on its weight, not on image presence).
+        distill_active = distill_head is not None and distill_weight > 0.0
+        distill_layers = list(distill_head.layers) if distill_active else []
         captured: dict[int, Tensor] = {}
         handles = []
         if aux_active:
@@ -670,6 +740,7 @@ def create_dynamic_causal_vlm_class(
         capture_layers = sorted(
             set(aux_layers if aux_active else [])
             | ({int(va_layer)} if (va_active and va_layer) else set())
+            | set(distill_layers)
         )
         for k in capture_layers:
             handles.append(self.model.layers[k - 1].register_forward_hook(_make_capture(k)))
@@ -916,6 +987,20 @@ def create_dynamic_causal_vlm_class(
                 loss = loss + g_weight * g_loss
                 components["grounding"] = g_loss.detach()
 
+        # Visual-distill loss (spec 2026-06-21): align LLM hidden at image
+        # positions to the frozen teacher's per-patch features. Returns a
+        # rank-symmetric component set every step (anchor on no-image batches).
+        if distill_active:
+            d_loss, d_comps = self.compute_distill_loss(
+                captured=captured,
+                final_hidden=hidden_states,
+                image_block_ids=image_block_ids,
+                distill_images=distill_images,
+                distill_positions=distill_positions,
+            )
+            loss = loss + distill_weight * d_loss
+            components.update(d_comps)
+
         if components:
             self._last_ce_components = components
         return CausalLMOutputWithPast(
@@ -923,6 +1008,139 @@ def create_dynamic_causal_vlm_class(
             logits=None,
             past_key_values=outputs.past_key_values,
         )
+
+    def compute_distill_loss(
+        self: Any,
+        captured: dict[int, Tensor],
+        final_hidden: Tensor,
+        image_block_ids: LongTensor | None,
+        distill_images: list[Tensor] | None,
+        distill_positions: list[Tensor] | None,
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        """Visual-encoder distillation (spec 2026-06-21).
+
+        For each image block: reconstruct its RGB from the raw patches (lossless
+        inverse of RawImageProcessor), run the frozen teacher to get a per-patch
+        feature grid, bilinearly resize that grid to this image's native patch
+        grid, and gather the LLM hidden states at the image's surviving patch
+        positions. The head (REPA/EVE/VoRA/softdepth/relational/VAE) aligns the
+        two. Truncation-safe: the surviving sequence positions are an image's
+        FIRST m patches, so their (x, y) coords are positions[:m].
+
+        Always returns the same component keys (zeros via an anchor that still
+        touches the head params on no-image microbatches) so the trainer's
+        cross-rank all-reduce of sorted(components) never deadlocks.
+        """
+        from .visual_distill import reconstruct_image_from_patches
+
+        head = self.visual_distill_head
+        device = final_hidden.device
+        keys = ["distill", "distill_cos"]
+        if head.method == "softdepth":
+            keys += ["distill_sel_depth", "distill_sel_max"]
+
+        def _anchor() -> tuple[Tensor, dict[str, Tensor]]:
+            z = torch.zeros((), dtype=torch.float32, device=device)
+            anchor = z
+            for prm in head.parameters():
+                anchor = anchor + prm.float().sum()
+            return anchor * 0.0, {k: z for k in keys}
+
+        teacher_box = getattr(self, "_distill_teacher", None)
+        if image_block_ids is None or not teacher_box or distill_images is None:
+            return _anchor()
+        teacher = teacher_box[0]
+        mdtype = final_hidden.dtype
+        teacher.to(device=device, dtype=mdtype)
+
+        vc = self.config.vision_config
+        vc_get = vc.get if isinstance(vc, dict) else (lambda k_, d=None: getattr(vc, k_, d))
+        patch_px = int(vc_get("patch_size")) * int(vc_get("pooling_kernel_size"))
+        src_mean = vc_get("image_mean", None)
+        src_std = vc_get("image_std", None)
+        num_layers = int(self.config.num_hidden_layers)
+
+        ibid = image_block_ids.to(device)
+        bsz, seqlen = ibid.shape
+        # (k, batch_idx, flat_positions, surviving_coords, full_grid_h, full_grid_w)
+        # per real image block. grid_h/grid_w are the FULL native grid (from all
+        # of image k's positions); the teacher grid is resized to THAT and then
+        # gathered at the surviving patch coords, so a tail-truncated block keeps
+        # correct spatial correspondence (teacher saw the full image).
+        blocks: list[tuple[int, int, Tensor, Tensor, int, int]] = []
+        for b in range(bsz):
+            row = ibid[b]
+            for k_t in torch.unique(row[row >= 0]).tolist():
+                k = int(k_t)
+                pos = (row == k).nonzero(as_tuple=True)[0]
+                m = int(pos.numel())
+                coords_full = distill_positions[k].to(device)
+                grid_h = int(coords_full[:, 1].max().item()) + 1
+                grid_w = int(coords_full[:, 0].max().item()) + 1
+                if grid_h * grid_w < 2 or m < 1:  # dummy (1x1 black) / empty
+                    continue
+                blocks.append((k, b, b * seqlen + pos, coords_full[:m], grid_h, grid_w))
+        if not blocks:
+            return _anchor()
+
+        # One teacher pass over the unique images present this microbatch.
+        uniq_k = sorted({blk[0] for blk in blocks})
+        k_to_j = {k: j for j, k in enumerate(uniq_k)}
+        imgs01 = torch.stack(
+            [
+                reconstruct_image_from_patches(
+                    distill_images[k].to(device),
+                    distill_positions[k].to(device),
+                    patch_px,
+                    teacher.out_size,
+                    src_mean,
+                    src_std,
+                )
+                for k in uniq_k
+            ]
+        ).to(mdtype)
+        want_blocks = head.method == "vora"
+        tout = teacher.encode(imgs01, want_blocks=want_blocks)
+
+        def _resize_to(grid_thwc: Tensor, gh: int, gw: int, coords: Tensor) -> Tensor:
+            # grid (Ht, Wt, C) -> (C, gh, gw) -> gather at (y, x) -> (m, C)
+            g = nn.functional.interpolate(
+                grid_thwc.permute(2, 0, 1).unsqueeze(0).float(),
+                size=(gh, gw),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+            return g[:, coords[:, 1], coords[:, 0]].t()
+
+        samples: list[dict[str, Any]] = []
+        for k, b, flat_pos, coords, gh, gw in blocks:
+            j = k_to_j[k]
+            target = _resize_to(tout["grid"][j], gh, gw, coords).to(mdtype)
+            native: dict[int, Tensor] = {}
+            if head.method == "eve":
+                native[0] = final_hidden.reshape(-1, final_hidden.shape[-1])[flat_pos]
+            else:
+                for lyr in head.layers:
+                    hk = captured[lyr]
+                    if torch.is_grad_enabled() and not hk.requires_grad:
+                        raise RuntimeError(
+                            f"visual_distill layer {lyr}: captured hidden states are "
+                            "not graph-connected (reentrant gradient checkpointing?) — "
+                            "the distill loss would silently train nothing"
+                        )
+                    native[lyr] = hk.reshape(-1, hk.shape[-1])[flat_pos]
+            s: dict[str, Any] = {"native": native, "target": target}
+            if head.method == "vora":
+                blk_list = tout["blocks"]
+                nb = len(blk_list)
+                tb: dict[int, Tensor] = {}
+                for lyr in head.layers:
+                    ci = min(nb - 1, max(0, round(lyr / num_layers * nb) - 1))
+                    tb[lyr] = _resize_to(blk_list[ci][j], gh, gw, coords).to(mdtype)
+                s["target_blocks"] = tb
+            samples.append(s)
+
+        return head.compute(samples)
 
     @override
     def generate(
@@ -1779,6 +1997,8 @@ def create_dynamic_causal_vlm_class(
             "config_class": config_class,
             "__init__": __init__,
             "_build_visual_aux_head": _build_visual_aux_head,
+            "_build_visual_distill_head": _build_visual_distill_head,
+            "compute_distill_loss": compute_distill_loss,
             "_build_generation_modules": _build_generation_modules,
             "init_generation_modules": init_generation_modules,
             "_set_mrope_positions": _set_mrope_positions,

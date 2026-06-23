@@ -90,6 +90,43 @@ def attach_audio_feature_extractor(processor: VLMProcessor, audio_config: Any) -
     )
 
 
+def attach_distill_teacher(model: Any) -> None:
+    """Build and attach the frozen distillation teacher (spec 2026-06-21).
+
+    Stored list-wrapped (`model._distill_teacher = [teacher]`) so it is NOT a
+    registered submodule: invisible to .parameters()/optimizer/state_dict — it
+    must never be trained (set_trainable would otherwise sweep it into the
+    language_model group) nor bloat checkpoints. Covers both the fresh-build and
+    from_pretrained reload paths; the projection head itself is built by the
+    causal __init__ from the (serialized) config fields. No-op when disabled.
+    """
+    if not bool(getattr(model.config, "visual_distill", False)):
+        return
+    if getattr(model, "visual_distill_head", None) is None:
+        raise ValueError(
+            "model.visual_distill.enabled is set but the loaded checkpoint has no "
+            "visual_distill_head — retrofit from a non-distill checkpoint is not "
+            "supported; train from scratch or load a checkpoint trained with it"
+        )
+    from .models.visual_distill import VisualDistillTeacher
+
+    teacher = VisualDistillTeacher(
+        kind=str(getattr(model.config, "visual_distill_teacher_kind", "clip")),
+        name=str(getattr(model.config, "visual_distill_teacher_name", "openai/clip-vit-base-patch16")),
+    )
+    want_dim = int(getattr(model.config, "visual_distill_teacher_dim", 0) or 0)
+    if want_dim and teacher.feature_dim != want_dim:
+        raise ValueError(
+            f"distill teacher feature_dim {teacher.feature_dim} != head output width "
+            f"{want_dim} on config — teacher changed since the head was built"
+        )
+    model._distill_teacher = [teacher]
+    log.info(
+        f"Attached frozen distill teacher: {teacher.kind}:{teacher.name} "
+        f"(feature_dim={teacher.feature_dim}, off the module tree)"
+    )
+
+
 def init_patch_stem_from_encoder(model: Any, model_cfg: ModelConfig) -> None:
     """Transplant a pretrained ViT conv patch-embed into the connector's warm
     tokenizer stem (spec 2026-06-22). Fresh-build only — the conv is a registered
@@ -346,6 +383,41 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         config.generation_perceptual_t_gate = float(model_cfg.generation.perceptual_t_gate)
         config.generation_perceptual_warmup_steps = int(model_cfg.generation.perceptual_warmup_steps)
         config.generation_rope_2d = bool(model_cfg.generation.rope_2d)
+        # Visual-distill structural fields (spec 2026-06-21) must be on the
+        # config BEFORE construction — the causal __init__ builds the projection
+        # head from them. Plain types; they serialize into checkpoint config.json
+        # (visual_aux pattern) so reloads rebuild the head. The frozen teacher is
+        # attached AFTER construction (it is not a checkpoint-persisted module).
+        config.visual_distill = bool(model_cfg.visual_distill.enabled)
+        config.visual_distill_method = str(model_cfg.visual_distill.method)
+        config.visual_distill_teacher_kind = str(model_cfg.visual_distill.teacher_kind)
+        config.visual_distill_teacher_name = str(model_cfg.visual_distill.teacher_name)
+        config.visual_distill_layers = (
+            [int(x) for x in model_cfg.visual_distill.layers]
+            if model_cfg.visual_distill.layers is not None
+            else None
+        )
+        config.visual_distill_head_hidden = int(model_cfg.visual_distill.head_hidden)
+        config.visual_distill_loss = str(model_cfg.visual_distill.loss)
+        # Teacher feature dim must be known BEFORE construction (the head's
+        # output width) — read it from the teacher's config (tiny JSON; the full
+        # weights load once later in attach_distill_teacher). Serialized so
+        # reloads rebuild the head with the right width without the teacher.
+        if model_cfg.visual_distill.enabled:
+            if str(model_cfg.visual_distill.teacher_kind) in ("clip", "siglip"):
+                tcfg = AutoConfig.from_pretrained(model_cfg.visual_distill.teacher_name)
+                tcfg = getattr(tcfg, "vision_config", tcfg)
+                config.visual_distill_teacher_dim = int(tcfg.hidden_size)
+            else:  # vae
+                from diffusers import AutoencoderKL
+
+                config.visual_distill_teacher_dim = int(
+                    AutoencoderKL.load_config(model_cfg.visual_distill.teacher_name)[
+                        "latent_channels"
+                    ]
+                )
+        else:
+            config.visual_distill_teacher_dim = 0
         model = VLMForCausalLM.from_pretrained(
             model_cfg.language_model.hf_name,
             config=config,
@@ -401,6 +473,10 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
                 "prior DESTROYED (connector/vision preserved). E1 causal control."
             )
         model.config.lazy_load = False
+
+    # Frozen distill teacher (spec 2026-06-21): attach on both build paths,
+    # AFTER the head exists. Off the module tree -> not in .parameters() below.
+    attach_distill_teacher(model)
 
     log.info(model.config)
 
@@ -460,6 +536,15 @@ def vlm(cfg: AppConfig) -> None:
         )
         model.config.grounding_margin = float(cfg.model.grounding.margin)
         model.config.grounding_corruption = str(cfg.model.grounding.corruption)
+        # Visual-distill loss weight (spec 2026-06-21): trainer dial set on
+        # model.config like grounding_weight (branch-agnostic, before train());
+        # flat name serializes into checkpoint config.json. 0.0 when disabled ->
+        # the loss is never built (bit-identical baseline).
+        model.config.visual_distill_weight = (
+            float(cfg.trainer.visual_distill_weight)
+            if bool(cfg.model.visual_distill.enabled)
+            else 0.0
+        )
         log.info("Creating data module")
         if cfg.dataset.type == "energon":
             # lazy import: needs megatron-energon + multistorageclient, which
