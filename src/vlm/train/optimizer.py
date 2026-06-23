@@ -28,6 +28,12 @@ def configure_optimizers(model: PreTrainedModel | nn.Module, trainer_config: Tra
         "connector": "connector",
         "lm_head": "model",
         "visual_aux_head": "visual_aux_head",
+        # Generation x-pred head + timestep embedder train with the LM lr/wd
+        # ("model" config) — a single LR is fine for v1 (a dedicated higher gen
+        # lr can be added as generation_lr later). Mapping it here ensures the
+        # group is NOT silently dropped (configure_optimizers skips unmapped
+        # groups).
+        "generation": "model",
     }
 
     for component, params_list in grouped_params.items():

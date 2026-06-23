@@ -320,6 +320,32 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         config.visual_prefix_depth = int(model_cfg.visual_prefix.depth)
         config.visual_prefix_heads = int(model_cfg.visual_prefix.heads)
         config.visual_prefix_intermediate = int(model_cfg.visual_prefix.intermediate)
+        # Generation pathway structural fields (spec 2026-06-20): on the config
+        # BEFORE construction so the causal __init__ builds the x-prediction head
+        # + in-context timestep embedder from them; serialized into checkpoint
+        # config.json so reloads rebuild them (visual_aux pattern).
+        config.generation = bool(model_cfg.generation.enabled)
+        config.generation_resolution = int(model_cfg.generation.resolution)
+        config.generation_patch_size = int(model_cfg.generation.patch_size)
+        config.generation_noise_scale = float(model_cfg.generation.noise_scale)
+        config.generation_t_mu = float(model_cfg.generation.t_mu)
+        config.generation_t_sigma = float(model_cfg.generation.t_sigma)
+        config.generation_sample_steps = int(model_cfg.generation.sample_steps)
+        config.generation_cfg_scale = float(model_cfg.generation.cfg_scale)
+        config.generation_label_drop = float(model_cfg.generation.label_drop)
+        config.generation_independent_embed = bool(model_cfg.generation.independent_embed)
+        config.generation_embed_patch_size = int(model_cfg.generation.embed_patch_size)
+        config.generation_embed_posemb_size = int(model_cfg.generation.embed_posemb_size)
+        config.generation_embed_bottleneck_dim = int(model_cfg.generation.embed_bottleneck_dim)
+        config.generation_perceptual_enabled = bool(model_cfg.generation.perceptual_enabled)
+        config.generation_perceptual_lpips_weight = float(model_cfg.generation.perceptual_lpips_weight)
+        config.generation_perceptual_dino_weight = float(model_cfg.generation.perceptual_dino_weight)
+        config.generation_perceptual_lpips_net = str(model_cfg.generation.perceptual_lpips_net)
+        config.generation_perceptual_dino_model = str(model_cfg.generation.perceptual_dino_model)
+        config.generation_perceptual_resize = int(model_cfg.generation.perceptual_resize)
+        config.generation_perceptual_t_gate = float(model_cfg.generation.perceptual_t_gate)
+        config.generation_perceptual_warmup_steps = int(model_cfg.generation.perceptual_warmup_steps)
+        config.generation_rope_2d = bool(model_cfg.generation.rope_2d)
         model = VLMForCausalLM.from_pretrained(
             model_cfg.language_model.hf_name,
             config=config,
@@ -345,6 +371,10 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         # connector's "warm tokenizer" stem (spec 2026-06-22, encoder-free
         # catch-up). Reloads skip this — the checkpoint carries the trained stem.
         init_patch_stem_from_encoder(model, model_cfg)
+        # Fresh-build only: zero the generation x-prediction head (DiT zero
+        # final layer) AFTER weights load — reloads carry the trained head.
+        if getattr(config, "generation", False):
+            model.init_generation_modules()
         # E1 causal control (spec 2026-06-18): destroy the pretrained text prior
         # by re-initializing ONLY the LM backbone (embeddings, decoder layers,
         # final norm, untied lm_head) to the config initializer — connector and

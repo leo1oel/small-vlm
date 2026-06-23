@@ -1,0 +1,9 @@
+defaults:
+    - gen-overfit-16
+    - _self_
+model:
+    generation:
+        embed_bottleneck_dim: 512
+        perceptual_enabled: false
+trainer:
+    run_name: gen-overfit-16b

@@ -68,6 +68,33 @@ def build_cross_modal_mask(
     return base | extra.unsqueeze(1)
 
 
+def build_generation_mask(prefix_mask: Tensor, image_mask: Tensor) -> Tensor:
+    """(B, 1, L, L) bool, True = attend, for text->image flow-matching
+    generation (spec 2026-06-20). NOT causal — denoising predicts all image
+    patches in one forward.
+
+    Sequence layout per sample: [text tokens | timestep token | noised image
+    patches]. `prefix_mask` (B, L) bool marks text + timestep positions (the
+    bidirectional condition); `image_mask` (B, L) bool marks the noised
+    image-patch positions. Edges:
+      - prefix <-> prefix  (bidirectional condition)
+      - image  <-> image   (bidirectional denoising block)
+      - image  ->  prefix  (image attends the condition)
+    Prefix does NOT attend image, so the prefix KV is identical across all
+    sampler steps and can be cached. Every position attends itself (diagonal)
+    so a fully-padded query row is never all-masked (SDPA returns NaN for an
+    all-False row)."""
+    pre = prefix_mask.bool()
+    img = image_mask.bool()
+    pp = pre.unsqueeze(2) & pre.unsqueeze(1)  # (B,L,L): prefix query -> prefix key
+    ii = img.unsqueeze(2) & img.unsqueeze(1)  # image query -> image key
+    ip = img.unsqueeze(2) & pre.unsqueeze(1)  # image query -> prefix key
+    mask = pp | ii | ip
+    seq_len = mask.shape[-1]
+    eye = torch.eye(seq_len, dtype=torch.bool, device=mask.device)
+    return (mask | eye.unsqueeze(0)).unsqueeze(1)
+
+
 from transformers.integrations.sdpa_attention import sdpa_attention_forward
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 

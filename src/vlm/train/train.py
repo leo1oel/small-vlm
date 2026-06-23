@@ -253,6 +253,17 @@ def train(
     model.config.cross_modal_mask_mode = cmm_mode
     model.config.cross_modal_mask_window = cmm_window
 
+    # Generation 4D mask (spec 2026-06-20) also bypasses FA2: forward_generation
+    # / sample_images pass a bidirectional prefix-LM bool mask straight to SDPA.
+    # FA2 silently ignores/corrupts a 4D mask, so generation needs sdpa-family.
+    if bool(getattr(model.config, "generation", False)):
+        gen_attn = str(getattr(model.config, "_attn_implementation", "") or "")
+        if gen_attn not in ("sdpa", "sdpa_xmodal"):
+            raise ValueError(
+                "model.generation requires trainer.attn_implementation=sdpa "
+                f"(4D generation masks bypass FA2); got {gen_attn!r}"
+            )
+
     model.config.use_cache = False
     set_trainable_params(model, training_args)
 

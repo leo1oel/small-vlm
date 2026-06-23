@@ -1,0 +1,34 @@
+defaults:
+    - gen-gpic
+    - _self_
+
+# Full-feature GPIC generation run: the gen-gpic baseline (48px shared connector,
+# pixel-space x-prediction flow matching, in-context timestep token, bs16, lr1e-4,
+# 50k, ZeRO-2) PLUS the four SOTA-aligned levers, all on the SHARED connector
+# (native / unified — one patch embedding for understanding + generation):
+#   1. bottleneck in the shared connector (6912 -> 512 -> 2048; HiDream-O1 hidden//4)
+#   2. perceptual supervision: LPIPS 0.1 + P-DINO 0.01 (PRX/PixelGen weights)
+#   3. noise gating: perceptual only on low-noise (t > 0.3) samples (PixelGen)
+#   4. 2D MRoPE for image tokens (FLUX/minit2i/HiDream; text stays 1D-identical)
+# Apples-to-apples vs the 50k baseline (gen-gpic): same GPUs/bs/lr/steps, +features.
+#   CONFIG_NAME=gen-gpic-full sbatch devtools/gen_train.slurm
+
+model:
+    connector:
+        bottleneck_dim: 512
+    generation:
+        perceptual_enabled: true
+        perceptual_lpips_weight: 0.1
+        perceptual_dino_weight: 0.01
+        perceptual_lpips_net: vgg
+        perceptual_dino_model: dinov2_vitb14_reg
+        perceptual_resize: 224
+        perceptual_t_gate: 0.3
+        rope_2d: true
+
+trainer:
+    run_name: gen-gpic-full-8x-r384
+    # 8x L40S, large batch (per_device 8 -> global 64), save every 5000.
+    per_device_train_batch_size: 8
+    save_steps: 5000
+    save_total_limit: 12

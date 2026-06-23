@@ -15,7 +15,17 @@ from transformers.models.auto.modeling_auto import (
 
 from . import xmodal_mask as _xmodal_mask  # noqa: F401  (registers sdpa_xmodal)
 from .configuration_vlm import create_dynamic_vlm_config_class
-from .connectors import Connector, VisualPrefix, connector_map
+from .connectors import Connector, VisualPrefix, _RawPatchEmbedder, connector_map
+from .gen_diffusion import (
+    GenTimestepEmbedder,
+    add_noise,
+    euler_step,
+    flow_matching_loss,
+    sample_timesteps,
+    to_velocity,
+)
+from .gen_image import assemble_generation_inputs, patches_to_pixels
+from .gen_rope import Gen2DRotaryEmbedding, build_mrope_position_ids
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
@@ -380,6 +390,11 @@ def create_dynamic_causal_vlm_class(
         # objective — fresh HF-backbone loads leave it randomly initialized
         # ("newly initialized" warning is expected; the head is always fresh).
         self.visual_aux_head = self._build_visual_aux_head(config)
+        # Visual-distill head (spec 2026-06-21): None unless the config carries
+        # visual_distill — fresh builds leave it randomly initialized (it is the
+        # module the distill loss trains). The frozen teacher is attached
+        # separately by vlm.attach_distill_teacher (off the module tree).
+        self._build_generation_modules(config)
         self.post_init()
         log.info(f"DynamicCausalVLM class {self.__class__.__name__} initialized.")
 
@@ -427,8 +442,16 @@ def create_dynamic_causal_vlm_class(
         image_sizes: list[list[int]] | None = None,
         image_position_ids: list[Tensor] | None = None,
         audios: list[Tensor] | None = None,
+        target_patches: Tensor | None = None,
         return_dict: bool | None = None,
     ) -> CausalLMOutputWithPast:
+        # Text->image generation path (spec 2026-06-20): a generation batch
+        # carries clean target image patches. Route to the flow-matching
+        # forward (no text CE, no autoregressive image->text splice).
+        if target_patches is not None:
+            return self.forward_generation(
+                input_ids, attention_mask, target_patches, image_position_ids
+            )
         # Early modality encoding - encode all image/audio inputs at the beginning
         image_features = None
         audio_features = None
@@ -1432,6 +1455,271 @@ def create_dynamic_causal_vlm_class(
             for mlp in mlps:
                 mlp._visual_mask = mask
 
+    def _build_generation_modules(self: Any, config: Any) -> None:
+        """Text->image generation modules (spec 2026-06-20): an x-prediction
+        head (hidden_size -> patch_dim) and an in-context timestep embedder.
+        None unless config.generation (understanding-only carries no extra
+        module; old checkpoints load unchanged). patch_dim reuses the connector
+        patch space (vision_config.hidden_size). The x-head is zero-initialized
+        on the fresh-build path by init_generation_modules (DiT zero final
+        layer) — post_init/from_pretrained would otherwise random-init it."""
+        if not getattr(config, "generation", False):
+            self.gen_x_head = None
+            self.gen_t_embed = None
+            self.gen_patch_embed = None
+            return
+        hidden = int(config.hidden_size)
+        self.gen_t_embed = GenTimestepEmbedder(hidden)
+        if bool(getattr(config, "generation_independent_embed", False)):
+            # Generation owns its embedder + head at embed_patch_size (e.g. 16px:
+            # 768-dim target, finer grid). Decoupled from the 48px understanding
+            # connector — they share only the LLM backbone + visual-FFN expert.
+            psz = int(getattr(config, "generation_embed_patch_size", 16))
+            patch_dim = psz * psz * 3
+            posemb = int(getattr(config, "generation_embed_posemb_size", 64))
+            bottleneck = int(getattr(config, "generation_embed_bottleneck_dim", 0) or 0)
+            self.gen_patch_embed = _RawPatchEmbedder(
+                patch_dim=patch_dim,
+                mm_embed_dim=hidden,
+                posemb_size=posemb,
+                text_hidden_size=hidden,
+                bottleneck_dim=bottleneck if bottleneck > 0 else None,
+            )
+        else:
+            # Legacy: reuse the connector's 48px patch space (vision hidden_size).
+            patch_dim = int(config.vision_config.hidden_size)
+            self.gen_patch_embed = None
+        self.gen_x_head = nn.Linear(hidden, patch_dim)
+        # Monotonic training-forward counter (persistent so resume keeps it past
+        # the perceptual warmup). Counts micro-batch forwards == optimizer steps
+        # at grad_accum=1.
+        self.register_buffer("_gen_fwd_count", torch.zeros((), dtype=torch.long), persistent=True)
+        # 2D (axial MRoPE) rotary for image tokens — replace the stock 1D RoPE.
+        # Bit-identical for text/understanding (equal-axis MRoPE == 1D); image
+        # tokens get true 2D positions via the stash in forward_generation.
+        if bool(getattr(config, "generation_rope_2d", True)):
+            base_rotary = getattr(getattr(self, "model", None), "rotary_emb", None)
+            if base_rotary is not None and not isinstance(base_rotary, Gen2DRotaryEmbedding):
+                self.model.rotary_emb = Gen2DRotaryEmbedding(base_rotary)
+
+    def init_generation_modules(self: Any) -> None:
+        """Fresh-build only: zero the x-prediction head (DiT zero final layer)
+        so the model starts predicting a constant image and the early velocity
+        field is well-behaved. No-op when generation is off."""
+        head = getattr(self, "gen_x_head", None)
+        if head is not None:
+            nn.init.zeros_(head.weight)
+            nn.init.zeros_(head.bias)
+
+    def _set_mrope_positions(self: Any, pos: Tensor | None) -> None:
+        """Stash (3,B,L) MRoPE positions on the 2D rotary so the next model
+        forward rotates image tokens by their (h,w) grid coords. No-op unless
+        the 2D rotary is installed (rope_2d). Cleared after the forward."""
+        rot = getattr(getattr(self, "model", None), "rotary_emb", None)
+        if isinstance(rot, Gen2DRotaryEmbedding):
+            rot._mrope_positions = pos
+
+    def _gen_patch_dim(self: Any) -> int:
+        """Per-patch target dimension of the generation pathway: the independent
+        embedder's embed_patch_size^2*3 when decoupled, else the connector's
+        48px patch space (vision_config.hidden_size)."""
+        cfg = self.config
+        if bool(getattr(cfg, "generation_independent_embed", False)):
+            psz = int(getattr(cfg, "generation_embed_patch_size", 16))
+            return psz * psz * 3
+        return int(cfg.vision_config.hidden_size)
+
+    def _gen_embed(self: Any, flat_patches: Tensor, flat_pos: Tensor) -> Tensor:
+        """Embed (noised) raw patches -> LM hidden via the generation embedder
+        (independent 16px) or, legacy, the understanding connector (48px)."""
+        embedder = getattr(self, "gen_patch_embed", None)
+        if embedder is not None:
+            return embedder(flat_patches, flat_pos)
+        return self.model.connector(flat_patches, flat_pos)
+
+    def forward_generation(
+        self: Any,
+        input_ids: Tensor,
+        attention_mask: Tensor | None,
+        target_patches: Tensor,
+        image_position_ids: Tensor,
+    ) -> CausalLMOutputWithPast:
+        """Flow-matching (x-prediction + v-loss) forward for text->image
+        generation. Sequence = [text | timestep token | noised image patches];
+        bidirectional prefix-LM mask; image tokens route through the visual FFN
+        expert; loss is v-space MSE at the image positions (the trailing N
+        tokens). No text CE, no autoregressive splice."""
+        cfg = self.config
+        device = self.device
+        model_dtype = self.dtype
+        bsz, n_patch, patch_dim = target_patches.shape
+        # 1. timestep + noise + interpolation (math in fp32)
+        t = sample_timesteps(
+            bsz, float(cfg.generation_t_mu), float(cfg.generation_t_sigma), device
+        )
+        x1 = target_patches.to(device=device, dtype=torch.float32)
+        x_t, _ = add_noise(x1, t, float(cfg.generation_noise_scale))
+        # 2. text condition embeddings
+        text_embeds = self.get_input_embeddings()(input_ids.to(device))
+        # 3. noised patches -> generation embedder -> image token embeddings
+        flat_patches = x_t.reshape(bsz * n_patch, patch_dim).to(model_dtype)
+        flat_pos = image_position_ids.reshape(bsz * n_patch, 2).to(device)
+        img_embeds = self._gen_embed(flat_patches, flat_pos).reshape(bsz, n_patch, -1)
+        # 4. in-context timestep token
+        t_token = self.gen_t_embed(t).to(model_dtype).unsqueeze(1)
+        # 5. assemble [text | t | image]
+        if attention_mask is None:
+            attention_mask = torch.ones(bsz, input_ids.shape[1], device=device)
+        attention_mask = attention_mask.to(device)
+        # CFG training: drop the WHOLE text condition for a fraction of samples
+        # (the timestep token is kept) so the model also learns the
+        # unconditional velocity field that the sampler's guidance extrapolates
+        # from. Mirrors minit2i's null-mask dropout (diffusion.py:24-26).
+        drop_p = float(getattr(cfg, "generation_label_drop", 0.0) or 0.0)
+        if self.training and drop_p > 0.0:
+            drop = torch.rand(bsz, device=device) < drop_p
+            if bool(drop.any()):
+                attention_mask = attention_mask.clone()
+                attention_mask[drop] = 0
+        inputs_embeds, prefix_mask, image_mask, position_ids = assemble_generation_inputs(
+            text_embeds, attention_mask, t_token, img_embeds
+        )
+        # 6. bidirectional generation mask + route image tokens -> visual FFN +
+        # 2D MRoPE positions for the image block (h,w grid; prefix stays 1D).
+        attn4d = _xmodal_mask.build_generation_mask(prefix_mask, image_mask)
+        mrope_pos = None
+        if bool(getattr(cfg, "generation_rope_2d", True)):
+            grid = int(round(n_patch**0.5))
+            prefix_len = inputs_embeds.shape[1] - n_patch
+            mrope_pos = build_mrope_position_ids(prefix_len, grid, grid, bsz, device)
+        self._set_visual_mask(image_mask.unsqueeze(-1).to(model_dtype))
+        self._set_mrope_positions(mrope_pos)
+        try:
+            outputs = self.model(
+                input_ids=None,
+                attention_mask=attn4d,
+                position_ids=position_ids,
+                past_key_values=None,
+                inputs_embeds=inputs_embeds,
+                use_cache=False,
+            )
+        finally:
+            self._set_visual_mask(None)
+            self._set_mrope_positions(None)
+        # 7. x-prediction at the image positions, v-space loss
+        img_hidden = outputs.last_hidden_state[:, -n_patch:, :]
+        pred_x0 = self.gen_x_head(img_hidden).float()
+        loss = flow_matching_loss(pred_x0, x_t, x1, t)
+        comps = {"flow_v": loss.detach()}
+        # advance the persistent training-forward counter (for perceptual warmup)
+        if self.training and hasattr(self, "_gen_fwd_count"):
+            self._gen_fwd_count += 1
+        # 8. perceptual supervision on the unpatchified x0 (PRX / HiDream-O1 /
+        # PixelGen pixel-space recipe): unpatchify pred_x0 + clean target to
+        # images and add LPIPS + P-DINO — the sharpness lever (pure flow MSE is
+        # low-frequency-biased). Gated by: (a) warmup (skip until the zero-init
+        # x-head produces a non-constant x0, else the LPIPS/DINO gradient is
+        # singular and overflows bf16), and (b) per-sample noise gating (t>gate).
+        warmup = int(getattr(cfg, "generation_perceptual_warmup_steps", 0) or 0)
+        past_warmup = (not self.training) or int(getattr(self, "_gen_fwd_count", 0)) > warmup
+        if bool(getattr(cfg, "generation_perceptual_enabled", False)) and past_warmup:
+            from .gen_perceptual import perceptual_loss
+            grid = int(round(n_patch**0.5))
+            psz = int(round((patch_dim // 3) ** 0.5))
+            pred_img = patches_to_pixels(pred_x0, grid, grid, psz)
+            gt_img = patches_to_pixels(x1, grid, grid, psz)
+            pcomp = perceptual_loss(
+                pred_img, gt_img,
+                lpips_weight=float(getattr(cfg, "generation_perceptual_lpips_weight", 0.0)),
+                dino_weight=float(getattr(cfg, "generation_perceptual_dino_weight", 0.0)),
+                lpips_net=str(getattr(cfg, "generation_perceptual_lpips_net", "vgg")),
+                dino_model=str(getattr(cfg, "generation_perceptual_dino_model", "dinov2_vitb14_reg")),
+                resize=int(getattr(cfg, "generation_perceptual_resize", 256)),
+                t=t,
+                t_gate=float(getattr(cfg, "generation_perceptual_t_gate", 0.0)),
+            )
+            # Finite guard: a single non-finite perceptual term must never poison
+            # the optimizer (DeepSpeed bf16 loss-scaler collapse). Drop it for
+            # that step; flow MSE still trains. Logged values are sanitized too.
+            weighted = pcomp["weighted"]
+            if torch.isfinite(weighted):
+                loss = loss + weighted
+            comps["lpips"] = torch.nan_to_num(pcomp["lpips"])
+            comps["dino"] = torch.nan_to_num(pcomp["dino"])
+        self._last_ce_components = comps
+        return CausalLMOutputWithPast(loss=loss, logits=None, past_key_values=None)
+
+    @torch.no_grad()
+    def sample_images(
+        self: Any,
+        input_ids: Tensor,
+        attention_mask: Tensor | None,
+        image_position_ids: Tensor,
+        num_patches: int,
+        steps: int = 100,
+        cfg_scale: float = 1.0,
+    ) -> Tensor:
+        """Euler flow-matching sampler. Returns clean patches
+        (B, num_patches, patch_dim) ~[-1, 1]; the caller unpatchifies. CFG: the
+        unconditional branch drops the text prefix (zeroed text mask), matching
+        minit2i's null-mask CFG (x-prediction + velocity Euler step)."""
+        cfg = self.config
+        device = self.device
+        model_dtype = self.dtype
+        bsz = input_ids.shape[0]
+        patch_dim = self._gen_patch_dim()
+        noise_scale = float(cfg.generation_noise_scale)
+        x = torch.randn(bsz, num_patches, patch_dim, device=device) * noise_scale
+        text_embeds = self.get_input_embeddings()(input_ids.to(device))
+        if attention_mask is None:
+            attention_mask = torch.ones(bsz, input_ids.shape[1], device=device)
+        text_mask = attention_mask.to(device)
+        null_mask = torch.zeros_like(text_mask)
+        flat_pos = image_position_ids.reshape(bsz * num_patches, 2).to(device)
+        ts = torch.linspace(0.0, 1.0, steps + 1, device=device)
+
+        def predict(t_vec: Tensor, tmask: Tensor) -> Tensor:
+            img_embeds = self._gen_embed(
+                x.reshape(bsz * num_patches, patch_dim).to(model_dtype), flat_pos
+            ).reshape(bsz, num_patches, -1)
+            t_token = self.gen_t_embed(t_vec).to(model_dtype).unsqueeze(1)
+            embeds, prefix_mask, image_mask, position_ids = assemble_generation_inputs(
+                text_embeds, tmask, t_token, img_embeds
+            )
+            attn4d = _xmodal_mask.build_generation_mask(prefix_mask, image_mask)
+            mrope_pos = None
+            if bool(getattr(cfg, "generation_rope_2d", True)):
+                grid = int(round(num_patches**0.5))
+                prefix_len = embeds.shape[1] - num_patches
+                mrope_pos = build_mrope_position_ids(prefix_len, grid, grid, bsz, device)
+            self._set_visual_mask(image_mask.unsqueeze(-1).to(model_dtype))
+            self._set_mrope_positions(mrope_pos)
+            try:
+                out = self.model(
+                    input_ids=None,
+                    attention_mask=attn4d,
+                    position_ids=position_ids,
+                    past_key_values=None,
+                    inputs_embeds=embeds,
+                    use_cache=False,
+                )
+            finally:
+                self._set_visual_mask(None)
+                self._set_mrope_positions(None)
+            return self.gen_x_head(out.last_hidden_state[:, -num_patches:, :]).float()
+
+        for i in range(steps):
+            t_vec = torch.full((bsz,), float(ts[i]), device=device)
+            if cfg_scale != 1.0:
+                pred_cond = predict(t_vec, text_mask)
+                pred_uncond = predict(t_vec, null_mask)
+                pred_x0 = pred_uncond + (pred_cond - pred_uncond) * cfg_scale
+            else:
+                pred_x0 = predict(t_vec, text_mask)
+            v = to_velocity(pred_x0, x, t_vec)
+            x = euler_step(x, v, float(ts[i + 1] - ts[i]))
+        return x
+
     def floating_point_ops(
         self: Any, input_dict: dict[str, Any], exclude_embeddings: bool = True
     ) -> int:
@@ -1491,6 +1779,13 @@ def create_dynamic_causal_vlm_class(
             "config_class": config_class,
             "__init__": __init__,
             "_build_visual_aux_head": _build_visual_aux_head,
+            "_build_generation_modules": _build_generation_modules,
+            "init_generation_modules": init_generation_modules,
+            "_set_mrope_positions": _set_mrope_positions,
+            "_gen_patch_dim": _gen_patch_dim,
+            "_gen_embed": _gen_embed,
+            "forward_generation": forward_generation,
+            "sample_images": sample_images,
             "_set_visual_mask": _set_visual_mask,
             "forward": forward,
             "install_xmodal_masks": install_xmodal_masks,
