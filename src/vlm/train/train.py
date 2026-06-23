@@ -256,6 +256,18 @@ def train(
     model.config.use_cache = False
     set_trainable_params(model, training_args)
 
+    # End-to-end delta tuning: env-gated, off by default. Freezes pure-language
+    # params (text FFN/embed/lm_head/norm), keeps visual pathway + attention
+    # trainable — single-run cure for gradient starvation (Mono-InternVL EViP
+    # equivalent without staging). Applied after set_trainable_params to override.
+    import os as _os_dt
+
+    if _os_dt.environ.get("DELTA_TUNING") in ("1", "2"):
+        from .set_trainable import apply_delta_tuning
+
+        apply_delta_tuning(model)
+        log.info(f"DELTA_TUNING={_os_dt.environ.get('DELTA_TUNING')} enabled.")
+
     if energon_loader is not None:
         validate_energon_args(training_args)
 
