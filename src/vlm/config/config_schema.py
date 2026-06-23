@@ -58,6 +58,27 @@ class ConnectorConfig:
     # --- raw_patch dials (ignored by other connector types) ---
     mm_embed_dim: int | None = None  # embedder internal width; None = LM hidden_size
     mm_posemb_size: int | None = None  # per-axis posemb rows; None = max_soft_tokens
+    # Low-rank bottleneck inside the shared patch embedding (minit2i/PRX/
+    # HiDream-O1): patch_dim -> bottleneck -> mm_embed_dim. 0 = off (single
+    # Linear, bit-identical). Shared by understanding + generation.
+    bottleneck_dim: int = 0
+    # Pretrained-conv "warm tokenizer" (spec 2026-06-22, encoder-free catch-up):
+    # re-encode each raw model-patch with a transplanted ViT conv patch-embed
+    # (the conv is a per-16px-sub-patch linear; NO cross-patch attention, so the
+    # model stays encoder-free) BEFORE the learned projection — swapping
+    # random-init pixel features for pretrained low-level visual features so the
+    # from-scratch tokenizer isn't from scratch. null = off (bit-identical).
+    # "siglip"|"clip" select the source family; weights are transplanted in
+    # vlm.load_model on fresh build only (reloads carry the trained stem).
+    patch_stem: str | None = None
+    patch_stem_name: str = "google/siglip-base-patch16-224"
+    patch_stem_kernel: int = 16  # teacher patch edge px; must divide model patch side
+    patch_stem_freeze: bool = False  # keep the transplanted conv frozen (preserve features)
+    # 2-layer GELU MLP patch head (LLaVA-1.5): patch_dim -> hidden -> GELU ->
+    # mm_embed_dim. 0 = off (single Linear). Gives the connector nonlinear
+    # capacity to combine the transplanted sub-patch features. Takes precedence
+    # over bottleneck_dim when both are set.
+    patch_mlp_hidden: int = 0
 
 
 @dataclass

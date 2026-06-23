@@ -205,10 +205,88 @@ class _RawPatchEmbedder(nn.Module):
         mm_embed_dim: int,
         posemb_size: int,
         text_hidden_size: int,
+        bottleneck_dim: int | None = None,
+        patch_stem: str | None = None,
+        patch_stem_kernel: int = 16,
+        patch_mlp_hidden: int | None = None,
     ) -> None:
         super().__init__()
+        # Optional pretrained-conv patch stem (encoder-free "warm tokenizer",
+        # spec 2026-06-22): re-encode each raw model-patch with a transplanted
+        # ViT conv patch-embed (e.g. SigLIP-B/16's Conv2d(3,768,16,16)) BEFORE
+        # the learned projection. The conv is a per-16px-sub-patch linear with
+        # NO attention across sub-patches or across the image, so the model
+        # stays encoder-free — it only swaps random-init pixel features for
+        # pretrained low-level visual features. Output dim is kept == patch_dim
+        # (out_ch * subgrid^2 == 3 * side^2, e.g. 768*3*3 == 3*48*48 == 6912) so
+        # the rest of the embedder is structurally unchanged and bit-identical
+        # when off. Weights are transplanted post-build in vlm.load_model.
+        self.patch_stem: nn.Conv2d | None = None
+        self._stem_side: int = 0
+        if patch_stem:
+            side = int(round((patch_dim // 3) ** 0.5))  # model patch edge, px (48)
+            if side * side * 3 != patch_dim:
+                raise ValueError(
+                    f"patch_stem requires a square RGB patch; patch_dim {patch_dim} "
+                    f"is not 3*side^2 (got side={side})."
+                )
+            if side % int(patch_stem_kernel) != 0:
+                raise ValueError(
+                    f"patch_stem_kernel {patch_stem_kernel} must divide the model "
+                    f"patch side {side}px."
+                )
+            sub = side // int(patch_stem_kernel)  # sub-patch grid per model patch (3)
+            if patch_dim % (sub * sub) != 0:
+                raise ValueError(
+                    f"patch_stem: patch_dim {patch_dim} not divisible by subgrid^2 "
+                    f"{sub * sub}; cannot keep output dim == patch_dim."
+                )
+            out_ch = patch_dim // (sub * sub)  # 6912 // 9 == 768 (== teacher hidden)
+            self.patch_stem = nn.Conv2d(
+                3, out_ch, kernel_size=int(patch_stem_kernel), stride=int(patch_stem_kernel)
+            )
+            self._stem_side = side
+            # Per-channel input normalization the transplanted conv was trained
+            # with (default SigLIP/ImageNet-standard 0.5 -> (x-0.5)/0.5 == 2x-1;
+            # init_patch_stem_from_encoder overwrites with the teacher's true
+            # stats, e.g. OpenAI-CLIP mean/std). Persistent so reloads restore
+            # the CLIP stats (the transplant runs on fresh build only).
+            self.register_buffer("stem_mean", torch.full((1, 3, 1, 1), 0.5), persistent=True)
+            self.register_buffer("stem_std", torch.full((1, 3, 1, 1), 0.5), persistent=True)
+            # Forward-level freeze enforcement (the connector LR group / delta
+            # tuning re-enable requires_grad after build, so a plain
+            # requires_grad=False is not enough): when set, the conv weight is
+            # detached in forward so no gradient ever reaches it. Persistent bool.
+            self.register_buffer(
+                "_stem_frozen", torch.zeros((), dtype=torch.bool), persistent=True
+            )
         self.patch_ln1: nn.LayerNorm = nn.LayerNorm(patch_dim)
-        self.patch_dense: nn.Linear = nn.Linear(patch_dim, mm_embed_dim)
+        # patch projection: a single Linear by default (gemma4 understanding
+        # path, bit-identical). When bottleneck_dim is set, factor it through a
+        # low-rank intermediate (patch_dim -> bottleneck -> mm_embed_dim, no bias
+        # on the first, no activation between) — the minit2i/PRX/HiDream-O1
+        # "BottleneckPatchEmbed" trick: a raw image patch's intrinsic dimension
+        # is far below patch_dim, so denoising in pixel space benefits from
+        # projecting onto the signal subspace before the transformer width.
+        self.patch_dense: nn.Module
+        if patch_mlp_hidden and int(patch_mlp_hidden) > 0:
+            # 2-layer GELU MLP head (LLaVA-1.5 arXiv:2310.03744): a real
+            # nonlinear projection, strictly stronger than a single linear (the
+            # single linear must collapse the 9 transplanted SigLIP sub-patch
+            # features into one token with no nonlinearity). Takes precedence
+            # over the linear bottleneck when both are set.
+            self.patch_dense = nn.Sequential(
+                nn.Linear(patch_dim, int(patch_mlp_hidden)),
+                nn.GELU(),
+                nn.Linear(int(patch_mlp_hidden), mm_embed_dim),
+            )
+        elif bottleneck_dim and int(bottleneck_dim) > 0:
+            self.patch_dense = nn.Sequential(
+                nn.Linear(patch_dim, int(bottleneck_dim), bias=False),
+                nn.Linear(int(bottleneck_dim), mm_embed_dim),
+            )
+        else:
+            self.patch_dense = nn.Linear(patch_dim, mm_embed_dim)
         self.patch_ln2: nn.LayerNorm = nn.LayerNorm(mm_embed_dim)
         # Factorized per-axis (X/Y) position table, shape (posemb_size, 2, D):
         # embedding = table[x, 0] + table[y, 1]  (gemma4_unified L798, L823-827).
@@ -233,7 +311,22 @@ class _RawPatchEmbedder(nn.Module):
                 f"mm_posemb_size (it must cover the largest possible grid side, i.e. "
                 f">= visual_encoder.max_soft_tokens for worst-case aspect ratios)."
             )
-        patches = patches.to(self.patch_dense.weight.dtype)
+        patches = patches.to(self.patch_ln1.weight.dtype)
+        if self.patch_stem is not None:
+            # (N, side*side*3) flattened row-major as (row, col, channel)
+            # [RawImageProcessor.convert_image_to_patches] -> (N, 3, side, side).
+            n = patches.shape[0]
+            s = self._stem_side
+            img = patches.view(n, s, s, 3).permute(0, 3, 1, 2).to(self.patch_stem.weight.dtype)
+            # Raw patches are rescale-only ([0,1]); renorm to the teacher conv's
+            # training distribution (SigLIP 0.5/0.5 -> 2x-1; CLIP -> OpenAI stats).
+            img = (img - self.stem_mean.to(img.dtype)) / self.stem_std.to(img.dtype)
+            w, b = self.patch_stem.weight, self.patch_stem.bias
+            if bool(self._stem_frozen):  # robust freeze: no grad reaches the conv
+                w = w.detach()
+                b = b.detach() if b is not None else None
+            feat = nn.functional.conv2d(img, w, b, stride=self.patch_stem.stride)  # (N,C,sub,sub)
+            patches = feat.flatten(1).to(self.patch_ln1.weight.dtype)  # (N, patch_dim)
         hidden = self.patch_ln2(self.patch_dense(self.patch_ln1(patches)))
         pos = self.pos_embedding[position_ids[:, 0], 0] + self.pos_embedding[position_ids[:, 1], 1]
         hidden = self.pos_norm(hidden + pos.to(hidden.dtype))
@@ -278,6 +371,15 @@ class RawPatchConnector(Connector):
                 "set it explicitly in the connector config if constructing manually."
             )
         self.posemb_size: int = posemb_size
+        # Optional low-rank bottleneck inside the shared patch embedding
+        # (minit2i/PRX/HiDream-O1 trick). 0 = off -> single Linear, bit-identical
+        # to the original understanding connector. Shared by understanding AND
+        # generation (encoder-free: one patch embedding replaces the ViT).
+        self.bottleneck_dim: int = int(getattr(config, "bottleneck_dim", 0) or 0)
+        # Pretrained-conv "warm tokenizer" (spec 2026-06-22): null = off.
+        self.patch_stem: str | None = getattr(config, "patch_stem", None) or None
+        self.patch_stem_kernel: int = int(getattr(config, "patch_stem_kernel", 16) or 16)
+        self.patch_mlp_hidden: int = int(getattr(config, "patch_mlp_hidden", 0) or 0)
         super().__init__(config, image_hidden_size, text_hidden_size)
 
     @override
@@ -287,6 +389,10 @@ class RawPatchConnector(Connector):
             mm_embed_dim=self.mm_embed_dim,
             posemb_size=self.posemb_size,
             text_hidden_size=self.text_hidden_size,
+            bottleneck_dim=self.bottleneck_dim if self.bottleneck_dim > 0 else None,
+            patch_stem=self.patch_stem,
+            patch_stem_kernel=self.patch_stem_kernel,
+            patch_mlp_hidden=self.patch_mlp_hidden if self.patch_mlp_hidden > 0 else None,
         )
 
     @override

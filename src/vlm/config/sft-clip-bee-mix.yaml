@@ -1,0 +1,35 @@
+defaults:
+    - sft-clip
+    - override /dataset: energon-vision-bee
+    - _self_
+
+# FAIR CLIP-encoder reference for the 1000-step native-catch-up goal
+# (2026-06-22). Identical bee-mix blend, step budget (1000) and effective
+# batch as the native arms (sft-unified-bee-mix*) — the ONLY intended
+# difference is the vision pathway (pretrained CLIP-ViT-B/16 tower + MLP
+# connector, tower trains too, vs encoder-free raw patches). vmcbench on
+# this run's checkpoints is the bar the native model must come within
+# 5 points of.
+#
+# Cluster launch:
+#   CONFIG_NAME=sft-clip-bee-mix sbatch train_l40s.slurm
+
+trainer:
+    max_steps: 1000
+    save_steps: 250
+    # Match the native bee-mix effective batch (32k budget x 4 GPU x acc2 =
+    # 256k tokens/optimizer step). The bee dataset's batch_token_budget 32000
+    # comes in via the dataset override; pair it with acc2.
+    gradient_accumulation_steps: 2
+    save_total_limit: null
+    # The bar only needs checkpoints to eval — no wandb. sft-clip inherits the
+    # finetune trainer which enables wandb, and the wandb service fails to start
+    # on these nodes (ServicePollForTokenError in on_train_begin -> job dies);
+    # the native arms default to report_to=none and are unaffected.
+    report_to: none
+    # Standard LLaVA "CLIP as visual encoder": freeze the pretrained tower,
+    # train connector + LLM to use its features (sft-clip's full-param tower
+    # finetune is a different, harder bar; frozen is the canonical encoder use).
+    unfreeze:
+        train_vision_model: false
+    run_name: clip-beemix-ref-1k

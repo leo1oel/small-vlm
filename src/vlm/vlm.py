@@ -90,6 +90,96 @@ def attach_audio_feature_extractor(processor: VLMProcessor, audio_config: Any) -
     )
 
 
+def init_patch_stem_from_encoder(model: Any, model_cfg: ModelConfig) -> None:
+    """Transplant a pretrained ViT conv patch-embed into the connector's warm
+    tokenizer stem (spec 2026-06-22). Fresh-build only — the conv is a registered
+    submodule that trains and serializes normally, so reloads carry the trained
+    stem and must NOT be re-transplanted. No-op unless connector.patch_stem is set.
+
+    The stem stays encoder-free: it is a per-16px-sub-patch linear (Conv2d with
+    kernel==stride) applied independently to each raw model-patch, with no
+    attention across sub-patches or the image — it only seeds the from-scratch
+    tokenizer with pretrained low-level visual features instead of random init.
+    """
+    kind = str(getattr(model_cfg.connector, "patch_stem", None) or "") or None
+    if not kind:
+        return
+    embedder = getattr(getattr(model.model, "connector", None), "projection_layer", None)
+    stem = getattr(embedder, "patch_stem", None)
+    if stem is None:
+        raise ValueError(
+            "connector.patch_stem is set but the connector has no patch_stem conv — "
+            "the warm tokenizer is only built by RawPatchConnector (encoder-free)."
+        )
+    name = str(getattr(model_cfg.connector, "patch_stem_name", "google/siglip-base-patch16-224"))
+    # Rescale-only inputs are assumed by the stem's [-1,1] renorm; a non-default
+    # image_mean/std would feed the transplanted conv a distribution it never saw.
+    if model_cfg.visual_encoder.image_mean is not None or model_cfg.visual_encoder.image_std is not None:
+        raise ValueError(
+            "connector.patch_stem assumes rescale-only patches ([0,1] -> [-1,1] "
+            "renorm inside the stem); set visual_encoder.image_mean/std to null."
+        )
+    if kind == "siglip":
+        from transformers import SiglipVisionModel
+
+        vit = SiglipVisionModel.from_pretrained(name)
+    elif kind == "clip":
+        from transformers import CLIPVisionModel
+
+        vit = CLIPVisionModel.from_pretrained(name)
+    else:
+        raise ValueError(f"connector.patch_stem must be 'siglip'|'clip'|null, got {kind!r}")
+    # The conv patch-embed is the single Conv2d in either vision model; locate it
+    # by type so the transplant is robust to module-path differences across
+    # transformers versions (e.g. the .vision_model wrapper was flattened in 5.x).
+    convs = [m for m in vit.modules() if isinstance(m, torch.nn.Conv2d)]
+    if len(convs) != 1:
+        raise ValueError(
+            f"expected exactly one Conv2d patch-embed in {kind} {name}, found {len(convs)}"
+        )
+    src = convs[0]
+    if tuple(src.weight.shape) != tuple(stem.weight.shape):
+        raise ValueError(
+            f"patch_stem conv shape mismatch: teacher {tuple(src.weight.shape)} vs "
+            f"stem {tuple(stem.weight.shape)} — teacher hidden/patch must match the "
+            f"model patch geometry (out_ch == patch_dim/subgrid^2, kernel == "
+            f"patch_stem_kernel)."
+        )
+    with torch.no_grad():
+        stem.weight.copy_(src.weight.to(stem.weight.dtype))
+        if stem.bias is not None:
+            if src.bias is not None:
+                stem.bias.copy_(src.bias.to(stem.bias.dtype))
+            else:  # CLIP conv has no bias; leave the stem's at zero-init
+                stem.bias.zero_()
+        # Set the input-normalization stats to the ones the teacher conv was
+        # trained with, so its pretrained features are evaluated on-distribution.
+        # SigLIP uses ImageNet-standard 0.5/0.5 (== the embedder's default);
+        # CLIP uses the OpenAI stats. Buffers live on the embedder (stem_mean/std).
+        if kind == "clip":
+            from transformers.image_utils import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
+
+            dev = embedder.stem_mean.device
+            embedder.stem_mean.copy_(
+                torch.tensor(OPENAI_CLIP_MEAN, device=dev).view(1, 3, 1, 1)
+            )
+            embedder.stem_std.copy_(
+                torch.tensor(OPENAI_CLIP_STD, device=dev).view(1, 3, 1, 1)
+            )
+    if bool(getattr(model_cfg.connector, "patch_stem_freeze", False)):
+        stem.weight.requires_grad_(False)
+        if stem.bias is not None:
+            stem.bias.requires_grad_(False)
+        # Robust freeze (set_trainable / delta-tuning re-enable connector grads
+        # after this): the embedder also detaches the conv weight in forward.
+        embedder._stem_frozen.fill_(True)
+    log.info(
+        f"Transplanted {kind} conv patch-embed ({name}) into connector warm "
+        f"tokenizer stem {tuple(stem.weight.shape)}"
+        + (" [FROZEN]" if bool(getattr(model_cfg.connector, "patch_stem_freeze", False)) else "")
+    )
+
+
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
     log.info(
         f"Loading model: [bold red][link=file://{CONFIG_PATH / 'model' / f'{model_cfg.name}.yaml'}]{model_cfg.name}[/link][/bold red]"
@@ -251,6 +341,10 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             from .models.modeling_vlm import init_visual_experts_from_text
 
             init_visual_experts_from_text(model.model)
+        # Fresh-build only: transplant a pretrained ViT conv patch-embed into the
+        # connector's "warm tokenizer" stem (spec 2026-06-22, encoder-free
+        # catch-up). Reloads skip this — the checkpoint carries the trained stem.
+        init_patch_stem_from_encoder(model, model_cfg)
         # E1 causal control (spec 2026-06-18): destroy the pretrained text prior
         # by re-initializing ONLY the LM backbone (embeddings, decoder layers,
         # final norm, untied lm_head) to the config initializer — connector and
