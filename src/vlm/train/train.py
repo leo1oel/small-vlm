@@ -253,8 +253,31 @@ def train(
     model.config.cross_modal_mask_mode = cmm_mode
     model.config.cross_modal_mask_window = cmm_window
 
+    # Generation 4D mask (spec 2026-06-20) also bypasses FA2: forward_generation
+    # / sample_images pass a bidirectional prefix-LM bool mask straight to SDPA.
+    # FA2 silently ignores/corrupts a 4D mask, so generation needs sdpa-family.
+    if bool(getattr(model.config, "generation", False)):
+        gen_attn = str(getattr(model.config, "_attn_implementation", "") or "")
+        if gen_attn not in ("sdpa", "sdpa_xmodal"):
+            raise ValueError(
+                "model.generation requires trainer.attn_implementation=sdpa "
+                f"(4D generation masks bypass FA2); got {gen_attn!r}"
+            )
+
     model.config.use_cache = False
     set_trainable_params(model, training_args)
+
+    # End-to-end delta tuning: env-gated, off by default. Freezes pure-language
+    # params (text FFN/embed/lm_head/norm), keeps visual pathway + attention
+    # trainable — single-run cure for gradient starvation (Mono-InternVL EViP
+    # equivalent without staging). Applied after set_trainable_params to override.
+    import os as _os_dt
+
+    if _os_dt.environ.get("DELTA_TUNING") in ("1", "2"):
+        from .set_trainable import apply_delta_tuning
+
+        apply_delta_tuning(model)
+        log.info(f"DELTA_TUNING={_os_dt.environ.get('DELTA_TUNING')} enabled.")
 
     if energon_loader is not None:
         validate_energon_args(training_args)
@@ -271,6 +294,16 @@ def train(
         trainer.add_callback(EnergonStateCallback(energon_loader, energon_num_workers))
 
     import os
+
+    # Gradient-starvation probe: env-gated, off by default (zero effect on normal
+    # runs). Single-GPU / no-ZeRO only — reads complete local p.grad pre-step.
+    if os.environ.get("GRAD_PROBE") == "1":
+        from .grad_probe import GradProbeCallback
+
+        trainer.add_callback(
+            GradProbeCallback(model, every=int(os.environ.get("GRAD_PROBE_EVERY", "5")))
+        )
+        log.info("GRAD_PROBE enabled: logging visual-vs-language gradient RMS per step.")
 
     from transformers.trainer_utils import get_last_checkpoint
 

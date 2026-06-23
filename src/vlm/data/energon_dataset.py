@@ -53,9 +53,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import torch
 from PIL import Image
 
+from ..models.gen_image import make_position_ids, pixels_to_patches
 from ..models.image_processing_raw import RawImageProcessor
 from .data_arguments import DataArguments
 from .dataset import (
@@ -914,6 +916,103 @@ def _check_distributed_consistency(signature: tuple) -> None:
             )
 
 
+class VLMGenTaskEncoder(VLMChatTaskEncoder):  # pyright: ignore[reportUntypedBaseClass]
+    """Text->image GENERATION encoder (spec 2026-06-20). Reuses the chat cooker
+    (image bytes + messages) but emits a GENERATION sample: the assistant
+    caption becomes the conditioning prompt (no CE labels) and the image is
+    resized to a FIXED square canvas and patchified into the connector's patch
+    space as the flow-matching target. batch() stacks the fixed-N targets; the
+    model's forward routes on `target_patches` to the flow-matching loss."""
+
+    def __init__(
+        self,
+        processor: Any,
+        data_args: DataArguments,
+        resolution: int,
+        caption_max_len: int = 128,
+        patch_size: int | None = None,
+    ):
+        super().__init__(processor, data_args)
+        if not isinstance(self.image_processor, RawImageProcessor):
+            raise ValueError("dataset.task='generation' requires the encoder-free RawImageProcessor")
+        # patch_size None -> reuse the connector's 48px model patch (legacy). When
+        # the model runs an independent gen embedder (e.g. 16px), the dataset must
+        # patchify at that SAME size, else target dim (psz^2*3) mismatches the
+        # gen embedder/x-head (e.g. 768 vs 6912).
+        self.model_patch_size: int = int(
+            patch_size if patch_size else self.image_processor.model_patch_size
+        )
+        if resolution % self.model_patch_size != 0:
+            raise ValueError(
+                f"gen_resolution {resolution} must be a multiple of the generation "
+                f"patch size {self.model_patch_size}"
+            )
+        self.resolution: int = int(resolution)
+        self.grid: int = self.resolution // self.model_patch_size
+        self.n_patch: int = self.grid * self.grid
+        self.caption_max_len: int = int(caption_max_len)
+
+    def _caption(self, messages: list[dict]) -> str:
+        """The assistant turn's text (the caption used as the prompt)."""
+        text = ""
+        for msg in messages:
+            role = msg.get("role") or msg.get("from")
+            if _ROLE_MAP.get(role, role) != "gpt":
+                continue
+            content = msg.get("content") if "content" in msg else msg.get("value")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = " ".join(
+                    it["text"]
+                    for it in content
+                    if isinstance(it, dict) and it.get("type") == "text"
+                )
+        return text
+
+    @stateless  # pyright: ignore[reportUntypedFunctionDecorator]
+    def encode_sample(self, sample: MMChatRawSample) -> dict:
+        if not sample.image_bytes:
+            raise ValueError(f"generation sample {sample.__key__} has no image")
+        pil = Image.open(io.BytesIO(sample.image_bytes[0])).convert("RGB")
+        pil = pil.resize((self.resolution, self.resolution), Image.BICUBIC)
+        arr = np.asarray(pil, dtype=np.float32) / 255.0  # (H, W, 3) in [0, 1]
+        chw = torch.from_numpy(arr).permute(2, 0, 1).contiguous() * 2.0 - 1.0  # (3,H,W) [-1,1]
+        target_patches = pixels_to_patches(chw, self.model_patch_size)  # (N, patch_dim)
+        position_ids = make_position_ids(self.grid, self.grid)  # (N, 2)
+        caption = self._caption(sample.messages)
+        ids = self.tokenizer(
+            caption,
+            truncation=True,
+            max_length=self.caption_max_len,
+            add_special_tokens=True,
+        ).input_ids
+        return {
+            "input_ids": ids,  # list[int]
+            "target_patches": target_patches,  # (N, patch_dim) fp32
+            "image_position_ids": position_ids,  # (N, 2) long
+            "id": sample.__key__,
+            "__restore_key__": getattr(sample, "__restore_key__", ()),
+        }
+
+    def batch(self, samples: list[dict]) -> dict:
+        # Left-pad the caption so the timestep token + image block sit
+        # immediately after the real text (no RoPE position gap); positions are
+        # structural arange in assemble_generation_inputs.
+        enc = self.tokenizer.pad(
+            {"input_ids": [s["input_ids"] for s in samples]},
+            padding=True,
+            padding_side="left",
+            return_tensors="pt",
+        )
+        return {
+            "input_ids": enc["input_ids"],
+            "attention_mask": enc["attention_mask"],
+            "target_patches": torch.stack([s["target_patches"] for s in samples]),
+            "image_position_ids": torch.stack([s["image_position_ids"] for s in samples]),
+        }
+
+
 def build_energon_train_loader(
     dataset_config: Any,
     processor: Any,
@@ -988,6 +1087,15 @@ def build_energon_train_loader(
 
     metadataset_yaml = _metadataset_yaml(specs)
     wc = worker_config or WorkerConfig.default_worker_config(num_workers=dataset_config.num_workers)
+    if task_encoder is None and getattr(dataset_config, "task", "understanding") == "generation":
+        _gen_psz = getattr(dataset_config, "gen_patch_size", None)
+        task_encoder = VLMGenTaskEncoder(
+            processor,
+            data_args,
+            resolution=int(getattr(dataset_config, "gen_resolution", 384)),
+            caption_max_len=int(getattr(dataset_config, "gen_caption_max_len", 128)),
+            patch_size=int(_gen_psz) if _gen_psz else None,
+        )
     if task_encoder is None:
         length_buckets = getattr(dataset_config, "length_buckets", None)
         if length_buckets:

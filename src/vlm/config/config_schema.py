@@ -58,6 +58,27 @@ class ConnectorConfig:
     # --- raw_patch dials (ignored by other connector types) ---
     mm_embed_dim: int | None = None  # embedder internal width; None = LM hidden_size
     mm_posemb_size: int | None = None  # per-axis posemb rows; None = max_soft_tokens
+    # Low-rank bottleneck inside the shared patch embedding (minit2i/PRX/
+    # HiDream-O1): patch_dim -> bottleneck -> mm_embed_dim. 0 = off (single
+    # Linear, bit-identical). Shared by understanding + generation.
+    bottleneck_dim: int = 0
+    # Pretrained-conv "warm tokenizer" (spec 2026-06-22, encoder-free catch-up):
+    # re-encode each raw model-patch with a transplanted ViT conv patch-embed
+    # (the conv is a per-16px-sub-patch linear; NO cross-patch attention, so the
+    # model stays encoder-free) BEFORE the learned projection — swapping
+    # random-init pixel features for pretrained low-level visual features so the
+    # from-scratch tokenizer isn't from scratch. null = off (bit-identical).
+    # "siglip"|"clip" select the source family; weights are transplanted in
+    # vlm.load_model on fresh build only (reloads carry the trained stem).
+    patch_stem: str | None = None
+    patch_stem_name: str = "google/siglip-base-patch16-224"
+    patch_stem_kernel: int = 16  # teacher patch edge px; must divide model patch side
+    patch_stem_freeze: bool = False  # keep the transplanted conv frozen (preserve features)
+    # 2-layer GELU MLP patch head (LLaVA-1.5): patch_dim -> hidden -> GELU ->
+    # mm_embed_dim. 0 = off (single Linear). Gives the connector nonlinear
+    # capacity to combine the transplanted sub-patch features. Takes precedence
+    # over bottleneck_dim when both are set.
+    patch_mlp_hidden: int = 0
 
 
 @dataclass
@@ -153,6 +174,33 @@ class GroundingConfig:
 
 
 @dataclass
+class VisualDistillConfig:
+    """Visual-encoder distillation for the native VLM (spec 2026-06-21): align
+    the LLM's hidden states at image positions to a frozen vision encoder's
+    per-patch features, so the visual pathway is supervised directly instead of
+    discovered through next-token loss alone. Structural dials (they size the
+    projection head + select the teacher, and serialize into checkpoint
+    config.json — visual_aux pattern) live here; the loss WEIGHT is a trainer
+    dial. enabled=False = no head built, bit-identical baseline."""
+
+    enabled: bool = False
+    # repa | eve | vora | softdepth | relational | vae (see models/visual_distill.py).
+    method: str = "repa"
+    # Teacher: "clip" loads a CLIPVisionModel, "vae" a diffusers AutoencoderKL.
+    teacher_kind: str = "clip"
+    teacher_name: str = "openai/clip-vit-base-patch16"
+    # 1-based decoder-output layer index/indices to align. null = method default
+    # (repa/relational/vae: ~0.3 depth; vora: first half block-wise; softdepth:
+    # all intermediate layers as the selection pool; eve: ignored, uses final).
+    layers: list[int] | None = None
+    # Internal width of the MLP projection head (input = LM hidden). 0 = LM hidden.
+    head_hidden: int = 0
+    # Per-token alignment: "cosine" (neg cosine, CLIP) or "smoothl1" (huber, vae).
+    # "" = method default (cosine for clip, smoothl1 for vae).
+    loss: str = ""
+
+
+@dataclass
 class CrossModalMaskConfig:
     # "none" (default, bit-identical baseline) | "prefix_lm" | "img2q_window".
     # prefix_lm: bidirectional attention over [system+image+question], causal
@@ -168,6 +216,77 @@ class CrossModalMaskConfig:
 
 
 @dataclass
+class GenerationConfig:
+    """Text->image generation pathway: continuous flow matching in patch space
+    (Transfusion / minit2i MM-JiT style; spec 2026-06-20). Structural dials size
+    the x-prediction head + in-context timestep token and set the noise
+    schedule; they serialize into checkpoint config.json (visual_aux pattern) so
+    the sampler self-describes. enabled=False = understanding-only (no module
+    built, no generation forward — bit-identical baseline)."""
+
+    enabled: bool = False
+    # Square target canvas edge (px). Patch grid = (resolution // patch_size)^2.
+    resolution: int = 384
+    # Generation patch edge (px). Generation REUSES the encoder-free connector's
+    # patch space, so this MUST equal the connector model patch
+    # (visual_encoder.patch_size * pooling_kernel_size, default 16*3 = 48).
+    # resolution % patch_size must be 0.
+    patch_size: int = 48
+    # Flow-matching noise scale (minit2i: 2.0) and logit-normal timestep
+    # sampling t = sigmoid(N(t_mu, t_sigma))  (t=1 clean, t=0 pure noise).
+    noise_scale: float = 2.0
+    t_mu: float = -0.8
+    t_sigma: float = 0.8
+    # Sampler defaults (inference only): Euler steps + classifier-free guidance.
+    sample_steps: int = 100
+    cfg_scale: float = 1.0
+    # Train-time probability of dropping the text condition (CFG training).
+    label_drop: float = 0.1
+    # Independent generation embedder (decouples generation from the 48px
+    # understanding connector). When True, generation builds its own raw-patch
+    # embedder + x-head at embed_patch_size (e.g. 16px -> finer grid, smaller
+    # per-patch target -> sharper images; minit2i 32px/256-token mechanism).
+    # When False, generation reuses the connector at patch_size (48px, legacy).
+    independent_embed: bool = False
+    embed_patch_size: int = 16
+    # Per-axis position-table size for the independent embedder (>= grid side =
+    # resolution // embed_patch_size).
+    embed_posemb_size: int = 64
+    # Low-rank bottleneck in the generation patch embedder (minit2i/PRX/
+    # HiDream-O1 "BottleneckPatchEmbed"): patch_dim -> bottleneck -> hidden. 0 =
+    # off (single Linear). HiDream-O1 uses hidden//4 (=512 at hidden 2048).
+    embed_bottleneck_dim: int = 0
+    # Perceptual losses on the unpatchified x0 prediction vs the clean image
+    # (PRX/HiDream-O1 pixel-space recipe; weights from PRX configs). Off by
+    # default — pure flow-matching MSE baseline is bit-identical.
+    perceptual_enabled: bool = False
+    perceptual_lpips_weight: float = 0.1
+    perceptual_dino_weight: float = 0.01
+    perceptual_lpips_net: str = "vgg"
+    perceptual_dino_model: str = "dinov2_vitb14_reg"
+    # Resize the x0/gt images to this square edge before the perceptual nets
+    # (memory; PRX uses 256 for DINO).
+    perceptual_resize: int = 256
+    # Noise gating (PixelGen sec 3.4): only apply perceptual losses to LOW-noise
+    # samples (t > gate; our convention t=1 clean). PixelGen disables the first
+    # 30% high-noise steps -> 0.3. 0 = apply to all samples (PRX behaviour).
+    perceptual_t_gate: float = 0.3
+    # Warmup: train flow-MSE ONLY for the first N steps, then add perceptual.
+    # The zero-init x-head makes step-0 predictions a constant (grey) image; the
+    # LPIPS/DINO feature-normalization gradient is singular there and overflows
+    # DeepSpeed's bf16 loss scaler (collapses -> training stalls). Warming up
+    # lets the flow loss produce a non-degenerate x0 first (PixelGen-style staged
+    # training). Counted in micro-batch forwards (== optimizer steps at
+    # grad_accum=1); 0 = no warmup.
+    perceptual_warmup_steps: int = 1000
+    # 2D (axial/interleaved-MRoPE) rotary for the image tokens (FLUX/minit2i/
+    # HiDream-O1 via Qwen3-VL): vertically-adjacent patches become close in
+    # rotary space. Bit-identical for text/understanding (replaces model.
+    # rotary_emb with an MRoPE that reduces to 1D on equal-axis positions).
+    rope_2d: bool = True
+
+
+@dataclass
 class ModelConfig:
     name: str = MISSING
     visual_encoder: VisualEncoderConfig = field(default_factory=VisualEncoderConfig)
@@ -179,6 +298,8 @@ class ModelConfig:
     visual_prefix: VisualPrefixConfig = field(default_factory=VisualPrefixConfig)
     cross_modal_mask: CrossModalMaskConfig = field(default_factory=CrossModalMaskConfig)
     grounding: GroundingConfig = field(default_factory=GroundingConfig)
+    visual_distill: VisualDistillConfig = field(default_factory=VisualDistillConfig)
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
 
 
 @dataclass
@@ -233,6 +354,22 @@ class DatasetConfig:
     # the energon path after placeholder injection and on the local-json
     # path after preprocess_multimodal's image-first normalization.
     image_position: str = "keep"
+    # --- generation task (text->image flow matching; spec 2026-06-20) ---
+    # "understanding" (default) = image->text chat encoder; "generation" =
+    # caption->image: each record yields (caption prompt, target image patches
+    # at a fixed canvas). Selects VLMGenTaskEncoder in build_energon_train_loader.
+    task: str = "understanding"
+    # Generation target canvas edge (px); must be a multiple of the connector
+    # model patch (visual_encoder.patch_size * pooling_kernel_size, default 48).
+    gen_resolution: int = 384
+    # Max caption (prompt) tokens for the generation condition.
+    gen_caption_max_len: int = 128
+    # Generation target patch edge (px). null -> use the connector's 48px model
+    # patch (legacy, reuse-the-connector path). Set to model.generation.
+    # embed_patch_size (e.g. 16) when model.generation.independent_embed is on,
+    # so the dataloader patchifies targets at the SAME granularity the model's
+    # independent gen embedder + x-head expect (else 768-vs-6912 dim mismatch).
+    gen_patch_size: int | None = None
 
 
 @dataclass
@@ -336,6 +473,11 @@ class TrainerConfig:
     # default_lr / language_model weight decay.
     visual_aux_head_lr: float | None = None
     visual_aux_head_wd: float | None = None
+    # Visual-distill loss weight λ_d (spec 2026-06-21): only read when
+    # model.visual_distill.enabled. L = L_CE + λ_d·L_distill. REPA/VoRA use an
+    # equal-ish weighting (~0.5-1.0); the head trains with the LM (it falls
+    # through to the language_model optimizer group, so no separate lr dial).
+    visual_distill_weight: float = 1.0
     # Native transformers token accounting, surfaced per log step in wandb
     # (num_input_tokens_seen + train tokens/sec): "non_padding" sums
     # attention_mask across ranks (small per-step gather), "all" counts

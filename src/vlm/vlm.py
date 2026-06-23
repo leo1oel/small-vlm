@@ -90,6 +90,133 @@ def attach_audio_feature_extractor(processor: VLMProcessor, audio_config: Any) -
     )
 
 
+def attach_distill_teacher(model: Any) -> None:
+    """Build and attach the frozen distillation teacher (spec 2026-06-21).
+
+    Stored list-wrapped (`model._distill_teacher = [teacher]`) so it is NOT a
+    registered submodule: invisible to .parameters()/optimizer/state_dict — it
+    must never be trained (set_trainable would otherwise sweep it into the
+    language_model group) nor bloat checkpoints. Covers both the fresh-build and
+    from_pretrained reload paths; the projection head itself is built by the
+    causal __init__ from the (serialized) config fields. No-op when disabled.
+    """
+    if not bool(getattr(model.config, "visual_distill", False)):
+        return
+    if getattr(model, "visual_distill_head", None) is None:
+        raise ValueError(
+            "model.visual_distill.enabled is set but the loaded checkpoint has no "
+            "visual_distill_head — retrofit from a non-distill checkpoint is not "
+            "supported; train from scratch or load a checkpoint trained with it"
+        )
+    from .models.visual_distill import VisualDistillTeacher
+
+    teacher = VisualDistillTeacher(
+        kind=str(getattr(model.config, "visual_distill_teacher_kind", "clip")),
+        name=str(getattr(model.config, "visual_distill_teacher_name", "openai/clip-vit-base-patch16")),
+    )
+    want_dim = int(getattr(model.config, "visual_distill_teacher_dim", 0) or 0)
+    if want_dim and teacher.feature_dim != want_dim:
+        raise ValueError(
+            f"distill teacher feature_dim {teacher.feature_dim} != head output width "
+            f"{want_dim} on config — teacher changed since the head was built"
+        )
+    model._distill_teacher = [teacher]
+    log.info(
+        f"Attached frozen distill teacher: {teacher.kind}:{teacher.name} "
+        f"(feature_dim={teacher.feature_dim}, off the module tree)"
+    )
+
+
+def init_patch_stem_from_encoder(model: Any, model_cfg: ModelConfig) -> None:
+    """Transplant a pretrained ViT conv patch-embed into the connector's warm
+    tokenizer stem (spec 2026-06-22). Fresh-build only — the conv is a registered
+    submodule that trains and serializes normally, so reloads carry the trained
+    stem and must NOT be re-transplanted. No-op unless connector.patch_stem is set.
+
+    The stem stays encoder-free: it is a per-16px-sub-patch linear (Conv2d with
+    kernel==stride) applied independently to each raw model-patch, with no
+    attention across sub-patches or the image — it only seeds the from-scratch
+    tokenizer with pretrained low-level visual features instead of random init.
+    """
+    kind = str(getattr(model_cfg.connector, "patch_stem", None) or "") or None
+    if not kind:
+        return
+    embedder = getattr(getattr(model.model, "connector", None), "projection_layer", None)
+    stem = getattr(embedder, "patch_stem", None)
+    if stem is None:
+        raise ValueError(
+            "connector.patch_stem is set but the connector has no patch_stem conv — "
+            "the warm tokenizer is only built by RawPatchConnector (encoder-free)."
+        )
+    name = str(getattr(model_cfg.connector, "patch_stem_name", "google/siglip-base-patch16-224"))
+    # Rescale-only inputs are assumed by the stem's [-1,1] renorm; a non-default
+    # image_mean/std would feed the transplanted conv a distribution it never saw.
+    if model_cfg.visual_encoder.image_mean is not None or model_cfg.visual_encoder.image_std is not None:
+        raise ValueError(
+            "connector.patch_stem assumes rescale-only patches ([0,1] -> [-1,1] "
+            "renorm inside the stem); set visual_encoder.image_mean/std to null."
+        )
+    if kind == "siglip":
+        from transformers import SiglipVisionModel
+
+        vit = SiglipVisionModel.from_pretrained(name)
+    elif kind == "clip":
+        from transformers import CLIPVisionModel
+
+        vit = CLIPVisionModel.from_pretrained(name)
+    else:
+        raise ValueError(f"connector.patch_stem must be 'siglip'|'clip'|null, got {kind!r}")
+    # The conv patch-embed is the single Conv2d in either vision model; locate it
+    # by type so the transplant is robust to module-path differences across
+    # transformers versions (e.g. the .vision_model wrapper was flattened in 5.x).
+    convs = [m for m in vit.modules() if isinstance(m, torch.nn.Conv2d)]
+    if len(convs) != 1:
+        raise ValueError(
+            f"expected exactly one Conv2d patch-embed in {kind} {name}, found {len(convs)}"
+        )
+    src = convs[0]
+    if tuple(src.weight.shape) != tuple(stem.weight.shape):
+        raise ValueError(
+            f"patch_stem conv shape mismatch: teacher {tuple(src.weight.shape)} vs "
+            f"stem {tuple(stem.weight.shape)} — teacher hidden/patch must match the "
+            f"model patch geometry (out_ch == patch_dim/subgrid^2, kernel == "
+            f"patch_stem_kernel)."
+        )
+    with torch.no_grad():
+        stem.weight.copy_(src.weight.to(stem.weight.dtype))
+        if stem.bias is not None:
+            if src.bias is not None:
+                stem.bias.copy_(src.bias.to(stem.bias.dtype))
+            else:  # CLIP conv has no bias; leave the stem's at zero-init
+                stem.bias.zero_()
+        # Set the input-normalization stats to the ones the teacher conv was
+        # trained with, so its pretrained features are evaluated on-distribution.
+        # SigLIP uses ImageNet-standard 0.5/0.5 (== the embedder's default);
+        # CLIP uses the OpenAI stats. Buffers live on the embedder (stem_mean/std).
+        if kind == "clip":
+            from transformers.image_utils import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
+
+            dev = embedder.stem_mean.device
+            embedder.stem_mean.copy_(
+                torch.tensor(OPENAI_CLIP_MEAN, device=dev).view(1, 3, 1, 1)
+            )
+            embedder.stem_std.copy_(
+                torch.tensor(OPENAI_CLIP_STD, device=dev).view(1, 3, 1, 1)
+            )
+    if bool(getattr(model_cfg.connector, "patch_stem_freeze", False)):
+        stem.weight.requires_grad_(False)
+        if stem.bias is not None:
+            stem.bias.requires_grad_(False)
+        # Robust freeze (set_trainable / delta-tuning re-enable connector grads
+        # after this): the embedder also detaches the conv weight in forward.
+        embedder._stem_frozen.fill_(True)
+    log.info(
+        f"Transplanted {kind} conv patch-embed ({name}) into connector warm "
+        f"tokenizer stem {tuple(stem.weight.shape)}"
+        + (" [FROZEN]" if bool(getattr(model_cfg.connector, "patch_stem_freeze", False)) else "")
+    )
+
+
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
     log.info(
         f"Loading model: [bold red][link=file://{CONFIG_PATH / 'model' / f'{model_cfg.name}.yaml'}]{model_cfg.name}[/link][/bold red]"
@@ -230,6 +357,67 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         config.visual_prefix_depth = int(model_cfg.visual_prefix.depth)
         config.visual_prefix_heads = int(model_cfg.visual_prefix.heads)
         config.visual_prefix_intermediate = int(model_cfg.visual_prefix.intermediate)
+        # Generation pathway structural fields (spec 2026-06-20): on the config
+        # BEFORE construction so the causal __init__ builds the x-prediction head
+        # + in-context timestep embedder from them; serialized into checkpoint
+        # config.json so reloads rebuild them (visual_aux pattern).
+        config.generation = bool(model_cfg.generation.enabled)
+        config.generation_resolution = int(model_cfg.generation.resolution)
+        config.generation_patch_size = int(model_cfg.generation.patch_size)
+        config.generation_noise_scale = float(model_cfg.generation.noise_scale)
+        config.generation_t_mu = float(model_cfg.generation.t_mu)
+        config.generation_t_sigma = float(model_cfg.generation.t_sigma)
+        config.generation_sample_steps = int(model_cfg.generation.sample_steps)
+        config.generation_cfg_scale = float(model_cfg.generation.cfg_scale)
+        config.generation_label_drop = float(model_cfg.generation.label_drop)
+        config.generation_independent_embed = bool(model_cfg.generation.independent_embed)
+        config.generation_embed_patch_size = int(model_cfg.generation.embed_patch_size)
+        config.generation_embed_posemb_size = int(model_cfg.generation.embed_posemb_size)
+        config.generation_embed_bottleneck_dim = int(model_cfg.generation.embed_bottleneck_dim)
+        config.generation_perceptual_enabled = bool(model_cfg.generation.perceptual_enabled)
+        config.generation_perceptual_lpips_weight = float(model_cfg.generation.perceptual_lpips_weight)
+        config.generation_perceptual_dino_weight = float(model_cfg.generation.perceptual_dino_weight)
+        config.generation_perceptual_lpips_net = str(model_cfg.generation.perceptual_lpips_net)
+        config.generation_perceptual_dino_model = str(model_cfg.generation.perceptual_dino_model)
+        config.generation_perceptual_resize = int(model_cfg.generation.perceptual_resize)
+        config.generation_perceptual_t_gate = float(model_cfg.generation.perceptual_t_gate)
+        config.generation_perceptual_warmup_steps = int(model_cfg.generation.perceptual_warmup_steps)
+        config.generation_rope_2d = bool(model_cfg.generation.rope_2d)
+        # Visual-distill structural fields (spec 2026-06-21) must be on the
+        # config BEFORE construction — the causal __init__ builds the projection
+        # head from them. Plain types; they serialize into checkpoint config.json
+        # (visual_aux pattern) so reloads rebuild the head. The frozen teacher is
+        # attached AFTER construction (it is not a checkpoint-persisted module).
+        config.visual_distill = bool(model_cfg.visual_distill.enabled)
+        config.visual_distill_method = str(model_cfg.visual_distill.method)
+        config.visual_distill_teacher_kind = str(model_cfg.visual_distill.teacher_kind)
+        config.visual_distill_teacher_name = str(model_cfg.visual_distill.teacher_name)
+        config.visual_distill_layers = (
+            [int(x) for x in model_cfg.visual_distill.layers]
+            if model_cfg.visual_distill.layers is not None
+            else None
+        )
+        config.visual_distill_head_hidden = int(model_cfg.visual_distill.head_hidden)
+        config.visual_distill_loss = str(model_cfg.visual_distill.loss)
+        # Teacher feature dim must be known BEFORE construction (the head's
+        # output width) — read it from the teacher's config (tiny JSON; the full
+        # weights load once later in attach_distill_teacher). Serialized so
+        # reloads rebuild the head with the right width without the teacher.
+        if model_cfg.visual_distill.enabled:
+            if str(model_cfg.visual_distill.teacher_kind) in ("clip", "siglip"):
+                tcfg = AutoConfig.from_pretrained(model_cfg.visual_distill.teacher_name)
+                tcfg = getattr(tcfg, "vision_config", tcfg)
+                config.visual_distill_teacher_dim = int(tcfg.hidden_size)
+            else:  # vae
+                from diffusers import AutoencoderKL
+
+                config.visual_distill_teacher_dim = int(
+                    AutoencoderKL.load_config(model_cfg.visual_distill.teacher_name)[
+                        "latent_channels"
+                    ]
+                )
+        else:
+            config.visual_distill_teacher_dim = 0
         model = VLMForCausalLM.from_pretrained(
             model_cfg.language_model.hf_name,
             config=config,
@@ -251,6 +439,14 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             from .models.modeling_vlm import init_visual_experts_from_text
 
             init_visual_experts_from_text(model.model)
+        # Fresh-build only: transplant a pretrained ViT conv patch-embed into the
+        # connector's "warm tokenizer" stem (spec 2026-06-22, encoder-free
+        # catch-up). Reloads skip this — the checkpoint carries the trained stem.
+        init_patch_stem_from_encoder(model, model_cfg)
+        # Fresh-build only: zero the generation x-prediction head (DiT zero
+        # final layer) AFTER weights load — reloads carry the trained head.
+        if getattr(config, "generation", False):
+            model.init_generation_modules()
         # E1 causal control (spec 2026-06-18): destroy the pretrained text prior
         # by re-initializing ONLY the LM backbone (embeddings, decoder layers,
         # final norm, untied lm_head) to the config initializer — connector and
@@ -277,6 +473,10 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
                 "prior DESTROYED (connector/vision preserved). E1 causal control."
             )
         model.config.lazy_load = False
+
+    # Frozen distill teacher (spec 2026-06-21): attach on both build paths,
+    # AFTER the head exists. Off the module tree -> not in .parameters() below.
+    attach_distill_teacher(model)
 
     log.info(model.config)
 
@@ -336,6 +536,15 @@ def vlm(cfg: AppConfig) -> None:
         )
         model.config.grounding_margin = float(cfg.model.grounding.margin)
         model.config.grounding_corruption = str(cfg.model.grounding.corruption)
+        # Visual-distill loss weight (spec 2026-06-21): trainer dial set on
+        # model.config like grounding_weight (branch-agnostic, before train());
+        # flat name serializes into checkpoint config.json. 0.0 when disabled ->
+        # the loss is never built (bit-identical baseline).
+        model.config.visual_distill_weight = (
+            float(cfg.trainer.visual_distill_weight)
+            if bool(cfg.model.visual_distill.enabled)
+            else 0.0
+        )
         log.info("Creating data module")
         if cfg.dataset.type == "energon":
             # lazy import: needs megatron-energon + multistorageclient, which

@@ -48,6 +48,12 @@ def group_params_by_prefix(model: Any):
         # params would fall through to "language_model" (the unassigned-prefix
         # default below) and silently take the LM lr / freeze flag.
         "visual_aux_head": ["visual_aux_head"],
+        # Generation pathway (spec 2026-06-20): x-prediction head + in-context
+        # timestep embedder (named gen_x_head.* / gen_t_embed.*, directly on the
+        # ForCausalLM). Own group so they never fall through to "language_model"
+        # and silently inherit its freeze flag / LR — they are always trained
+        # when present (see set_trainable_params).
+        "generation": ["gen_x_head", "gen_t_embed", "gen_patch_embed"],
     }
 
     all_params = list(model.named_parameters())
@@ -132,8 +138,60 @@ def set_trainable_params(model: Any, config: dict[str, bool]):
     for _, param in grouped_params.get("visual_aux_head", []):
         param.requires_grad = True
 
+    # Generation modules (x-pred head + timestep embedder) are always trainable
+    # when present — the fresh modules the flow-matching loss exists to train,
+    # in every recipe (incl. a frozen-trunk generation adapter later). Without
+    # this they would inherit train_language_model; a frozen LM would then leave
+    # the zero-initialized x-head identically zero -> pred_x0==0 -> loss never
+    # moves (silent no-op).
+    for _, param in grouped_params.get("generation", []):
+        param.requires_grad = True
+
     if getattr(model.config, "use_start_end_tokens", False):
         for _, param in grouped_params.get("embeddings", []):
             param.requires_grad = True
 
+    return log_trainable_params_detailed(model)
+
+
+def apply_delta_tuning(model: Any):
+    """End-to-end (single-run, no staging) delta tuning to defeat gradient
+    starvation (see devtools/grad_probe.py + memory visual-pathway-diagnosis).
+
+    Overrides requires_grad AFTER set_trainable_params: keeps ONLY the visual
+    pathway (connector + per-layer visual FFN expert `mlp_visual`) and the shared
+    self-attention trainable; FREEZES the pure-language params (text FFN
+    gate/up/down, token embeddings, lm_head, all norms). This is the end-to-end
+    equivalent of Mono-InternVL EViP's frozen-LLM concept stage: by freezing the
+    text FFN the language shortcut can't update, so gradient flows to the visual
+    pathway instead of starving it — without multi-stage training. Attention is
+    left trainable for vision-language alignment (Mono S1.3). visual_aux_head, if
+    present, stays trainable."""
+    import os as _os
+
+    # DELTA_TUNING=2: also freeze attention (Mono-InternVL S1.1/S1.2 — entire LLM
+    # frozen, only visual pathway trains). v1 (=1) left attention trainable, which
+    # is itself a language shortcut and failed to stop starvation (measured).
+    freeze_attn = _os.environ.get("DELTA_TUNING") == "2"
+    trainable = frozen = 0
+    for name, p in model.named_parameters():
+        keep = (
+            "connector" in name
+            or ".mlp_visual." in name
+            or "visual_aux_head" in name
+            or "gen_x_head" in name
+            or "gen_t_embed" in name
+            or "gen_patch_embed" in name
+            or (not freeze_attn and ".self_attn." in name)
+        )
+        p.requires_grad = keep
+        if keep:
+            trainable += p.numel()
+        else:
+            frozen += p.numel()
+    log.info(
+        f"[delta-tuning] trainable={format_param_count(trainable)} "
+        f"frozen={format_param_count(frozen)} "
+        f"(visual pathway + attention trainable; text FFN/embed/lm_head/norm frozen)"
+    )
     return log_trainable_params_detailed(model)

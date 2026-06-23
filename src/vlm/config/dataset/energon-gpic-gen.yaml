@@ -1,0 +1,26 @@
+# GPIC text->image GENERATION stream (spec 2026-06-20). Each record's assistant
+# caption is the conditioning prompt; its image is resized to a fixed square
+# canvas and patchified into the connector's patch space as the flow-matching
+# target. Selects VLMGenTaskEncoder (task: generation). One Azure blob folder
+# (gpic/test, ~1M caption-image pairs). Credentials: AZURE_SAS_TOKEN (.env).
+
+name: energon-gpic-gen
+type: energon
+task: generation
+
+folders:
+    gpic/test: 1.0
+jsonl_name: test.jsonl
+
+# Fixed generation canvas: 384 / 48 (connector model patch) = 8x8 = 64 tokens.
+gen_resolution: 384
+gen_caption_max_len: 128
+
+# Fixed N per sample -> no length bucketing / token-budget batching; the loader
+# uses a plain per-device batch size (trainer.per_device_train_batch_size).
+length_buckets: null
+batch_token_budget: null
+
+shuffle_buffer_size: 10000
+max_samples_per_sequence: 100
+num_workers: 8

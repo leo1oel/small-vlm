@@ -1,0 +1,32 @@
+defaults:
+    - sft-unified
+    - _self_
+
+# 16px overfit comparison vs gen-overfit (48px). Generation runs an INDEPENDENT
+# embedder + x-head at embed_patch_size=16 (768-dim per-patch target), decoupled
+# from the 48px understanding connector. Finer grid + smaller per-patch target
+# (minit2i 256-token mechanism) -> sharper images. resolution 256 / 16 = 16 ->
+# 16x16 = 256 image tokens (same token budget as minit2i).
+# Consumed by devtools/gen_overfit_multi.py with -cn gen-overfit-16.
+
+model:
+    generation:
+        enabled: true
+        independent_embed: true
+        embed_patch_size: 16
+        embed_posemb_size: 64
+        resolution: 256
+        patch_size: 48        # ignored when independent_embed (legacy connector path)
+        noise_scale: 2.0
+        t_mu: -0.8
+        t_sigma: 0.8
+        sample_steps: 100
+        cfg_scale: 1.0
+        label_drop: 0.0
+    visual_expert:
+        enabled: false
+
+trainer:
+    run_name: gen-overfit-16
+    attn_implementation: sdpa
+    from_pretrained: null

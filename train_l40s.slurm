@@ -62,6 +62,7 @@ python -u -m torch.distributed.run \
     -m vlm -cn "${CONFIG_NAME}" \
     dataset.num_workers="${NUM_WORKERS}" \
     trainer.output_dir="${RUN_DIR}" \
-    hydra.run.dir="${RUN_DIR}/hydra"
+    hydra.run.dir="${RUN_DIR}/hydra" \
+    ${HYDRA_EXTRA:-}
 
 echo "END TIME: $(date)"
