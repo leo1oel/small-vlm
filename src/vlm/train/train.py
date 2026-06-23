@@ -295,6 +295,16 @@ def train(
 
     import os
 
+    # Gradient-starvation probe: env-gated, off by default (zero effect on normal
+    # runs). Single-GPU / no-ZeRO only — reads complete local p.grad pre-step.
+    if os.environ.get("GRAD_PROBE") == "1":
+        from .grad_probe import GradProbeCallback
+
+        trainer.add_callback(
+            GradProbeCallback(model, every=int(os.environ.get("GRAD_PROBE_EVERY", "5")))
+        )
+        log.info("GRAD_PROBE enabled: logging visual-vs-language gradient RMS per step.")
+
     from transformers.trainer_utils import get_last_checkpoint
 
     if training_args.resume_from_checkpoint:
