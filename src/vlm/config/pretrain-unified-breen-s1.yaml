@@ -21,11 +21,13 @@ trainer:
         train_connector: true
         train_vision_model: false
     from_pretrained: ${oc.env:VLM_BREEN_S0_CKPT}
-    # S1 data budget = 10M caption samples (directive: S0's 5M ⊂ S1's 10M),
-    # i.e. ~2x S0's steps at the same effective batch (accum=4 inherited from
-    # pretrain-unified-breen). max_steps ~ 10M / measured samples_per_step; the
-    # orchestrator refines it. (Was 5000 — a placeholder that only covered 5M.)
-    max_steps: 10000
+    # S1 data budget = 10M caption samples (directive: S0's 5M ⊂ S1's 10M).
+    # Refined from S0's MEASURED throughput (~700-740 samples/step at accum=4 on
+    # this caption stream): 10M / ~715 ≈ 14000 steps. Kept a multiple of
+    # save_steps so the final checkpoint name is deterministic (checkpoint-14000)
+    # for the afterok stage-chain that resumes S2 from it. (Earlier 10000 was a
+    # pre-measurement estimate that would have covered only ~7M.)
+    max_steps: 14000
     save_steps: 1000
     learning_rate:
         visual_encoder_learning_rate: 4e-5
