@@ -317,7 +317,6 @@ def main() -> int:
 
     # === Assertion 5: generate() per mode ===
     gen_ids = torch.tensor([[model.config.image_token_index] + QA], device=device)
-    ref_cont = None
     for mode in ("none", "prefix_lm", "img2q_window"):
         model.config.cross_modal_mask_mode = mode
         impl = "sdpa_xmodal" if mode == "img2q_window" else "sdpa"
@@ -335,8 +334,6 @@ def main() -> int:
             consumed = getattr(model, "_xmodal_gen_mask", None) is None
             finite = bool(out.isfinite().all()) if out.dtype.is_floating_point else True
             cont = out[0, gen_ids.shape[1] :].tolist()
-            if mode == "none":
-                ref_cont = cont
             record(
                 f"5.generate[{mode}]", consumed and finite, f"stash_cleared={consumed} cont={cont}"
             )

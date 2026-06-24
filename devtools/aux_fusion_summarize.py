@@ -72,9 +72,8 @@ def main():
     sa = acc(A, lambda r: r["swap"])
     print(
         f"{'swap':>8} | {sb:8.3f} {sa:8.3f} | "
-        f"{mean_nll(B, lambda r: r['swap']):8.3f} {mean_nll(A, lambda r: r[
-                'swap'
-            ]):8.3f} | (wrong-image floor)"
+        f"{mean_nll(B, lambda r: r['swap']):8.3f} {
+            mean_nll(A, lambda r: r['swap']):8.3f} | (wrong-image floor)"
     )
 
     # ---- 2. logit-lens arrival + image-swap sensitivity ------------------
