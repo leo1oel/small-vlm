@@ -10,7 +10,7 @@ LLM's hidden states at image positions to a frozen vision encoder's per-patch
 features, so the visual pathway is supervised directly instead of having to be
 discovered through next-token loss alone.
 
-One mechanism, six methods (config.method):
+One mechanism, seven methods (config.method):
   repa       single mid-layer (~0.3 depth), MLP head, per-patch neg-cosine to
              CLIP's final patch features. = REPA (arXiv:2410.06940), which aligns
              a denoising-transformer layer to DINOv2 for *generation*; here the

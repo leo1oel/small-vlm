@@ -143,8 +143,10 @@ class VisualExpertConfig:
     init_from_text: bool = True
     # Per-expert sigmoid gate (BREEN arXiv:2503.12446: F.sigmoid(gate(x))*expert(x)
     # on both the text and image FFN). A localized fidelity upgrade over the hard
-    # 0/1 mask; each gate is a Linear(hidden, 1) initialized near-identity
-    # (sigmoid≈1) so t=0 is a no-op. False = bit-identical to the hard-mask routing.
+    # 0/1 mask; each gate is a Linear(hidden, 1) initialized near-identity (zero
+    # weight, bias 4 -> sigmoid(4)≈0.982) — close to identity but NOT a literal
+    # t=0 no-op: it attenuates each FFN by ~1.8%/layer from step 0. False =
+    # bit-identical to the hard-mask routing.
     gate: bool = False
 
 

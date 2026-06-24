@@ -425,8 +425,10 @@ def init_learnable_query(model: Any) -> None:
 
 def init_visual_expert_gates(model: Any) -> None:
     """Fresh-build only: initialize each per-expert sigmoid gate to near-identity
-    (zero weight, bias so sigmoid≈0.982) so the gate is a no-op at t=0 and
-    training starts from the ungated routed FFN, then learns to attenuate.
+    (zero weight, bias 4.0 -> sigmoid(4)≈0.982) so training starts from a nearly
+    ungated routed FFN, then learns to attenuate. Near-identity, NOT a literal
+    t=0 no-op: it scales each FFN by ~0.982 (≈1.8% attenuation) from step 0
+    (raise the bias toward 6-8 for a closer-to-identity start).
     Reloads skip this — the checkpoint carries trained gates. No-op when gates
     are off (no expert_gate_* modules)."""
     count = 0
