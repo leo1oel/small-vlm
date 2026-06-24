@@ -123,7 +123,7 @@ def splice(model, processor, device, dtype, questions, ans_ids=(10, 11, 12), pad
 def merged(model, input_ids, attn, labels, images, poss):
     """Run prepare_inputs_labels_for_multimodal to get spliced embeds + block ids."""
     feats = model.encode_raw_patches(images, poss)
-    (_, _, attn4_or_2, _, embeds, new_labels, block_ids) = (
+    (_, _, attn4_or_2, _, embeds, new_labels, block_ids, _) = (
         model.prepare_inputs_labels_for_multimodal(
             input_ids, None, attn, None, labels, feats, None, with_image_block_ids=True
         )

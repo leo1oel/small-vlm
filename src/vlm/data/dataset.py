@@ -129,9 +129,13 @@ def tokenizer_image_token(
 
 
 def _media_pattern(data_args: DataArguments) -> str:
-    return (
-        "(" + "|".join(re.escape(t) for t in (data_args.image_token, data_args.audio_token)) + ")"
-    )
+    tokens = [data_args.image_token, data_args.audio_token]
+    # BREEN port: "<query>" is a splice placeholder (the model expands it into the
+    # learnable query block), so it must split/extract alongside the media tokens.
+    # Gated so non-BREEN runs are bit-identical (the token never appears anyway).
+    if getattr(data_args, "learnable_query_enabled", False):
+        tokens.append(data_args.query_token)
+    return "(" + "|".join(re.escape(t) for t in tokens) + ")"
 
 
 def tokenizer_multimodal_token(
@@ -148,6 +152,8 @@ def tokenizer_multimodal_token(
         data_args.image_token: data_args.image_token_index,
         data_args.audio_token: data_args.audio_token_index,
     }
+    if getattr(data_args, "learnable_query_enabled", False):
+        sentinel[data_args.query_token] = data_args.query_token_index
     input_ids: list[int] = []
     # re.split with a capturing group: even chunks are text (possibly ""), the
     # placeholders themselves come through as their own chunks.
@@ -414,6 +420,51 @@ def apply_image_position(
         turn[key] = new
 
 
+def inject_query_placeholders(
+    conversations: list[dict],
+    n_images: int,
+    data_args: DataArguments,
+) -> None:
+    """Insert one "<query>" placeholder per image (BREEN port, spec 2026-06-24),
+    in place. The model splice expands each "<query>" into the learnable query
+    block (the CLIP-distillation site), routed to the visual FFN expert and
+    excluded from CE. Placement (data_args.query_placement):
+      after_image  - "<image>" -> "<image>\\n<query>" (BREEN pretrain: image then
+                     queries; in the plain template the human text is dropped, so
+                     the kept placeholders are exactly "<image><query>").
+      after_text   - append "<query>" x n_images at the END of the human turn
+                     carrying the image(s) (BREEN SFT: queries attend the full
+                     question text, which precedes them).
+    No-op unless learnable_query is enabled and the sample carries an image. The
+    query cursor in the splice walks in lockstep with the image cursor, so one
+    "<query>" per "<image>" keeps a query block's id == its image's index."""
+    if not getattr(data_args, "learnable_query_enabled", False) or n_images <= 0:
+        return
+    qt = data_args.query_token
+    it = data_args.image_token
+    mode = data_args.query_placement
+    if mode == "after_image":
+        for turn in conversations:
+            key = "value" if "value" in turn else "content"
+            text = str(turn[key])
+            if it in text:
+                turn[key] = text.replace(it, f"{it}\n{qt}")
+    elif mode == "after_text":
+        for turn in conversations:
+            if (turn.get("from") or turn.get("role")) not in ("human", "user"):
+                continue
+            key = "value" if "value" in turn else "content"
+            text = str(turn[key])
+            cnt = text.count(it)
+            if cnt > 0:
+                turn[key] = text.rstrip() + ("\n" + qt) * cnt
+                break
+    else:
+        raise ValueError(
+            f"unknown query_placement {mode!r} (after_image|after_text)"
+        )
+
+
 def preprocess_llama_2(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
@@ -535,9 +586,13 @@ def preprocess_qwen(
     # Use a deepcopy of tokenizer so that we don't modify on the tokenizer
     # NOTE: has_image is really "has media" here — the dataset passes True for
     # samples carrying images and/or audio.
-    tokenizer = _get_preprocess_tokenizer(
-        tokenizer, has_image, (data_args.image_token, data_args.audio_token)
+    # BREEN port: register "<query>" as a special token too so apply_chat_template
+    # keeps it a single token (remapped to query_token_index below).
+    use_query = bool(getattr(data_args, "learnable_query_enabled", False))
+    media_tokens = (data_args.image_token, data_args.audio_token) + (
+        (data_args.query_token,) if use_query else ()
     )
+    tokenizer = _get_preprocess_tokenizer(tokenizer, has_image, media_tokens)
 
     # Only resolve the media token ids when they were actually added — for
     # text-only batches convert_tokens_to_ids would return unk/None and could
@@ -547,6 +602,9 @@ def preprocess_qwen(
     )
     audio_token_index = (
         tokenizer.convert_tokens_to_ids(data_args.audio_token) if has_image else None
+    )
+    query_token_index = (
+        tokenizer.convert_tokens_to_ids(data_args.query_token) if (has_image and use_query) else None
     )
     im_start = tokenizer.convert_tokens_to_ids("<|im_start|>")
     im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")
@@ -619,6 +677,8 @@ def preprocess_qwen(
                 input_id[idx] = data_args.image_token_index
             elif audio_token_index is not None and encode_id == audio_token_index:
                 input_id[idx] = data_args.audio_token_index
+            elif query_token_index is not None and encode_id == query_token_index:
+                input_id[idx] = data_args.query_token_index
         input_ids.append(input_id)
         targets.append(target)
     input_ids = torch.tensor(input_ids, dtype=torch.long)
@@ -1327,6 +1387,12 @@ class LazySupervisedDataset(Dataset):
                     mode=self.data_args.image_position,
                     image_token=self.data_args.image_token,
                     seed=i,
+                )
+                # BREEN port: one "<query>" per image at the configured placement.
+                inject_query_placeholders(
+                    source,
+                    n_images=len(image) if image is not None else 0,
+                    data_args=self.data_args,
                 )
 
         # elif "video" in sources[0]:

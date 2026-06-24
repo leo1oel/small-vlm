@@ -104,7 +104,7 @@ def gold_logp_gap(model, imgs, poss, q, ans, device):
     model.eval()
     input_ids, attn, labels, images, posl = batch(model, imgs, poss, q, ans, device)
     feats = model.encode_raw_patches(images, posl)
-    (_, _, _, _, embeds, new_labels, block_ids) = model.prepare_inputs_labels_for_multimodal(
+    (_, _, _, _, embeds, new_labels, block_ids, _) = model.prepare_inputs_labels_for_multimodal(
         input_ids, None, attn, None, labels, feats, None, with_image_block_ids=True)
     blank = embeds.detach().clone()
     blank[block_ids >= 0] = 0.0

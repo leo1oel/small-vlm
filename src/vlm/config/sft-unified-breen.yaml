@@ -1,0 +1,32 @@
+defaults:
+    - sft-unified
+    - override /model: qwen3-1.7b-unified-breen
+    - override /dataset: energon-honey-sft
+    - _self_
+
+# BREEN port (spec 2026-06-24) — STAGE 2: instruction SFT on Honey-Data-1M,
+# continuing from the S1 checkpoint. LM + connector train (trainer: finetune);
+# the visual experts / queries / distill head stay trainable. Placement flips to
+# after_text (BREEN SFT: the queries are emitted AFTER the user question so they
+# attend it). The breen distill stays on at weight 1.0. LR 2e-5 (BREEN fitu).
+#
+# Launch (S1 checkpoint REQUIRED):
+#   VLM_BREEN_S1_CKPT=/.../breen-s1-align-unfreeze/checkpoint-5000 \
+#     CONFIG_NAME=sft-unified-breen sbatch train_l40s.slurm
+
+model:
+    learnable_query:
+        placement: after_text # SFT: queries follow the question text
+
+trainer:
+    from_pretrained: ${oc.env:VLM_BREEN_S1_CKPT}
+    # sft-unified already sets loss_chunk_size: 1024 (the breen distill needs it).
+    visual_distill_weight: 1.0
+    max_steps: 5000
+    save_steps: 500
+    learning_rate:
+        visual_encoder_learning_rate: 2e-5
+        connector_learning_rate: 2e-5
+        language_model_learning_rate: 2e-5
+        default_lr: 2e-5
+    run_name: breen-s2-sft-honey

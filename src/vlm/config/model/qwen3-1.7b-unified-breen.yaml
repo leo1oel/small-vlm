@@ -1,0 +1,55 @@
+defaults:
+  - _self_
+
+# Encoder-free BREEN model (arXiv:2503.12446 port, spec 2026-06-24) on the
+# Qwen3-1.7B backbone. Same raw-patch tokenizer as qwen3-1.7b-unified, plus the
+# three BREEN architecture pieces, shared by ALL stages (S0/S1/S2) so the
+# checkpoint chain reloads without a structural mismatch:
+#   1. learnable_query  - 64 fine + 36 coarse trainable queries (the CLIP-distill
+#                         site); the breen method aligns them to the dual-pooled
+#                         CLIP-L/14-336 grid (8x8 fine, 6x6 coarse).
+#   2. visual_expert    - per-layer modality-routed visual FFN (image AND query
+#                         tokens), with the per-expert sigmoid gate.
+#   3. visual_distill   - frozen CLIP-L/14-336 teacher (training only, off the
+#                         module tree), method=breen, projected up to LLM-hidden.
+# Per-stage configs only flip learnable_query.placement (after_image for the
+# alignment stages, after_text for SFT) and the LR / unfreeze / dataset.
+
+language_model:
+  hf_name: Qwen/Qwen3-1.7B
+  max_seq_length: 4096
+
+visual_encoder:
+  hf_name: null # encoder-free: no vision tower; raw patches -> connector
+  patch_size: 16 # teacher patch, px
+  pooling_kernel_size: 3 # model patch = 16*3 = 48px (gemma4 geometry)
+  max_soft_tokens: 280 # per-image token budget
+  # image_mean / image_std: null -> rescale-only
+
+connector:
+  name: raw_patch
+  type: raw_patch
+
+audio:
+  enabled: false # vision-only BREEN run
+
+visual_expert:
+  enabled: true
+  layers: null # every decoder layer
+  init_from_text: true # start each visual FFN identical to its text FFN
+  gate: true # BREEN per-expert sigmoid gate (near-identity init)
+
+learnable_query:
+  enabled: true
+  num_fine: 64 # 8x8 fine avg-pool of the 24x24 CLIP grid
+  num_coarse: 36 # 6x6 coarse avg-pool
+  placement: after_image # default (alignment stages); SFT overrides to after_text
+
+visual_distill:
+  enabled: true
+  method: breen
+  teacher_kind: clip
+  teacher_name: openai/clip-vit-large-patch14-336
+  teacher_out_size: 336 # 336 / 14 = 24x24 grid -> 64 fine + 36 coarse
+
+name: qwen3-1.7b-unified-breen

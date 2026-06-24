@@ -138,7 +138,7 @@ class FullProbe:
             feats = self.model.encode_raw_patches(gk["images"], gk["image_position_ids"])
         else:
             feats, _ = self.model.encode_images(gk["images"])
-        (_, _, am, _, emb, _, blk) = self.model.prepare_inputs_labels_for_multimodal(
+        (_, _, am, _, emb, _, blk, _) = self.model.prepare_inputs_labels_for_multimodal(
             ids, None, torch.ones_like(ids), None, None, feats, None, with_image_block_ids=True)
         vm = (blk[0] >= 0).to(DEV)
         first_vis = int(vm.nonzero()[0])

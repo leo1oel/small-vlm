@@ -29,6 +29,12 @@ One mechanism, six methods (config.method):
   vae        low-level control: teacher = a frozen VAE encoder's latent grid
              (pixels/texture, no semantics) instead of CLIP — isolates how much
              of the gain is semantic vs reconstructive.
+  breen      BREEN (arXiv:2503.12446): distill the LLM's hidden at the LEARNABLE
+             QUERY positions (not image patches) to a dual-granularity avg-pooled
+             CLIP grid — first num_fine query rows <-> 8x8 fine pool, last
+             num_coarse rows <-> 6x6 coarse pool. The CLIP(1024) target is
+             projected UP to LLM-hidden via a LayerNorm+Linear `norm_layer` and
+             1-cos is taken in LLM-hidden space (faithful to BREEN's geometry).
 
 The teacher sees the SAME pixels as the model: we reconstruct the RGB image from
 the raw patches already in the batch (RawImageProcessor is lossless, rescale-only
@@ -53,18 +59,21 @@ log: logging.Logger = logging.getLogger(__name__)
 CLIP_IMAGE_MEAN: tuple[float, float, float] = (0.48145466, 0.4578275, 0.40821073)
 CLIP_IMAGE_STD: tuple[float, float, float] = (0.26862954, 0.26130258, 0.27577711)
 
-DISTILL_METHODS: tuple[str, ...] = ("repa", "eve", "vora", "softdepth", "relational", "vae")
+DISTILL_METHODS: tuple[str, ...] = (
+    "repa", "eve", "vora", "softdepth", "relational", "vae", "breen"
+)
 
 
 def resolve_distill_layers(method: str, layers_cfg: list[int] | None, num_layers: int) -> list[int]:
     """1-based decoder-output layer indices this method aligns.
 
-    `eve` returns [] — it uses the final post-norm hidden state directly, not a
-    captured intermediate layer. The others default sensibly when layers_cfg is
-    None: repa/relational/vae a single ~0.3-depth layer; vora the first half
-    (block-wise); softdepth every intermediate layer as the selection pool.
+    `eve` and `breen` return [] — they use the final post-norm hidden state
+    directly (breen at query positions), not a captured intermediate layer. The
+    others default sensibly when layers_cfg is None: repa/relational/vae a single
+    ~0.3-depth layer; vora the first half (block-wise); softdepth every
+    intermediate layer as the selection pool.
     """
-    if method == "eve":
+    if method in ("eve", "breen"):
         return []
     if layers_cfg:
         layers = sorted({int(k) for k in layers_cfg})
@@ -227,14 +236,27 @@ class VisualDistillHead(nn.Module):
         layers: list[int],
         head_hidden: int,
         loss_type: str,
+        num_fine: int = 64,
+        num_coarse: int = 36,
     ) -> None:
         super().__init__()
         self.method: str = method
         self.layers: list[int] = layers
         self.loss_type: str = loss_type
         self.teacher_dim: int = teacher_dim
+        self.num_fine: int = num_fine
+        self.num_coarse: int = num_coarse
         hidden = head_hidden if head_hidden > 0 else llm_dim
-        if method == "relational":
+        if method == "breen":
+            # BREEN `norm_layer`: project the CLIP target UP to LLM-hidden
+            # (LayerNorm(1024) -> Linear(1024 -> hidden, bias=False)); cosine is
+            # taken in LLM-hidden space. No projection on the LLM (query) side —
+            # the queries are aligned directly. (vision_tokenizer.py:433-436)
+            self.proj = None
+            self.norm_layer = nn.Sequential(
+                nn.LayerNorm(teacher_dim), nn.Linear(teacher_dim, llm_dim, bias=False)
+            )
+        elif method == "relational":
             self.proj = None  # dimension-free: align Gram matrices, no projection
         elif method == "vora":
             # One RMSNorm+Linear AuxHead per aligned block (VoRA: each early
@@ -308,6 +330,37 @@ class VisualDistillHead(nn.Module):
             components["distill_sel_depth"] = torch.tensor(sel, device=device)
             components["distill_sel_max"] = w.max().to(device)
         return loss, components
+
+    def compute_breen(self, samples: list[dict[str, Any]]) -> tuple[Tensor, dict[str, Tensor]]:
+        """BREEN query distillation. Each per-image sample carries:
+            'query_hidden': (num_fine+num_coarse, llm_dim) LLM final hidden at
+                            this image's query positions, in row order.
+            'target_fine':  (num_fine, teacher_dim)  8x8 avg-pool of the CLIP grid.
+            'target_coarse':(num_coarse, teacher_dim) 6x6 avg-pool of the CLIP grid.
+        Projects the CLIP targets UP to LLM-hidden via `norm_layer`, then
+        1-cos(fine_queries, fine_target) + 1-cos(coarse_queries, coarse_target).
+        Token-weighted mean across images (weight = number of queries)."""
+        device = samples[0]["query_hidden"].device
+        loss_sum = torch.zeros((), dtype=torch.float32, device=device)
+        cos_sum = torch.zeros((), dtype=torch.float32, device=device)
+        n_tok = 0
+        for s in samples:
+            qh = s["query_hidden"]
+            fine_pred = qh[: self.num_fine]
+            coarse_pred = qh[self.num_fine :]
+            fine_tgt = self.norm_layer(s["target_fine"].to(qh.dtype))
+            coarse_tgt = self.norm_layer(s["target_coarse"].to(qh.dtype))
+            l_f, c_f = self._align(fine_pred, fine_tgt)
+            l_c, c_c = self._align(coarse_pred, coarse_tgt)
+            m = qh.shape[0]
+            loss_sum = loss_sum + (l_f + l_c) * m
+            cos_sum = cos_sum + 0.5 * (c_f + c_c) * m
+            n_tok += m
+        loss = loss_sum / max(n_tok, 1)
+        return loss, {
+            "distill": loss.detach(),
+            "distill_cos": (cos_sum / max(n_tok, 1)).detach(),
+        }
 
     def _softdepth(self, s: dict[str, Any]) -> tuple[Tensor, Tensor]:
         # Magnitude-normalize each pooled layer, mix by softmax weights, project.

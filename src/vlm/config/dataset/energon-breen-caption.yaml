@@ -1,0 +1,36 @@
+# BREEN alignment caption stream (arXiv:2503.12446 port, spec 2026-06-24).
+# Image->dense-caption pairs for the encoder-free alignment stages (S0 frozen-LLM,
+# S1 unfreeze). Uses the format-generic energon understanding loader (no new
+# loader code): one Azure blob folder with <folder>/train.jsonl (messages with an
+# image + an assistant caption), media rooted at the jsonl dir — the SAME format
+# as the gpic generation data (energon-gpic-gen-train.yaml).
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │ SWAP POINT: when the captain's ~14M high-quality caption set is handed over │
+# │ on Azure, change ONLY the `folders` key below (and jsonl_name if it differs)│
+# │ to its blob prefix. Everything else (loader, splice, distill) is unchanged. │
+# └───────────────────────────────────────────────────────────────────────────┘
+#
+# Validated default = the existing Bee Stage-1 caption set (energon-bee-caption
+# .yaml), so the loader + BREEN query/distill wiring runs end-to-end on real
+# energon data today. Credentials: AZURE_SAS_TOKEN (.env). max_steps > 0 required.
+
+name: energon-breen-caption
+type: energon
+task: understanding # image -> caption (NOT generation)
+
+# >>> single-line swap to the 14M caption folder when available <<<
+folders:
+    yiming/Bee-Training-Data-Stage1: 1.0
+jsonl_name: train.jsonl
+
+# Bee captions carry a constant empty "<think>\n\n</think>" prefix; strip it at
+# the messages->conversations bridge. Harmless no-op for sets without it — review
+# when swapping in the 14M set (toggle off if that set has no such prefix).
+strip_empty_think: true
+
+shuffle_buffer_size: 2000
+length_buckets: [320, 512, 768, 1024, 1536, 4096]
+batch_token_budget: 32000 # 48G-safe (see energon-vision-bee.yaml rationale)
+max_samples_per_sequence: 100
+num_workers: 12

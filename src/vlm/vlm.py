@@ -113,6 +113,7 @@ def attach_distill_teacher(model: Any) -> None:
     teacher = VisualDistillTeacher(
         kind=str(getattr(model.config, "visual_distill_teacher_kind", "clip")),
         name=str(getattr(model.config, "visual_distill_teacher_name", "openai/clip-vit-base-patch16")),
+        out_size=int(getattr(model.config, "visual_distill_teacher_out_size", 224) or 224),
     )
     want_dim = int(getattr(model.config, "visual_distill_teacher_dim", 0) or 0)
     if want_dim and teacher.feature_dim != want_dim:
@@ -399,6 +400,19 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         )
         config.visual_distill_head_hidden = int(model_cfg.visual_distill.head_hidden)
         config.visual_distill_loss = str(model_cfg.visual_distill.loss)
+        config.visual_distill_teacher_out_size = int(model_cfg.visual_distill.teacher_out_size)
+        # Learnable-query structural fields (BREEN port, spec 2026-06-24): on the
+        # config BEFORE construction so the causal __init__ builds the query
+        # Parameter from them; serialized into checkpoint config.json (visual_aux
+        # pattern) so reloads rebuild it with the right shape. enabled=False ->
+        # no Parameter (bit-identical baseline).
+        config.learnable_query = bool(model_cfg.learnable_query.enabled)
+        config.learnable_query_num_fine = int(model_cfg.learnable_query.num_fine)
+        config.learnable_query_num_coarse = int(model_cfg.learnable_query.num_coarse)
+        config.learnable_query_placement = str(model_cfg.learnable_query.placement)
+        # Per-expert sigmoid gate flag (BREEN). On the config before construction
+        # so install_visual_experts builds the gate Linears (serialized).
+        config.visual_expert_gate = bool(model_cfg.visual_expert.gate)
         # Teacher feature dim must be known BEFORE construction (the head's
         # output width) — read it from the teacher's config (tiny JSON; the full
         # weights load once later in attach_distill_teacher). Serialized so
@@ -439,6 +453,19 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             from .models.modeling_vlm import init_visual_experts_from_text
 
             init_visual_experts_from_text(model.model)
+        # Fresh-build only: near-identity init for the per-expert sigmoid gates
+        # (BREEN). Reloads carry trained gates. No-op when gates are off.
+        if getattr(config, "visual_expert", False) and getattr(config, "visual_expert_gate", False):
+            from .models.modeling_vlm import init_visual_expert_gates
+
+            init_visual_expert_gates(model.model)
+        # Fresh-build only: materialize + randn-init the learnable query Parameter
+        # (BREEN). from_pretrained leaves this missing key uninitialized (NaN);
+        # reloads carry the trained queries. No-op when learnable_query is off.
+        if getattr(config, "learnable_query", False):
+            from .models.modeling_vlm import init_learnable_query
+
+            init_learnable_query(model)
         # Fresh-build only: transplant a pretrained ViT conv patch-embed into the
         # connector's "warm tokenizer" stem (spec 2026-06-22, encoder-free
         # catch-up). Reloads skip this — the checkpoint carries the trained stem.

@@ -65,6 +65,7 @@ from .dataset import (
     apply_image_position,
     check_audio_template_supported,
     inject_missing_media_tokens,
+    inject_query_placeholders,
     load_audio_frames,
     make_dummy_audio_frames,
     make_dummy_image_entry,
@@ -730,6 +731,9 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
             # Stable per-sample seed: deterministic across epochs/resumes.
             seed=zlib.crc32(str(sample.__key__).encode()),
         )
+        # BREEN port: emit one "<query>" per image at the configured placement
+        # (after the image-position rewrite, so it follows the final image spot).
+        inject_query_placeholders(conversations, n_images=len(images), data_args=self.data_args)
 
         has_media = bool(images) or bool(audios)
         out = preprocess([conversations], self.tokenizer, self.data_args, has_image=has_media)

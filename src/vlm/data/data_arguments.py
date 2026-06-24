@@ -26,6 +26,14 @@ class DataArguments:
     strip_empty_think: bool = False
     # Image-placeholder layout inside human turns (see DatasetConfig.image_position).
     image_position: str = "keep"
+    # Learnable-query injection (BREEN port, spec 2026-06-24): when enabled, one
+    # "<query>" placeholder is emitted per image — "after_image" (pretrain: image
+    # then query) or "after_text" (SFT: query after the question). The model
+    # splice expands each "<query>" into the learnable query block.
+    learnable_query_enabled: bool = False
+    query_token: str = "<query>"
+    query_token_index: int = -202
+    query_placement: str = "after_image"
     # Soft tokens each image splices into (encoder path only: a fixed
     # (image_size/patch_size)^2 per tower; None on the encoder-free path,
     # where the per-image patch count is variable and read off the entry).
@@ -75,6 +83,10 @@ def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> Da
         image_aspect_ratio=data_config.image_aspect_ratio,
         strip_empty_think=data_config.strip_empty_think,
         image_position=data_config.image_position,
+        learnable_query_enabled=bool(trainer_config.learnable_query.enabled),
+        query_token=trainer_config.language_model.query_token,
+        query_token_index=trainer_config.language_model.query_token_index,
+        query_placement=str(trainer_config.learnable_query.placement),
         audio_token=trainer_config.language_model.audio_token,
         audio_token_index=trainer_config.language_model.audio_token_index,
         audio_folder=data_config.audio_folder,

@@ -34,6 +34,16 @@ def configure_optimizers(model: PreTrainedModel | nn.Module, trainer_config: Tra
         # group is NOT silently dropped (configure_optimizers skips unmapped
         # groups).
         "generation": "model",
+        # BREEN port (spec 2026-06-24): the learnable queries and the CLIP->LLM
+        # distill head (+ norm_layer) are fresh visual-interface adapters — train
+        # them with the connector/projector lr/wd (BREEN's higher "proj" LR in
+        # S0; identical to the LM lr in the single-LR SFT configs, so no
+        # regression for the existing eve/repa distill arms). MUST be mapped here
+        # or configure_optimizers silently drops them (trainable but never
+        # stepped). The per-layer visual FFN expert (mlp_visual) + gates stay in
+        # the "language_model"->"model" bucket (in-stack capacity at the LM lr).
+        "learnable_query": "connector",
+        "visual_distill_head": "connector",
     }
 
     for component, params_list in grouped_params.items():

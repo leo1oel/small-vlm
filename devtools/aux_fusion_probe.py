@@ -145,7 +145,7 @@ class ProbeRunner:
         image_features = self.model.encode_raw_patches(
             gen_kwargs["images"], gen_kwargs["image_position_ids"]
         )
-        (_, _, attention_mask, _, inputs_embeds, _, block_ids) = (
+        (_, _, attention_mask, _, inputs_embeds, _, block_ids, _) = (
             self.model.prepare_inputs_labels_for_multimodal(
                 input_ids,
                 None,

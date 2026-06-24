@@ -48,6 +48,13 @@ class LanguageModelConfig:
     # the splice swaps for audio features.
     audio_token: str = "<audio>"
     audio_token_index: int = -201
+    # Learnable-query placeholder (BREEN arXiv:2503.12446 port, spec 2026-06-24):
+    # "<query>" in the text is tokenized then replaced by this (non-vocab) sentinel
+    # index, which the splice swaps for the model's learnable query Parameter (the
+    # CLIP-distillation site). -202 is the next free id after image (-200) /
+    # audio (-201). Inert unless model.learnable_query.enabled.
+    query_token: str = "<query>"
+    query_token_index: int = -202
     padding_side: str = "left"
 
 
@@ -134,6 +141,11 @@ class VisualExpertConfig:
     # Fresh-build only: initialize each visual FFN by copying the text FFN's
     # weights (so training starts from an identical, then diverging, FFN).
     init_from_text: bool = True
+    # Per-expert sigmoid gate (BREEN arXiv:2503.12446: F.sigmoid(gate(x))*expert(x)
+    # on both the text and image FFN). A localized fidelity upgrade over the hard
+    # 0/1 mask; each gate is a Linear(hidden, 1) initialized near-identity
+    # (sigmoid≈1) so t=0 is a no-op. False = bit-identical to the hard-mask routing.
+    gate: bool = False
 
 
 @dataclass
@@ -184,11 +196,17 @@ class VisualDistillConfig:
     dial. enabled=False = no head built, bit-identical baseline."""
 
     enabled: bool = False
-    # repa | eve | vora | softdepth | relational | vae (see models/visual_distill.py).
+    # repa | eve | vora | softdepth | relational | vae | breen
+    # (see models/visual_distill.py). "breen" distills the learnable queries
+    # (not image patches) to a dual-granularity avg-pooled CLIP grid.
     method: str = "repa"
     # Teacher: "clip" loads a CLIPVisionModel, "vae" a diffusers AutoencoderKL.
     teacher_kind: str = "clip"
     teacher_name: str = "openai/clip-vit-base-patch16"
+    # Square edge (px) the reconstructed RGB is resized to before the teacher.
+    # 224 (default) -> a 16x16 CLIP-B/16 grid; BREEN uses 336 with
+    # clip-vit-large-patch14-336 -> a 24x24 grid (= 8x8 fine + 6x6 coarse pools).
+    teacher_out_size: int = 224
     # 1-based decoder-output layer index/indices to align. null = method default
     # (repa/relational/vae: ~0.3 depth; vora: first half block-wise; softdepth:
     # all intermediate layers as the selection pool; eve: ignored, uses final).
@@ -198,6 +216,28 @@ class VisualDistillConfig:
     # Per-token alignment: "cosine" (neg cosine, CLIP) or "smoothl1" (huber, vae).
     # "" = method default (cosine for clip, smoothl1 for vae).
     loss: str = ""
+
+
+@dataclass
+class LearnableQueryConfig:
+    """Learnable CLIP-distillation queries (BREEN arXiv:2503.12446 port, spec
+    2026-06-24). A trainable nn.Parameter(num_fine+num_coarse, hidden) on the
+    ForCausalLM, spliced in at each "<query>" placeholder (one block per image),
+    routed to the visual FFN expert, and label-masked (excluded from CE). The
+    breen distill method aligns the first num_fine query rows to the 8x8 fine
+    avg-pool of the CLIP grid and the last num_coarse rows to the 6x6 coarse
+    pool. Structural — it sizes the Parameter, so it lives on the model config
+    and serializes into checkpoint config.json (visual_aux pattern).
+    enabled=False = no Parameter built, bit-identical baseline."""
+
+    enabled: bool = False
+    # 8x8 fine pool of a 24x24 CLIP-L/14-336 grid = 64; 6x6 coarse pool = 36.
+    num_fine: int = 64
+    num_coarse: int = 36
+    # Where the data path emits the "<query>" placeholder relative to the image
+    # and the user text: "after_image" (BREEN pretrain: image then queries) |
+    # "after_text" (BREEN SFT: queries attend the question, placed after it).
+    placement: str = "after_image"
 
 
 @dataclass
@@ -295,6 +335,7 @@ class ModelConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     visual_aux: VisualAuxConfig = field(default_factory=VisualAuxConfig)
     visual_expert: VisualExpertConfig = field(default_factory=VisualExpertConfig)
+    learnable_query: LearnableQueryConfig = field(default_factory=LearnableQueryConfig)
     visual_prefix: VisualPrefixConfig = field(default_factory=VisualPrefixConfig)
     cross_modal_mask: CrossModalMaskConfig = field(default_factory=CrossModalMaskConfig)
     grounding: GroundingConfig = field(default_factory=GroundingConfig)

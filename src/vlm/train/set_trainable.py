@@ -54,6 +54,17 @@ def group_params_by_prefix(model: Any):
         # and silently inherit its freeze flag / LR — they are always trained
         # when present (see set_trainable_params).
         "generation": ["gen_x_head", "gen_t_embed", "gen_patch_embed"],
+        # BREEN port (spec 2026-06-24): the learnable queries and the CLIP->LLM
+        # distill head (incl. its norm_layer) are directly on the ForCausalLM.
+        # Own groups so a frozen-LLM S0 trains them instead of freezing them
+        # (without this they fall through to "language_model" — the silent
+        # no-op the build-item-8 fix exists to prevent). Always trained when
+        # present (see set_trainable_params). The per-layer visual FFN expert
+        # (mlp_visual) and its sigmoid gates are substring-named inside the
+        # decoder layers, so they can't be prefix-grouped — they are force-
+        # enabled directly in set_trainable_params instead.
+        "learnable_query": ["learnable_query"],
+        "visual_distill_head": ["visual_distill_head"],
     }
 
     all_params = list(model.named_parameters())
@@ -147,6 +158,20 @@ def set_trainable_params(model: Any, config: dict[str, bool]):
     for _, param in grouped_params.get("generation", []):
         param.requires_grad = True
 
+    # BREEN port (spec 2026-06-24): the learnable queries, the CLIP->LLM distill
+    # head (+ norm_layer), the per-layer visual FFN expert (mlp_visual) and its
+    # sigmoid gates are the fresh visual capacity every BREEN recipe trains —
+    # including a frozen-LLM S0 (train_language_model=false). Force them on so
+    # they never inherit the frozen LM flag (the build-item-8 silent-no-op trap).
+    # No-op when the modules are absent (baseline / non-BREEN runs).
+    for _, param in grouped_params.get("learnable_query", []):
+        param.requires_grad = True
+    for _, param in grouped_params.get("visual_distill_head", []):
+        param.requires_grad = True
+    for name, param in model.named_parameters():
+        if ".mlp_visual." in name or "expert_gate" in name:
+            param.requires_grad = True
+
     if getattr(model.config, "use_start_end_tokens", False):
         for _, param in grouped_params.get("embeddings", []):
             param.requires_grad = True
@@ -182,6 +207,10 @@ def apply_delta_tuning(model: Any):
             or "gen_x_head" in name
             or "gen_t_embed" in name
             or "gen_patch_embed" in name
+            # BREEN port: queries / distill head / expert gates are visual pathway.
+            or "learnable_query" in name
+            or "visual_distill_head" in name
+            or "expert_gate" in name
             or (not freeze_attn and ".self_attn." in name)
         )
         p.requires_grad = keep

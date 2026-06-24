@@ -1,0 +1,34 @@
+defaults:
+    - pretrain-unified
+    - override /model: qwen3-1.7b-unified-breen
+    - override /dataset: energon-breen-caption
+    - _self_
+
+# BREEN port (arXiv:2503.12446, spec 2026-06-24) — STAGE 0: frozen-LLM caption
+# alignment. The Qwen3 backbone is FROZEN (trainer: pretrain -> unfreeze:
+# pretrain); only the visual pathway trains — the connector, the per-layer
+# visual FFN experts (mlp_visual + gates), the learnable queries, and the
+# CLIP->LLM distill head (set_trainable force-trains these even with the LM
+# frozen; the build-item-8 fix). The frozen CLIP-L/14-336 teacher distills the
+# 100 queries to its dual-pooled grid (method=breen). Placement = after_image
+# (image then queries), the plain caption template.
+#
+# Launch: CONFIG_NAME=pretrain-unified-breen sbatch train_l40s.slurm
+# (swap energon-breen-caption.folders to the 14M caption set when available.)
+
+trainer:
+    # The breen distill loss runs ONLY on the chunked-CE path -> required > 0.
+    loss_chunk_size: 1024
+    visual_distill_weight: 1.0
+    max_steps: 5000
+    save_steps: 1000
+    save_total_limit: null
+    # BREEN ptr0 LR: proj/vision side 4e-4, base 4e-5. Encoder-free -> the
+    # connector group (connector + queries + distill head) gets 4e-4; the
+    # in-stack visual experts ride the LM ("model") group at 4e-5.
+    learning_rate:
+        visual_encoder_learning_rate: 4e-4
+        connector_learning_rate: 4e-4
+        language_model_learning_rate: 4e-5
+        default_lr: 4e-5
+    run_name: breen-s0-align-frozen-lm
