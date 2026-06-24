@@ -1106,6 +1106,7 @@ def create_dynamic_causal_vlm_class(
                     query_block_ids=query_block_ids,
                     distill_images=distill_images,
                     distill_positions=distill_positions,
+                    image_block_ids=image_block_ids,
                 )
             else:
                 d_loss, d_comps = self.compute_distill_loss(
@@ -1265,6 +1266,7 @@ def create_dynamic_causal_vlm_class(
         query_block_ids: LongTensor | None,
         distill_images: list[Tensor] | None,
         distill_positions: list[Tensor] | None,
+        image_block_ids: LongTensor | None = None,
     ) -> tuple[Tensor, dict[str, Tensor]]:
         """BREEN query distillation (spec 2026-06-24).
 
@@ -1272,11 +1274,16 @@ def create_dynamic_causal_vlm_class(
         positions (in row order, tagged by query_block_ids), split into the
         first num_fine + last num_coarse rows, and align them to the 8x8 fine
         and 6x6 coarse avg-pools of the frozen CLIP grid (the head's norm_layer
-        projects the CLIP target up to LLM-hidden; 1-cos is taken there). A query
-        block's id equals its image's index into distill_images (cursor lockstep
-        in the splice). Always returns the same component keys via an anchor that
-        still touches the head + query params on no-query microbatches, so the
-        trainer's cross-rank all-reduce of sorted(components) never deadlocks.
+        projects the CLIP target up to LLM-hidden; 1-cos is taken there). Each
+        query block is paired with its image by nearest-preceding image block in
+        the SAME row (via image_block_ids) — robust to multi-image rows where a
+        query block's id need not equal the image's index into distill_images;
+        a query block with no preceding image in its row is skipped. When
+        image_block_ids is absent we fall back to the cursor-lockstep identity
+        (query block id == image index), which holds for single-image rows.
+        Always returns the same component keys via an anchor that still touches
+        the head + query params on no-query microbatches, so the trainer's
+        cross-rank all-reduce of sorted(components) never deadlocks.
         """
         from .visual_distill import reconstruct_image_from_patches
 
@@ -1313,7 +1320,10 @@ def create_dynamic_causal_vlm_class(
         nq = head.num_fine + head.num_coarse
         qbid = query_block_ids.to(device)
         bsz, seqlen = qbid.shape
-        blocks: list[tuple[int, Tensor]] = []  # (image index k, flat positions)
+        ibid = image_block_ids.to(device) if image_block_ids is not None else None
+        ar = torch.arange(seqlen, device=device)
+        n_imgs = len(distill_positions) if distill_positions is not None else 0
+        blocks: list[tuple[int, Tensor]] = []  # (image index, flat query positions)
         for b in range(bsz):
             row = qbid[b]
             for k_t in torch.unique(row[row >= 0]).tolist():
@@ -1323,12 +1333,28 @@ def create_dynamic_causal_vlm_class(
                 # or whose paired image is the 1x1 dummy — can't align cleanly.
                 if int(pos.numel()) != nq:
                     continue
-                coords_full = distill_positions[k].to(device)
+                # Pair this query block with its image by nearest-preceding
+                # image block in the SAME row b: among image positions p < the
+                # query block's first position, take the largest p and use
+                # image_block_ids[b, p] as the index into distill_images /
+                # distill_positions (NOT the query block id k — those differ on
+                # multi-image rows). No preceding image in the row -> skip.
+                if ibid is not None:
+                    first = int(pos[0].item())
+                    cand = ((ibid[b] >= 0) & (ar < first)).nonzero(as_tuple=True)[0]
+                    if int(cand.numel()) == 0:
+                        continue
+                    img_idx = int(ibid[b, int(cand.max().item())].item())
+                else:
+                    img_idx = k  # cursor-lockstep fallback (single-image rows)
+                if img_idx < 0 or img_idx >= n_imgs:
+                    continue
+                coords_full = distill_positions[img_idx].to(device)
                 grid_h = int(coords_full[:, 1].max().item()) + 1
                 grid_w = int(coords_full[:, 0].max().item()) + 1
                 if grid_h * grid_w < 2:
                     continue
-                blocks.append((k, b * seqlen + pos))
+                blocks.append((img_idx, b * seqlen + pos))
         if not blocks:
             return _anchor()
 

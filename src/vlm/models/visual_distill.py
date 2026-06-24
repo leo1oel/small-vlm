@@ -344,8 +344,13 @@ class VisualDistillHead(nn.Module):
             'target_fine':  (num_fine, teacher_dim)  8x8 avg-pool of the CLIP grid.
             'target_coarse':(num_coarse, teacher_dim) 6x6 avg-pool of the CLIP grid.
         Projects the CLIP targets UP to LLM-hidden via `norm_layer`, then
-        1-cos(fine_queries, fine_target) + 1-cos(coarse_queries, coarse_target).
-        Token-weighted mean across images (weight = number of queries)."""
+        1-cos(fine_queries, fine_target) + 1-cos(coarse_queries, coarse_target),
+        where each 1-cos is already a mean over its granularity's rows (_align).
+        Every query block contributes exactly num_fine+num_coarse rows (the caller
+        admits a block only when all nq rows are present), so the m-weighting is
+        uniform — this reduces to a PLAIN per-image mean of (fine-mean + coarse-
+        mean). The * m / n_tok form is kept only for symmetry with compute()
+        (where per-image patch counts genuinely vary); here it cancels."""
         device = samples[0]["query_hidden"].device
         loss_sum = torch.zeros((), dtype=torch.float32, device=device)
         cos_sum = torch.zeros((), dtype=torch.float32, device=device)

@@ -5,28 +5,30 @@
 # image + an assistant caption), media rooted at the jsonl dir — the SAME format
 # as the gpic generation data (energon-gpic-gen-train.yaml).
 #
-# ┌───────────────────────────────────────────────────────────────────────────┐
-# │ SWAP POINT: when the captain's ~14M high-quality caption set is handed over │
-# │ on Azure, change ONLY the `folders` key below (and jsonl_name if it differs)│
-# │ to its blob prefix. Everything else (loader, splice, distill) is unchanged. │
-# └───────────────────────────────────────────────────────────────────────────┘
+# STREAMED, not downloaded: bee_stage2 is ~4.8M loose image files and the cluster
+# is at ~96% inodes globally — a loose-file download would blow the inode ceiling.
+# The energon/MSC pipeline streams it from Azure (msc://azure/data/<folder>) with
+# zero local inodes, the same way the live gpic run streams data/gpic/train.
 #
-# Validated default = the existing Bee Stage-1 caption set (energon-bee-caption
-# .yaml), so the loader + BREEN query/distill wiring runs end-to-end on real
-# energon data today. Credentials: AZURE_SAS_TOKEN (.env). max_steps > 0 required.
+# Caption set = the captain's bee_stage2 (training-directive.md): layout is
+# `train.jsonl` (uploaded LAST — its presence == upload complete; wait for it
+# before launching) + `images/` (~4.8M, growing). Same line format as Stage1:
+# {id, source, messages}; messages[0]=user(image), messages[1]=assistant(caption);
+# media paths relative to the jsonl dir. Credentials: AZURE_SAS_TOKEN (.env).
+# Split per directive: 5M for S0 pre-align, 10M for S1 pretrain (S0 ⊂ S1 ok).
 
 name: energon-breen-caption
 type: energon
 task: understanding # image -> caption (NOT generation)
 
-# >>> single-line swap to the 14M caption folder when available <<<
+# Azure blob prefix under container `data` (streamed via msc://azure/data/<prefix>).
 folders:
-    yiming/Bee-Training-Data-Stage1: 1.0
+    yiming/bee_stage2/train: 1.0
 jsonl_name: train.jsonl
 
-# Bee captions carry a constant empty "<think>\n\n</think>" prefix; strip it at
-# the messages->conversations bridge. Harmless no-op for sets without it — review
-# when swapping in the 14M set (toggle off if that set has no such prefix).
+# Stage1 captions carry a constant empty "<think>\n\n</think>" prefix; strip it at
+# the messages->conversations bridge. bee_stage2 is the SAME line format as Stage1,
+# so keep this on; it is a harmless no-op if a given line has no such prefix.
 strip_empty_think: true
 
 shuffle_buffer_size: 2000
