@@ -13,13 +13,24 @@ defaults:
 # 100 queries to its dual-pooled grid (method=breen). Placement = after_image
 # (image then queries), the plain caption template.
 #
-# Launch: CONFIG_NAME=pretrain-unified-breen sbatch train_l40s.slurm
-# (swap energon-breen-caption.folders to the 14M caption set when available.)
+# Launch (from THIS worktree — devtools/breen_train.slurm, NOT train_l40s.slurm
+# which runs the main checkout without the BREEN port):
+#   CONFIG_NAME=pretrain-unified-breen sbatch devtools/breen_train.slurm
+# Preferred: let devtools/breen_orchestrate.sh wait for the streamed data, run
+# the dry-run gate, and launch with the measured max_steps.
 
 trainer:
     # The breen distill loss runs ONLY on the chunked-CE path -> required > 0.
     loss_chunk_size: 1024
     visual_distill_weight: 1.0
+    # S0 data budget = 5M caption samples (directive). Energon batches by TOKEN
+    # budget, so effective batch (tokens) = dataset.batch_token_budget(32000) x
+    # world_size x grad_accum, and samples/step = that / avg_tokens_per_sample.
+    # accum=4 @ 4 GPU targets BREEN's ~1024-sample effective batch; max_steps is
+    # then ~5M / samples_per_step. These are estimates — the pre-launch dry-run
+    # (devtools/breen_orchestrate.sh) MEASURES samples/step on the real stream
+    # and overrides max_steps via HYDRA_EXTRA to hit the 5M budget exactly.
+    gradient_accumulation_steps: 4
     max_steps: 5000
     save_steps: 1000
     save_total_limit: null

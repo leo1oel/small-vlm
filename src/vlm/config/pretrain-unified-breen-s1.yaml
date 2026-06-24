@@ -9,9 +9,9 @@ defaults:
 # weight 1.0. LR 4e-5 across all groups.
 #
 # Launch (S0 checkpoint REQUIRED — no default, launching without it would
-# retrain a baseline):
-#   VLM_BREEN_S0_CKPT=/.../breen-s0-align-frozen-lm/checkpoint-5000 \
-#     CONFIG_NAME=pretrain-unified-breen-s1 sbatch train_l40s.slurm
+# retrain a baseline), from THIS worktree:
+#   VLM_BREEN_S0_CKPT=/.../breen-s0-align-frozen-lm/checkpoint-NNNN \
+#     CONFIG_NAME=pretrain-unified-breen-s1 sbatch devtools/breen_train.slurm
 
 trainer:
     # Full unfreeze: LM + connector (encoder-free has no separate vision tower).
@@ -21,7 +21,11 @@ trainer:
         train_connector: true
         train_vision_model: false
     from_pretrained: ${oc.env:VLM_BREEN_S0_CKPT}
-    max_steps: 5000
+    # S1 data budget = 10M caption samples (directive: S0's 5M ⊂ S1's 10M),
+    # i.e. ~2x S0's steps at the same effective batch (accum=4 inherited from
+    # pretrain-unified-breen). max_steps ~ 10M / measured samples_per_step; the
+    # orchestrator refines it. (Was 5000 — a placeholder that only covered 5M.)
+    max_steps: 10000
     save_steps: 1000
     learning_rate:
         visual_encoder_learning_rate: 4e-5

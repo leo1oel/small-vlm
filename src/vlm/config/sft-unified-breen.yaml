@@ -10,9 +10,9 @@ defaults:
 # after_text (BREEN SFT: the queries are emitted AFTER the user question so they
 # attend it). The breen distill stays on at weight 1.0. LR 2e-5 (BREEN fitu).
 #
-# Launch (S1 checkpoint REQUIRED):
-#   VLM_BREEN_S1_CKPT=/.../breen-s1-align-unfreeze/checkpoint-5000 \
-#     CONFIG_NAME=sft-unified-breen sbatch train_l40s.slurm
+# Launch (S1 checkpoint REQUIRED), from THIS worktree:
+#   VLM_BREEN_S1_CKPT=/.../breen-s1-align-unfreeze/checkpoint-NNNN \
+#     CONFIG_NAME=sft-unified-breen sbatch devtools/breen_train.slurm
 
 model:
     learnable_query:
@@ -20,9 +20,14 @@ model:
 
 trainer:
     from_pretrained: ${oc.env:VLM_BREEN_S1_CKPT}
-    # sft-unified already sets loss_chunk_size: 1024 (the breen distill needs it).
+    # sft-unified already sets loss_chunk_size: 1024 (the breen distill needs it)
+    # and gradient_accumulation_steps: 1 — the smaller accum gives BREEN's ~256-
+    # sample SFT effective batch (vs ~1024 for the accum=4 alignment stages).
     visual_distill_weight: 1.0
-    max_steps: 5000
+    # S2 data budget = Honey-Data-1M ~= 1 epoch over 1M samples. max_steps ~
+    # 1M / measured samples_per_step (~4000 at eff-batch 256); orchestrator
+    # refines. (Was 5000 — overshot ~1M by ~1.3x at this effective batch.)
+    max_steps: 4000
     save_steps: 500
     learning_rate:
         visual_encoder_learning_rate: 2e-5
