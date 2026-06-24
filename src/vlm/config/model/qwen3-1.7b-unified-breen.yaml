@@ -17,7 +17,14 @@ defaults:
 
 language_model:
   hf_name: Qwen/Qwen3-1.7B
-  max_seq_length: 4096
+  # 4608 = 4096 + headroom for BREEN's +100 query tokens (and per-image patch
+  # tokens). The caption data was sized for 4096; injecting the query block pushes
+  # a few samples 1+ token over (seen as "Token indices 4097 > 4096"). The
+  # tokenizer truncates to max_seq_length, and since the queries follow the image
+  # (S0/S1) or the question (S2), truncation can clip query/image/caption tokens
+  # and corrupt that sample's distillation. The bump keeps image+query+text whole.
+  # RoPE is unaffected (max_position_embeddings=40960 >> 4608).
+  max_seq_length: 4608
 
 visual_encoder:
   hf_name: null # encoder-free: no vision tower; raw patches -> connector
