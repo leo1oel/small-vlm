@@ -20,10 +20,15 @@ default, so encoder-based and native paths are bit-identical.
   survives `post_init` (bare Parameter is not an `nn.Module` `_init_weights`
   touches). It IS in the checkpoint state_dict (trained → serialized).
 - **Query placeholder** — `<query>` / `query_token_index=-202`
-  (`config/config_schema.py:LanguageModelConfig`). The data path injects one
-  `<query>` per image (`inject_query_placeholders`, `data/dataset.py`): placement
-  `after_image` (pretrain: `<image><query>`) or `after_text` (SFT: query after
-  the question). `tokenizer_multimodal_token` / `_media_pattern` /
+  (`config/config_schema.py:LanguageModelConfig`). The data path injects
+  `<query>` placeholders (`inject_query_placeholders`, `data/dataset.py`):
+  placement `after_image` (pretrain: `<image><query>`, one query block PER image)
+  or `after_text` (SFT: ONE query block per sample, appended to the first
+  image-bearing human turn after the question). `preprocess_qwen` additionally
+  dedups multiple query tokens to the first (BREEN's `eve/train.py:524-531`,
+  gated on `learnable_query_enabled`) with a `log.warning`, so a multi-image SFT
+  sample keeps a single query block and distills only the first image's queries.
+  `tokenizer_multimodal_token` / `_media_pattern` /
   `preprocess_qwen` / `preprocess_plain` all recognize `<query>` → -202 when
   `learnable_query_enabled`. Inference injects it too (`inference/eval.py`).
 - **Splice + tagging** — `prepare_inputs_labels_for_multimodal` registers the
@@ -31,15 +36,21 @@ default, so encoder-based and native paths are bit-identical.
   inserts + **label-masks** (excluded from CE) the queries for free, and emits a
   new parallel `query_block_ids` (8th return value; image_block_ids stays the
   7th). A query block's id equals its image's index into `distill_images` because
-  the query cursor walks in lockstep with the image cursor (one `<query>` per
-  `<image>`; query-free rows consume a dummy of each).
+  the query cursor walks in lockstep with the image cursor; query-free rows
+  consume a dummy of each. Lockstep holds when each sample carries one query per
+  image: pretrain (`after_image`) injects one `<query>` per `<image>`, and SFT
+  data is single-image-per-sample with one query block (the dedup guarantees at
+  most one) — so multi-image SFT is out of scope (its extra images stay
+  undistilled and would desync the cursor; keep SFT single-image).
 - **Routing to the image expert** — the visual-expert mask is
   `(image_block_ids>=0) | (query_block_ids>=0)`, so image AND query tokens go
   through `mlp.mlp_visual` (forward + generate prefill `_ve_gen_mask`).
 - **Per-expert sigmoid gate** — `model.visual_expert.gate=true` adds
   `expert_gate_text`/`expert_gate_visual` Linears (`F.sigmoid(gate(x))*expert(x)`);
   `init_visual_expert_gates` inits them near-identity (zero weight, bias 4 →
-  sigmoid≈1) fresh-build only. NOTE: `init_visual_experts_from_text` must
+  sigmoid(4)≈0.982) fresh-build only — near-identity, NOT a literal t=0 no-op: an
+  enabled gate attenuates the text FFN by ~1.8%/layer from step 0 (raise the bias
+  to ~6-8 for a closer-to-identity start). NOTE: `init_visual_experts_from_text` must
   exclude `expert_gate*` keys when copying the text FFN into `mlp_visual`.
 - **breen distill method** (`models/visual_distill.py`, `method="breen"`) —
   the head carries a `norm_layer = LayerNorm(1024)+Linear(1024→hidden,bias=False)`

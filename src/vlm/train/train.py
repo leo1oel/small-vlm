@@ -189,6 +189,18 @@ def train(
     model.config.conversation_version = training_args.version
     # Training-only chunked CE switch; the model's forward reads it (0 = off).
     model.config.loss_chunk_size = training_args.loss_chunk_size
+    # Visual-distill (incl. breen) is computed ONLY on the chunked-CE path; with
+    # loss_chunk_size<=0 forward() falls through to the plain path and the distill
+    # objective is silently dropped (the learnable queries would train with no
+    # CLIP signal). The dial lands on model.config at build time (load_model), so
+    # validate it here — not in load_model, where direct callers (devtools/
+    # breen_smoke.py) set loss_chunk_size on model.config only after load returns.
+    if bool(getattr(model.config, "visual_distill", False)) and int(training_args.loss_chunk_size) <= 0:
+        raise ValueError(
+            "model.visual_distill.enabled requires trainer.loss_chunk_size > 0 — the "
+            "visual-distill loss (incl. breen) is implemented only in the chunked-CE "
+            "training path and would otherwise be SILENTLY DROPPED"
+        )
     # Aux-exit deep supervision (early-fusion ablation): validated against the
     # real layer count, then copied next to loss_chunk_size for the model's
     # chunked-CE forward to read. Plain python types only (config.json-safe).

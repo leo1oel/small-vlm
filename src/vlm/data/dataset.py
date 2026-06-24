@@ -432,12 +432,15 @@ def inject_query_placeholders(
       after_image  - "<image>" -> "<image>\\n<query>" (BREEN pretrain: image then
                      queries; in the plain template the human text is dropped, so
                      the kept placeholders are exactly "<image><query>").
-      after_text   - append "<query>" x n_images at the END of the human turn
-                     carrying the image(s) (BREEN SFT: queries attend the full
-                     question text, which precedes them).
-    No-op unless learnable_query is enabled and the sample carries an image. The
-    query cursor in the splice walks in lockstep with the image cursor, so one
-    "<query>" per "<image>" keeps a query block's id == its image's index."""
+      after_text   - append a SINGLE "<query>" at the END of the first
+                     image-bearing human turn (BREEN SFT: one query block per
+                     sample, attending the full question text that precedes it).
+    No-op unless learnable_query is enabled and the sample carries an image.
+    after_image walks one "<query>" per "<image>" (lockstep over image tokens, so
+    a query block's id == its image's index). after_text emits exactly one query
+    block per sample (BREEN's single-block SFT placement); preprocess_qwen also
+    dedups to the first query token, so multi-image SFT samples distill only the
+    first image's queries."""
     if not getattr(data_args, "learnable_query_enabled", False) or n_images <= 0:
         return
     qt = data_args.query_token
@@ -455,9 +458,8 @@ def inject_query_placeholders(
                 continue
             key = "value" if "value" in turn else "content"
             text = str(turn[key])
-            cnt = text.count(it)
-            if cnt > 0:
-                turn[key] = text.rstrip() + ("\n" + qt) * cnt
+            if it in text:
+                turn[key] = text.rstrip() + "\n" + qt
                 break
     else:
         raise ValueError(
@@ -679,6 +681,21 @@ def preprocess_qwen(
                 input_id[idx] = data_args.audio_token_index
             elif query_token_index is not None and encode_id == query_token_index:
                 input_id[idx] = data_args.query_token_index
+        # BREEN dedup (eve/train.py:524-531): the SFT splice tags one query block
+        # per <query> token, but its id walks the query cursor — more than one
+        # query token would let the query/image cursors desync. Keep only the
+        # first query block (multi-image samples distill the first image's queries
+        # only) so the cursors can never desync. Gated so non-BREEN runs are
+        # bit-identical.
+        if getattr(data_args, "learnable_query_enabled", False):
+            positions = [
+                j for j in range(len(input_id)) if input_id[j] == data_args.query_token_index
+            ]
+            if len(positions) > 1:
+                log.warning("multiple queries detected: %s", positions)
+                extra_positions = set(positions[1:])
+                input_id = [input_id[i] for i in range(len(input_id)) if i not in extra_positions]
+                target = [target[i] for i in range(len(target)) if i not in extra_positions]
         input_ids.append(input_id)
         targets.append(target)
     input_ids = torch.tensor(input_ids, dtype=torch.long)
