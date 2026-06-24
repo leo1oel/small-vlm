@@ -77,25 +77,32 @@ def main():
     model.train()
     model.requires_grad_(True)
     model.config.use_cache = False
-    print(f"[overfit] model built in {time.time()-t0:.1f}s", flush=True)
+    print(f"[overfit] model built in {time.time() - t0:.1f}s", flush=True)
 
     res = int(cfg.model.generation.resolution)
     psz = int(cfg.model.generation.patch_size)
     grid = res // psz
     n_patch = grid * grid
-    print(f"[overfit] resolution={res} patch={psz} grid={grid}x{grid} n_patch={n_patch} "
-          f"patch_dim={model.config.vision_config.hidden_size}", flush=True)
+    print(
+        f"[overfit] resolution={res} patch={psz} grid={grid}x{grid} n_patch={n_patch} "
+        f"patch_dim={model.config.vision_config.hidden_size}",
+        flush=True,
+    )
 
     # ---- single sample ----
     img, caption, rec = load_one_sample()
     print(f"[overfit] caption: {caption[:120]}", flush=True)
-    target_patches = image_to_target_patches(img, res, psz, pixels_to_patches).unsqueeze(0).to(device)
+    target_patches = (
+        image_to_target_patches(img, res, psz, pixels_to_patches).unsqueeze(0).to(device)
+    )
     pos = make_position_ids(grid, grid).unsqueeze(0).to(device)  # (1,N,2)
     tok = processor.tokenizer(caption, return_tensors="pt")
     input_ids = tok.input_ids.to(device)
     attn = tok.attention_mask.to(device)
-    print(f"[overfit] target_patches={tuple(target_patches.shape)} input_ids={tuple(input_ids.shape)}",
-          flush=True)
+    print(
+        f"[overfit] target_patches={tuple(target_patches.shape)} input_ids={tuple(input_ids.shape)}",
+        flush=True,
+    )
     # reference: round-trip the target through unpatchify so we can eyeball the
     # best achievable reconstruction at this resolution/patch size.
     save_image_from_patches(target_patches[0], grid, psz, OUT_DIR / "target.png", patches_to_pixels)
@@ -120,8 +127,9 @@ def main():
         if step % args.log_every == 0 or step == args.steps - 1:
             print(f"[overfit] step {step:4d}  loss {losses[-1]:.5f}", flush=True)
 
-    print(f"[overfit] first={losses[0]:.5f} last={losses[-1]:.5f} "
-          f"min={min(losses):.5f}", flush=True)
+    print(
+        f"[overfit] first={losses[0]:.5f} last={losses[-1]:.5f} min={min(losses):.5f}", flush=True
+    )
 
     # ---- sample (reconstruct) ----
     model.eval()
@@ -134,7 +142,7 @@ def main():
         steps=args.sample_steps,
         cfg_scale=1.0,
     )
-    print(f"[overfit] sampled in {time.time()-t0:.1f}s", flush=True)
+    print(f"[overfit] sampled in {time.time() - t0:.1f}s", flush=True)
     save_image_from_patches(patches[0], grid, psz, OUT_DIR / "generated.png", patches_to_pixels)
     (OUT_DIR / "loss.json").write_text(json.dumps({"losses": losses, "caption": caption}))
     print(f"[overfit] saved target/generated to {OUT_DIR}", flush=True)

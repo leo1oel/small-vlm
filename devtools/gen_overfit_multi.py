@@ -33,7 +33,9 @@ OUT_DIR = REPO / "outputs" / "gen-overfit-multi"
 
 
 def load_samples(n: int):
-    recs = [json.loads(l) for l in (SAMPLE_DIR / "samples.jsonl").read_text().splitlines() if l.strip()]
+    recs = [
+        json.loads(l) for l in (SAMPLE_DIR / "samples.jsonl").read_text().splitlines() if l.strip()
+    ]
     return recs[:n]
 
 
@@ -59,9 +61,13 @@ def main():
     ap.add_argument("--log_every", type=int, default=50)
     ap.add_argument("--sample_steps", type=int, default=100)
     ap.add_argument("--n_show", type=int, default=16, help="how many to render in the grid")
-    ap.add_argument("--config", default="gen-overfit", help="hydra config name (gen-overfit | gen-overfit-16)")
+    ap.add_argument(
+        "--config", default="gen-overfit", help="hydra config name (gen-overfit | gen-overfit-16)"
+    )
     ap.add_argument("--tag", default="", help="output subdir suffix, e.g. -16")
-    ap.add_argument("--render_at", default="", help="space-separated step counts to render at, e.g. '500 1000'")
+    ap.add_argument(
+        "--render_at", default="", help="space-separated step counts to render at, e.g. '500 1000'"
+    )
     args = ap.parse_args()
 
     out_dir = Path(str(OUT_DIR) + args.tag)
@@ -83,43 +89,72 @@ def main():
     model.train()
     model.requires_grad_(True)
     model.config.use_cache = False
-    print(f"[overfit-multi] model built in {time.time()-t0:.1f}s", flush=True)
+    print(f"[overfit-multi] model built in {time.time() - t0:.1f}s", flush=True)
     # self-report whether the shared connector / gen embedder built a bottleneck
     import torch.nn as _nn
+
     _emb = getattr(model, "gen_patch_embed", None)
     _conn = getattr(getattr(model, "model", None), "connector", None)
     _pl = getattr(_conn, "projection_layer", None)
     _which = _emb if _emb is not None else _pl
     _pd = getattr(_which, "patch_dense", None)
     if _pd is not None:
-        kind = "Sequential(BOTTLENECK)" if isinstance(_pd, _nn.Sequential) else "Linear(no-bottleneck)"
-        dims = [getattr(m, "out_features", "?") for m in _pd] if isinstance(_pd, _nn.Sequential) else getattr(_pd, "out_features", "?")
-        print(f"[overfit-multi] patch_dense({'gen_embed' if _emb is not None else 'connector'}) = {kind} dims={dims}", flush=True)
+        kind = (
+            "Sequential(BOTTLENECK)" if isinstance(_pd, _nn.Sequential) else "Linear(no-bottleneck)"
+        )
+        dims = (
+            [getattr(m, "out_features", "?") for m in _pd]
+            if isinstance(_pd, _nn.Sequential)
+            else getattr(_pd, "out_features", "?")
+        )
+        print(
+            f"[overfit-multi] patch_dense({'gen_embed' if _emb is not None else 'connector'}) = {kind} dims={dims}",
+            flush=True,
+        )
 
     res = int(cfg.model.generation.resolution)
     independent = bool(cfg.model.generation.independent_embed)
-    psz = int(cfg.model.generation.embed_patch_size) if independent else int(cfg.model.generation.patch_size)
+    psz = (
+        int(cfg.model.generation.embed_patch_size)
+        if independent
+        else int(cfg.model.generation.patch_size)
+    )
     grid = res // psz
     n_patch = grid * grid
-    print(f"[overfit-multi] independent_embed={independent} res={res} patch={psz} "
-          f"grid={grid}x{grid} n_patch={n_patch} patch_dim={psz*psz*3}", flush=True)
+    print(
+        f"[overfit-multi] independent_embed={independent} res={res} patch={psz} "
+        f"grid={grid}x{grid} n_patch={n_patch} patch_dim={psz * psz * 3}",
+        flush=True,
+    )
 
     recs = load_samples(args.n)
     captions = [r["caption"] for r in recs]
-    targets = torch.stack([
-        image_to_target_patches(Image.open(SAMPLE_DIR / r["image"]).convert("RGB"), res, psz, pixels_to_patches)
-        for r in recs
-    ]).to(device)  # (N, n_patch, patch_dim)
+    targets = torch.stack(
+        [
+            image_to_target_patches(
+                Image.open(SAMPLE_DIR / r["image"]).convert("RGB"), res, psz, pixels_to_patches
+            )
+            for r in recs
+        ]
+    ).to(device)  # (N, n_patch, patch_dim)
     pos_one = make_position_ids(grid, grid).to(device)  # (n_patch, 2)
     n = len(recs)
-    print(f"[overfit-multi] loaded {n} samples  targets={tuple(targets.shape)} grid={grid}x{grid}", flush=True)
+    print(
+        f"[overfit-multi] loaded {n} samples  targets={tuple(targets.shape)} grid={grid}x{grid}",
+        flush=True,
+    )
 
     # Left-padded caption batch (matches training assembly / collator).
     processor.tokenizer.padding_side = "left"
 
     def tok_batch(idx):
-        enc = processor.tokenizer([captions[i] for i in idx], return_tensors="pt",
-                                  padding=True, truncation=True, max_length=128)
+        enc = processor.tokenizer(
+            [captions[i] for i in idx],
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=128,
+        )
         return enc.input_ids.to(device), enc.attention_mask.to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), weight_decay=0.0)
@@ -135,8 +170,14 @@ def main():
         ids_, attn_ = tok_batch(list(range(show)))
         pos_ = pos_one.unsqueeze(0).expand(show, -1, -1)
         t0 = time.time()
-        gen = model.sample_images(input_ids=ids_, attention_mask=attn_, image_position_ids=pos_,
-                                  num_patches=n_patch, steps=args.sample_steps, cfg_scale=1.0)
+        gen = model.sample_images(
+            input_ids=ids_,
+            attention_mask=attn_,
+            image_position_ids=pos_,
+            num_patches=n_patch,
+            steps=args.sample_steps,
+            cfg_scale=1.0,
+        )
         pad, cell = 4, res
         rowH = cell + pad
         canvas = np.full((rowH * show, cell * 2 + pad, 3), 255, dtype=np.uint8)
@@ -144,11 +185,14 @@ def main():
             tgt = patches_to_uint8(targets[i], grid, psz, patches_to_pixels)
             out_img = patches_to_uint8(gen[i], grid, psz, patches_to_pixels)
             y = i * rowH
-            canvas[y:y + cell, :cell] = tgt
-            canvas[y:y + cell, cell + pad:cell + pad + cell] = out_img
+            canvas[y : y + cell, :cell] = tgt
+            canvas[y : y + cell, cell + pad : cell + pad + cell] = out_img
         path = out_dir / f"compare_grid_{tag}.png"
         Image.fromarray(canvas).save(path)
-        print(f"[overfit-multi] [{tag}] sampled {show} in {time.time()-t0:.1f}s -> {path}", flush=True)
+        print(
+            f"[overfit-multi] [{tag}] sampled {show} in {time.time() - t0:.1f}s -> {path}",
+            flush=True,
+        )
         if was_training:
             model.train()
 
@@ -160,8 +204,12 @@ def main():
         idx = perm[: args.bs]
         input_ids, attn = tok_batch(idx)
         pos = pos_one.unsqueeze(0).expand(len(idx), -1, -1)
-        out = model(input_ids=input_ids, attention_mask=attn,
-                    target_patches=targets[idx], image_position_ids=pos)
+        out = model(
+            input_ids=input_ids,
+            attention_mask=attn,
+            target_patches=targets[idx],
+            image_position_ids=pos,
+        )
         loss = out.loss
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -169,22 +217,37 @@ def main():
         opt.step()
         losses.append(float(loss.detach()))
         if step % args.log_every == 0 or step == args.steps - 1:
-            recent = sum(losses[-args.log_every:]) / len(losses[-args.log_every:])
+            recent = sum(losses[-args.log_every :]) / len(losses[-args.log_every :])
             comps = getattr(model, "_last_ce_components", {}) or {}
             extra = "  ".join(f"{k} {float(v):.4f}" for k, v in comps.items())
-            print(f"[overfit-multi] step {step:4d}  loss {losses[-1]:.5f}  avg{args.log_every} {recent:.5f}  {extra}", flush=True)
+            print(
+                f"[overfit-multi] step {step:4d}  loss {losses[-1]:.5f}  avg{args.log_every} {recent:.5f}  {extra}",
+                flush=True,
+            )
         if (step + 1) in render_at:
-            render(f"step{step+1:04d}")
+            render(f"step{step + 1:04d}")
 
     torch.cuda.synchronize() if device.type == "cuda" else None
     step_sec = (time.time() - t_train) / args.steps
-    print(f"[overfit-multi] first={losses[0]:.5f} last={losses[-1]:.5f} min={min(losses):.5f} "
-          f"step_sec={step_sec:.3f} ({args.steps} steps)", flush=True)
+    print(
+        f"[overfit-multi] first={losses[0]:.5f} last={losses[-1]:.5f} min={min(losses):.5f} "
+        f"step_sec={step_sec:.3f} ({args.steps} steps)",
+        flush=True,
+    )
 
     render("final")
-    (out_dir / "loss.json").write_text(json.dumps(
-        {"losses": losses, "captions": captions[:show], "step_sec": step_sec,
-         "independent_embed": independent, "patch": psz, "n_patch": n_patch}))
+    (out_dir / "loss.json").write_text(
+        json.dumps(
+            {
+                "losses": losses,
+                "captions": captions[:show],
+                "step_sec": step_sec,
+                "independent_embed": independent,
+                "patch": psz,
+                "n_patch": n_patch,
+            }
+        )
+    )
     print(f"[overfit-multi] done -> {out_dir}", flush=True)
 
 

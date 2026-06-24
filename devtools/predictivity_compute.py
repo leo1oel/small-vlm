@@ -25,6 +25,7 @@ Reads neo_analysis/cka_<tag>.npz {feats (L+1,N,H), idx}. CPU-only. Saves predict
 
 Usage: python devtools/predictivity_compute.py [out.json] [tag1,tag2,...]
 """
+
 import json
 import os
 import sys
@@ -44,15 +45,25 @@ ROOT = Path(os.environ.get("CKA_DIR", str(Path(__file__).resolve().parents[1] / 
 
 # kind: "native" (enc-free; expect rising), "encvlm" (encoder-based control; expect flat-high)
 MODELS = {
-    "neo2bsft": "native", "neo9bsft": "native", "sail": "native", "gemma": "native",
-    "mono": "native", "gemma26moe": "native",
-    "llava": "encvlm", "qwen": "encvlm",
-    "ivl2": "encvlm", "ivl4": "encvlm", "ivl8": "encvlm", "ivl30moe": "encvlm", "janus": "encvlm",
-    "gemmarand": "randinit", "llavarand": "randinit",  # causal control (untrained weights)
+    "neo2bsft": "native",
+    "neo9bsft": "native",
+    "sail": "native",
+    "gemma": "native",
+    "mono": "native",
+    "gemma26moe": "native",
+    "llava": "encvlm",
+    "qwen": "encvlm",
+    "ivl2": "encvlm",
+    "ivl4": "encvlm",
+    "ivl8": "encvlm",
+    "ivl30moe": "encvlm",
+    "janus": "encvlm",
+    "gemmarand": "randinit",
+    "llavarand": "randinit",  # causal control (untrained weights)
 }
 ENCODERS = ["dino", "clip", "siglip"]
-PCA_KX = 256   # input subspace
-PCA_KY = 128   # target (encoder) subspace
+PCA_KX = 256  # input subspace
+PCA_KY = 128  # target (encoder) subspace
 N_FOLDS = 5
 ALPHAS = np.logspace(0, 5, 6)
 N_JOBS = int(os.environ.get("PRED_JOBS", "8"))
@@ -122,26 +133,38 @@ def main():
         for e in enc:
             tasks.append((t, e, int(0.6 * (L - 1))))
     out = Parallel(n_jobs=N_JOBS, verbose=5)(
-        delayed(model_encoder_curve)(feats_all[t], enc[e], sh) for (t, e, sh) in tasks)
+        delayed(model_encoder_curve)(feats_all[t], enc[e], sh) for (t, e, sh) in tasks
+    )
 
     results = {}
     for (t, e, _), (r2, sd, shuf) in zip(tasks, out):
         L = feats_all[t].shape[0]
-        ent = results.setdefault(t, {"role": models[t], "n_layers": L,
-                                     "n_images": int(feats_all[t].shape[1]), "per_encoder": {}})
+        ent = results.setdefault(
+            t,
+            {
+                "role": models[t],
+                "n_layers": L,
+                "n_images": int(feats_all[t].shape[1]),
+                "per_encoder": {},
+            },
+        )
         curve = np.array(r2)
         peak_l = int(curve.argmax())
         ent["per_encoder"][e] = {
             "r2_curve": curve.round(4).tolist(),
             "r2_std": np.array(sd).round(4).tolist(),
-            "peak_r2": float(curve[peak_l]), "peak_layer": peak_l,
+            "peak_r2": float(curve[peak_l]),
+            "peak_layer": peak_l,
             "peak_depth_frac": round(peak_l / (L - 1), 3),
             "floor_layer0_r2": round(float(curve[0]), 4),
             "shuffled_floor_r2": round(float(shuf), 4),
             "rise": round(float(curve[peak_l]) - float(curve[0]), 4),
         }
-        print(f"[pred] {t:10s} {e:7s} peak={curve[peak_l]:.3f}@L{peak_l}/{L-1} "
-              f"floor={curve[0]:.3f} shuf={shuf:.3f} rise={curve[peak_l]-curve[0]:+.3f}", flush=True)
+        print(
+            f"[pred] {t:10s} {e:7s} peak={curve[peak_l]:.3f}@L{peak_l}/{L - 1} "
+            f"floor={curve[0]:.3f} shuf={shuf:.3f} rise={curve[peak_l] - curve[0]:+.3f}",
+            flush=True,
+        )
     out_path.write_text(json.dumps(results, indent=2))
     print(f"[pred] saved {out_path}", flush=True)
 

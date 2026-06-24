@@ -708,9 +708,7 @@ def create_dynamic_causal_vlm_class(
                     inputs_embeds.dtype if inputs_embeds is not None else self.dtype
                 )
             elif self.training and inputs_embeds is not None:
-                vmask = inputs_embeds.new_zeros(
-                    (inputs_embeds.shape[0], inputs_embeds.shape[1], 1)
-                )
+                vmask = inputs_embeds.new_zeros((inputs_embeds.shape[0], inputs_embeds.shape[1], 1))
             elif self.training and input_ids is not None:
                 vmask = torch.zeros(
                     (input_ids.shape[0], input_ids.shape[1], 1),
@@ -806,9 +804,7 @@ def create_dynamic_causal_vlm_class(
         # _CAN_RECORD_REGISTRY by str(self.__class__), which is not guaranteed
         # for this dynamically generated backbone class, and a scoped hook
         # also only keeps the layers we need.
-        aux_layers = sorted(
-            {int(k) for k in (getattr(self.config, "aux_exit_layers", None) or [])}
-        )
+        aux_layers = sorted({int(k) for k in (getattr(self.config, "aux_exit_layers", None) or [])})
         aux_weight = float(getattr(self.config, "aux_exit_weight", 0.0) or 0.0)
         aux_active = bool(aux_layers) and aux_weight > 0.0
         # Visual-aux loss (spec 2026-06-06): forward only passes
@@ -913,16 +909,12 @@ def create_dynamic_causal_vlm_class(
                         "aux_exit_detach=True needs an RMSNorm-style final norm "
                         f"with .variance_epsilon (got {type(final_norm).__name__})"
                     )
-                head_weight = (
-                    self.lm_head.weight.detach() if detach else self.lm_head.weight
-                )
+                head_weight = self.lm_head.weight.detach() if detach else self.lm_head.weight
                 aux_sum = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
                 for k in aux_layers:
                     h_k = captured.get(k)
                     if h_k is None:
-                        raise RuntimeError(
-                            f"aux exit layer {k}: forward hook captured nothing"
-                        )
+                        raise RuntimeError(f"aux exit layer {k}: forward hook captured nothing")
                     if torch.is_grad_enabled() and not h_k.requires_grad:
                         raise RuntimeError(
                             f"aux exit layer {k}: captured hidden states are not "
@@ -939,9 +931,7 @@ def create_dynamic_causal_vlm_class(
                         )
                     else:
                         normed = final_norm(h_k_valid)
-                    total_k = torch.zeros(
-                        (), dtype=torch.float32, device=flat_hidden.device
-                    )
+                    total_k = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
                     for hidden_chunk, target_chunk in zip(
                         normed.split(chunk_size), targets_valid.split(chunk_size), strict=True
                     ):
@@ -1073,12 +1063,16 @@ def create_dynamic_causal_vlm_class(
                         inputs_embeds=blank_embeds,
                         use_cache=False,
                     )
-                    flat_blank = blank_out.last_hidden_state.reshape(
-                        -1, hidden_states.shape[-1]
-                    )[g_valid]
+                    flat_blank = blank_out.last_hidden_state.reshape(-1, hidden_states.shape[-1])[
+                        g_valid
+                    ]
                     lp_blank = torch.cat(
                         [
-                            self.lm_head(hb).float().log_softmax(-1).gather(1, tc[:, None]).squeeze(1)
+                            self.lm_head(hb)
+                            .float()
+                            .log_softmax(-1)
+                            .gather(1, tc[:, None])
+                            .squeeze(1)
                             for hb, tc in zip(
                                 flat_blank.split(chunk_size), tgt_g.split(chunk_size), strict=True
                             )
@@ -1094,7 +1088,9 @@ def create_dynamic_causal_vlm_class(
                     lp_blank.split(chunk_size),
                     strict=True,
                 ):
-                    lp_real = self.lm_head(hr).float().log_softmax(-1).gather(1, tc[:, None]).squeeze(1)
+                    lp_real = (
+                        self.lm_head(hr).float().log_softmax(-1).gather(1, tc[:, None]).squeeze(1)
+                    )
                     g_total = g_total + torch.clamp(margin + lpb - lp_real, min=0.0).sum()
                 g_loss = g_total / n_g
                 loss = loss + g_weight * g_loss
@@ -1234,7 +1230,7 @@ def create_dynamic_causal_vlm_class(
             return g[:, coords[:, 1], coords[:, 0]].t()
 
         samples: list[dict[str, Any]] = []
-        for k, b, flat_pos, coords, gh, gw in blocks:
+        for k, _b, flat_pos, coords, gh, gw in blocks:
             j = k_to_j[k]
             target = _resize_to(tout["grid"][j], gh, gw, coords).to(mdtype)
             native: dict[int, Tensor] = {}
@@ -1657,7 +1653,16 @@ def create_dynamic_causal_vlm_class(
         LongTensor | None,
     ]:
         if (image_features is None and audio_features is None) or input_ids.shape[1] == 1:  # pyright: ignore
-            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None, None
+            return (
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                None,
+                labels,
+                None,
+                None,
+            )
 
         # Let's just add dummy tensors if they do not exist,
         # it is a headache to deal with None all the time.
@@ -2079,9 +2084,7 @@ def create_dynamic_causal_vlm_class(
         model_dtype = self.dtype
         bsz, n_patch, patch_dim = target_patches.shape
         # 1. timestep + noise + interpolation (math in fp32)
-        t = sample_timesteps(
-            bsz, float(cfg.generation_t_mu), float(cfg.generation_t_sigma), device
-        )
+        t = sample_timesteps(bsz, float(cfg.generation_t_mu), float(cfg.generation_t_sigma), device)
         x1 = target_patches.to(device=device, dtype=torch.float32)
         x_t, _ = add_noise(x1, t, float(cfg.generation_noise_scale))
         # 2. text condition embeddings
@@ -2149,16 +2152,20 @@ def create_dynamic_causal_vlm_class(
         past_warmup = (not self.training) or int(getattr(self, "_gen_fwd_count", 0)) > warmup
         if bool(getattr(cfg, "generation_perceptual_enabled", False)) and past_warmup:
             from .gen_perceptual import perceptual_loss
+
             grid = int(round(n_patch**0.5))
             psz = int(round((patch_dim // 3) ** 0.5))
             pred_img = patches_to_pixels(pred_x0, grid, grid, psz)
             gt_img = patches_to_pixels(x1, grid, grid, psz)
             pcomp = perceptual_loss(
-                pred_img, gt_img,
+                pred_img,
+                gt_img,
                 lpips_weight=float(getattr(cfg, "generation_perceptual_lpips_weight", 0.0)),
                 dino_weight=float(getattr(cfg, "generation_perceptual_dino_weight", 0.0)),
                 lpips_net=str(getattr(cfg, "generation_perceptual_lpips_net", "vgg")),
-                dino_model=str(getattr(cfg, "generation_perceptual_dino_model", "dinov2_vitb14_reg")),
+                dino_model=str(
+                    getattr(cfg, "generation_perceptual_dino_model", "dinov2_vitb14_reg")
+                ),
                 resize=int(getattr(cfg, "generation_perceptual_resize", 256)),
                 t=t,
                 t_gate=float(getattr(cfg, "generation_perceptual_t_gate", 0.0)),

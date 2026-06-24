@@ -22,6 +22,7 @@ Usage:
   python devtools/imagenet_probe.py extract clip openai/clip-vit-large-patch14-336 clip
   python devtools/imagenet_probe.py probe clip dino siglip llava gemma sail mono
 """
+
 import os
 import sys
 from pathlib import Path
@@ -37,6 +38,7 @@ POST = "Answer with the option's letter from the given choices directly.\n"
 
 def load_imagenet(N=None, seed=0):
     import datasets
+
     ds = datasets.load_dataset("mrm8488/ImageNet1K-val", split="train")
     if N is not None and N < len(ds):
         # stratified per-class subset: take first k per class deterministically
@@ -63,6 +65,7 @@ def pool_tokens(V):
     # all image tokens collinear at high norm; plain mean then averages the discriminative residuals
     # to ~zero -> flat probe). L2-norm-then-mean keeps the angular/per-token signal.
     import os as _os
+
     if _os.environ.get("POOL") == "l2mean":
         V = V / V.norm(dim=-1, keepdim=True).clamp_min(1e-6)
     return V.mean(0)
@@ -70,11 +73,13 @@ def pool_tokens(V):
 
 def extract_main(kind, model_id, tag, fracs, N):
     from transformers import AutoProcessor
+
     ds = load_imagenet(N)
     labels = np.array(ds["label"], dtype=np.int64)
     reps, layers = [], None
     if kind in ("dino", "clip", "siglip"):
         from transformers import AutoModel
+
         proc = AutoProcessor.from_pretrained(model_id)
         model = AutoModel.from_pretrained(model_id, dtype=torch.bfloat16).to(DEV).eval()
         layers = [0]
@@ -100,7 +105,9 @@ def extract_main(kind, model_id, tag, fracs, N):
             from transformers import JanusForConditionalGeneration as M
         elif kind == "gemma4moe":
             from transformers import Gemma4ForConditionalGeneration as M
-        elif kind == "onevision15":  # LLaVA-OneVision-1.5 (self-contained TRC; repo auto_map -> *ForCG)
+        elif (
+            kind == "onevision15"
+        ):  # LLaVA-OneVision-1.5 (self-contained TRC; repo auto_map -> *ForCG)
             from transformers import AutoModel as M
         else:
             raise ValueError(kind)
@@ -111,34 +118,46 @@ def extract_main(kind, model_id, tag, fracs, N):
             # transformers 5.10 dropped the "default" key from ROPE_INIT_FUNCTIONS (the OneVision-1.5
             # custom code still indexes it for rope_scaling=None). Re-register the standard computation.
             import transformers.modeling_rope_utils as _R
+
             if "default" not in _R.ROPE_INIT_FUNCTIONS:
+
                 def _default_rope(config, device=None, seq_len=None, **kw):
                     base = getattr(config, "rope_theta", 10000.0)
                     dim = getattr(config, "head_dim", None) or (
-                        config.hidden_size // config.num_attention_heads)
-                    inv = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).float().to(device) / dim))
+                        config.hidden_size // config.num_attention_heads
+                    )
+                    inv = 1.0 / (
+                        base
+                        ** (torch.arange(0, dim, 2, dtype=torch.int64).float().to(device) / dim)
+                    )
                     return inv, 1.0
+
                 _R.ROPE_INIT_FUNCTIONS["default"] = _default_rope
         if trc:  # custom text_config lacks pad_token_id (transformers 5.10 incompat). Use sdpa, NOT
             # eager: the custom eager attention path (self.num_heads) is broken; we only need
             # output_hidden_states here (no attention hooks), so sdpa is fine and avoids that path.
             from transformers import AutoConfig
+
             cfg = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
             tc = getattr(cfg, "text_config", None)
             if tc is not None and not hasattr(tc, "pad_token_id"):
                 tc.pad_token_id = None
             load_kwargs = {"config": cfg, "attn_implementation": "sdpa", "trust_remote_code": True}
         if os.environ.get("DEVMAP"):  # big MoE (30B/26B) -> shard across GPU
-            model = M.from_pretrained(model_id, dtype=torch.bfloat16, device_map="auto", **load_kwargs).eval()
+            model = M.from_pretrained(
+                model_id, dtype=torch.bfloat16, device_map="auto", **load_kwargs
+            ).eval()
         else:
             model = M.from_pretrained(model_id, dtype=torch.bfloat16, **load_kwargs).to(DEV).eval()
-        img_id = (getattr(model.config, "image_token_index", None) or
-                  getattr(model.config, "image_token_id", None))
+        img_id = getattr(model.config, "image_token_index", None) or getattr(
+            model.config, "image_token_id", None
+        )
         # TRC processors (OneVision-1.5) emit extra keys (mm_token_type_ids) the custom forward
         # rejects; restrict the batch to the forward signature when there's no **kwargs catch-all.
         fwd_keys = None
         if trc:
             import inspect
+
             params = inspect.signature(model.forward).parameters
             if not any(p.kind == p.VAR_KEYWORD for p in params.values()):
                 fwd_keys = set(params)
@@ -148,25 +167,44 @@ def extract_main(kind, model_id, tag, fracs, N):
             if not done:
                 return
             arr_p = np.stack(reps, axis=1)  # (Lf,done,H)
-            np.savez(ROOT / f"imagenet_{tag}.npz", reps=arr_p.astype(np.float16),
-                     labels=labels[:done], layers=np.array(layers), fracs=np.array(fracs))
-            print(f"[in-extract] {tag}: checkpoint saved {done}/{len(ds)} reps {arr_p.shape}", flush=True)
+            np.savez(
+                ROOT / f"imagenet_{tag}.npz",
+                reps=arr_p.astype(np.float16),
+                labels=labels[:done],
+                layers=np.array(layers),
+                fracs=np.array(fracs),
+            )
+            print(
+                f"[in-extract] {tag}: checkpoint saved {done}/{len(ds)} reps {arr_p.shape}",
+                flush=True,
+            )
 
         for n, ex in enumerate(ds):
             img = ex["image"].convert("RGB")
             if kind == "qwen":
                 img = img.resize((448, 448))
             if kind in ("gemma", "gemma4moe"):
-                msg = [{"role": "user", "content": [{"type": "image", "image": img},
-                        {"type": "text", "text": q}]}]
-                b = proc.apply_chat_template(msg, add_generation_prompt=True, tokenize=True,
-                                             return_dict=True, return_tensors="pt")
+                msg = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image", "image": img}, {"type": "text", "text": q}],
+                    }
+                ]
+                b = proc.apply_chat_template(
+                    msg,
+                    add_generation_prompt=True,
+                    tokenize=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                )
                 b = {k: (v.to(DEV) if isinstance(v, torch.Tensor) else v) for k, v in b.items()}
             else:
-                msg = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}]
+                msg = [
+                    {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}
+                ]
                 pr = proc.apply_chat_template(msg, add_generation_prompt=True)
                 b = proc(images=[img], text=[pr], return_tensors="pt").to(DEV)
-            vm = (b["input_ids"][0] == img_id)
+            vm = b["input_ids"][0] == img_id
             if fwd_keys is not None:
                 b = {k: v for k, v in b.items() if k in fwd_keys}
             with torch.no_grad():
@@ -174,7 +212,9 @@ def extract_main(kind, model_id, tag, fracs, N):
             hs = out.hidden_states
             if layers is None:
                 layers = frac_to_layers(len(hs), fracs)
-            pooled = np.stack([pool_tokens(hs[L][0][vm].float()).cpu().numpy() for L in layers])  # (Lf,H)
+            pooled = np.stack(
+                [pool_tokens(hs[L][0][vm].float()).cpu().numpy() for L in layers]
+            )  # (Lf,H)
             reps.append(pooled)
             del out
             torch.cuda.empty_cache()
@@ -183,8 +223,13 @@ def extract_main(kind, model_id, tag, fracs, N):
             if (n + 1) % 5000 == 0:
                 ckpt_save(n + 1)
         arr = np.stack(reps, axis=1)  # (Lf,N,H)
-    np.savez(ROOT / f"imagenet_{tag}.npz", reps=arr.astype(np.float16), labels=labels,
-             layers=np.array(layers), fracs=np.array(fracs if kind not in ("dino", "clip", "siglip") else [1.0]))
+    np.savez(
+        ROOT / f"imagenet_{tag}.npz",
+        reps=arr.astype(np.float16),
+        labels=labels,
+        layers=np.array(layers),
+        fracs=np.array(fracs if kind not in ("dino", "clip", "siglip") else [1.0]),
+    )
     print(f"[in-extract] {tag}: reps {arr.shape} labels {labels.shape} layers {layers}", flush=True)
 
 
@@ -196,19 +241,23 @@ def fixed_split(labels, test_frac=0.2, seed=0):
         idx = np.where(labels == y)[0]
         rng.shuffle(idx)
         k = max(1, int(round(len(idx) * test_frac)))
-        te.extend(idx[:k]); tr.extend(idx[k:])
+        te.extend(idx[:k])
+        tr.extend(idx[k:])
     return np.array(sorted(tr)), np.array(sorted(te))
 
 
 def probe(tags):
     import json
+
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
+
     results = {}
     for tag in tags:
         f = ROOT / f"imagenet_{tag}.npz"
         if not f.exists():
-            print(f"[probe] SKIP {tag} (no npz)", flush=True); continue
+            print(f"[probe] SKIP {tag} (no npz)", flush=True)
+            continue
         d = np.load(f)
         reps, labels, layers = d["reps"].astype(np.float32), d["labels"], d["layers"]
         tr, te = fixed_split(labels)
@@ -216,23 +265,34 @@ def probe(tags):
         for li in range(reps.shape[0]):
             X = reps[li]
             sc = StandardScaler().fit(X[tr])
-            clf = LogisticRegression(max_iter=300, C=1.0, n_jobs=-1)  # multinomial by default in sklearn>=1.7
+            clf = LogisticRegression(
+                max_iter=300, C=1.0, n_jobs=-1
+            )  # multinomial by default in sklearn>=1.7
             clf.fit(sc.transform(X[tr]), labels[tr])
             acc = float((clf.predict(sc.transform(X[te])) == labels[te]).mean())
             per_layer[int(layers[li])] = round(acc, 4)
             print(f"[probe] {tag:10s} L{int(layers[li]):3d} top1={acc:.4f}", flush=True)
         best = max(per_layer.items(), key=lambda kv: kv[1])
-        results[tag] = {"per_layer": per_layer, "peak_layer": best[0], "peak_top1": best[1],
-                        "n_test": int(len(te)), "n_classes": int(len(np.unique(labels)))}
+        results[tag] = {
+            "per_layer": per_layer,
+            "peak_layer": best[0],
+            "peak_top1": best[1],
+            "n_test": int(len(te)),
+            "n_classes": int(len(np.unique(labels))),
+        }
     (ROOT / "imagenet_probe_results.json").write_text(json.dumps(results, indent=2))
-    print(f"[probe] saved imagenet_probe_results.json", flush=True)
+    print("[probe] saved imagenet_probe_results.json", flush=True)
 
 
 def main():
     mode = sys.argv[1]
     if mode == "extract":
         kind, model_id, tag = sys.argv[2], sys.argv[3], sys.argv[4]
-        fracs = [float(x) for x in sys.argv[5].split(",")] if len(sys.argv) > 5 and sys.argv[5] else DEFAULT_FRACS
+        fracs = (
+            [float(x) for x in sys.argv[5].split(",")]
+            if len(sys.argv) > 5 and sys.argv[5]
+            else DEFAULT_FRACS
+        )
         N = int(sys.argv[6]) if len(sys.argv) > 6 else None
         extract_main(kind, model_id, tag, fracs, N)
     elif mode == "probe":

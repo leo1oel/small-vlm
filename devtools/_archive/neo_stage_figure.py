@@ -38,19 +38,33 @@ def curves(rows):
     intact = acc(causal, lambda r: r["intact"])
     swap = acc(causal, lambda r: r["swap"])
     R0 = intact - swap
-    retained = [acc(causal, lambda r, d=d: r["cost"][d]) -
-                acc(causal, lambda r, d=d: r["cost_null"][d]) for d in range(N)]
-    rho = [mean(r["rho"]["dswap"][l] for r in rows) /
-           mean(r["rho"]["dnoimg"][l] for r in rows) for l in range(N)]
+    retained = [
+        acc(causal, lambda r, d=d: r["cost"][d]) - acc(causal, lambda r, d=d: r["cost_null"][d])
+        for d in range(N)
+    ]
+    rho = [
+        mean(r["rho"]["dswap"][l] for r in rows) / mean(r["rho"]["dnoimg"][l] for r in rows)
+        for l in range(N)
+    ]
     marg = [max((R0 if d == 0 else retained[d - 1]) - retained[d], 0.0) for d in range(N)]
     tot = sum(marg) or 1e-9
     com = sum((d + 1) * marg[d] for d in range(N)) / tot
-    return dict(N=N, R0=R0, intact=intact, swap=swap, retained=retained, rho=rho,
-                com=com, com_rel=com / N, n=len(rows))
+    return dict(
+        N=N,
+        R0=R0,
+        intact=intact,
+        swap=swap,
+        retained=retained,
+        rho=rho,
+        com=com,
+        com_rel=com / N,
+        n=len(rows),
+    )
 
 
 def main():
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -62,30 +76,43 @@ def main():
             continue
         c = curves(rows)
         data.append((name, color, c))
-        print(f"NEO-{name}: n={c['n']} intact={c['intact']:.3f} swap={c['swap']:.3f} "
-              f"R0={c['R0']:+.3f} funcCoM=L{c['com']:.1f} (rel {c['com_rel']:.2f}) "
-              f"rho@L1={c['rho'][0]:.3f} rho_floor={min(c['rho']):.3f}")
+        print(
+            f"NEO-{name}: n={c['n']} intact={c['intact']:.3f} swap={c['swap']:.3f} "
+            f"R0={c['R0']:+.3f} funcCoM=L{c['com']:.1f} (rel {c['com_rel']:.2f}) "
+            f"rho@L1={c['rho'][0]:.3f} rho_floor={min(c['rho']):.3f}"
+        )
 
     fig, ax = plt.subplots(1, 2, figsize=(13, 5))
     for name, color, c in data:
         x = [(i + 1) / c["N"] for i in range(c["N"])]
         rn = [c["retained"][i] / c["R0"] if c["R0"] else 0 for i in range(c["N"])]
-        ax[0].plot(x, rn, "-o", ms=3, color=color,
-                   label=f"NEO-{name} (R0={c['R0']:+.2f}, CoM rel {c['com_rel']:.2f})")
+        ax[0].plot(
+            x,
+            rn,
+            "-o",
+            ms=3,
+            color=color,
+            label=f"NEO-{name} (R0={c['R0']:+.2f}, CoM rel {c['com_rel']:.2f})",
+        )
         ax[1].plot(x, c["rho"], "-o", ms=3, color=color, label=f"NEO-{name}")
     for a in ax:
-        a.axvline(PREBUF_REL, color="k", ls=":", alpha=.5)
-        a.axvspan(0.35, 0.6, color="gray", alpha=.10)
-    ax[0].axhline(0.5, color="k", lw=.6, ls="--", alpha=.4)
-    ax[0].set_title("retained(d)/R0 by stage (dotted = pre-Buffer L12)\n"
-                    "(PT is a caption model -> accuracy-cost unreliable)")
-    ax[0].set_xlabel("relative blocked depth d / N"); ax[0].set_ylabel("fraction of image signal")
+        a.axvline(PREBUF_REL, color="k", ls=":", alpha=0.5)
+        a.axvspan(0.35, 0.6, color="gray", alpha=0.10)
+    ax[0].axhline(0.5, color="k", lw=0.6, ls="--", alpha=0.4)
+    ax[0].set_title(
+        "retained(d)/R0 by stage (dotted = pre-Buffer L12)\n"
+        "(PT is a caption model -> accuracy-cost unreliable)"
+    )
+    ax[0].set_xlabel("relative blocked depth d / N")
+    ax[0].set_ylabel("fraction of image signal")
     ax[0].legend(fontsize=8)
     ax[1].set_title("rho(l): representational content-fusion rate by stage")
     ax[1].set_xlabel("relative depth l / N")
     ax[1].set_ylabel(r"$\|h(I)-h(I')\| / \|h(I)-h(\varnothing)\|$")
     ax[1].legend(fontsize=8)
-    fig.suptitle("NEO-2B fusion location across training stages (PT->MT->SFT), VMCBench dev", y=1.02)
+    fig.suptitle(
+        "NEO-2B fusion location across training stages (PT->MT->SFT), VMCBench dev", y=1.02
+    )
     fig.tight_layout()
     fig.savefig(sys.argv[1], dpi=130, bbox_inches="tight")
     print(f"saved -> {sys.argv[1]}")

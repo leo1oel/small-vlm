@@ -6,6 +6,7 @@ and neo_report/fig_cka.png.
 
 Run with neo venv python. Usage: python devtools/cka_compute.py
 """
+
 import json
 from pathlib import Path
 
@@ -14,9 +15,14 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1] / "neo_analysis"
 OUT = Path(__file__).resolve().parents[1] / "neo_report"
 
-VLMS = [("NEO1.0-2B-SFT", "neo2bsft", "free"), ("NEO1.0-9B-SFT", "neo9bsft", "free"),
-        ("Gemma-4-12B", "gemma", "free"), ("SAIL-7B", "sail", "free"),
-        ("LLaVA-1.5-7B", "llava", "enc"), ("Qwen2.5-VL-7B", "qwen", "enc")]
+VLMS = [
+    ("NEO1.0-2B-SFT", "neo2bsft", "free"),
+    ("NEO1.0-9B-SFT", "neo9bsft", "free"),
+    ("Gemma-4-12B", "gemma", "free"),
+    ("SAIL-7B", "sail", "free"),
+    ("LLaVA-1.5-7B", "llava", "enc"),
+    ("Qwen2.5-VL-7B", "qwen", "enc"),
+]
 REFS = [("DINOv2", "dino"), ("CLIP-L", "clip"), ("SigLIP", "siglip")]
 FREE, ENC = "#1f77b4", "#ff7f0e"
 
@@ -57,15 +63,21 @@ def main():
         for rname, Y in refs.items():
             res[name][rname] = [linear_cka(feats[l], Y) for l in range(L)]
         peak = {rn: (max(res[name][rn]), int(np.argmax(res[name][rn]))) for rn in refs}
-        print(f"{name}: L={L} " + " ".join(
-            f"{rn}:peak={pk[0]:.2f}@L{pk[1]}({pk[1]/(L-1):.2f})" for rn, pk in peak.items()))
+        print(
+            f"{name}: L={L} "
+            + " ".join(
+                f"{rn}:peak={pk[0]:.2f}@L{pk[1]}({pk[1] / (L - 1):.2f})" for rn, pk in peak.items()
+            )
+        )
     (ROOT / "cka_results.json").write_text(json.dumps(res, indent=1))
 
     if not refs:
         return
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     nref = len(refs)
     fig, ax = plt.subplots(1, nref, figsize=(6 * nref, 5), squeeze=False)
     for j, (rname, _) in enumerate(refs.items()):
@@ -76,15 +88,25 @@ def main():
             c = res[name][rname]
             L = len(c)
             x = [l / (L - 1) for l in range(L)]
-            a.plot(x, c, "-", color=FREE if fam == "free" else ENC, lw=1.6,
-                   label=f"{name} (peak@{np.argmax(c)/(L-1):.2f})")
+            a.plot(
+                x,
+                c,
+                "-",
+                color=FREE if fam == "free" else ENC,
+                lw=1.6,
+                label=f"{name} (peak@{np.argmax(c) / (L - 1):.2f})",
+            )
         a.set_title(f"CKA(image-token reps, {rname})")
-        a.set_xlabel("relative decoder depth l/N"); a.set_ylabel("linear CKA")
-        a.axvspan(0, 0.3, color="gray", alpha=.08)
+        a.set_xlabel("relative decoder depth l/N")
+        a.set_ylabel("linear CKA")
+        a.axvspan(0, 0.3, color="gray", alpha=0.08)
         a.legend(fontsize=6.5)
-    fig.suptitle("Where image-token reps reach encoder-grade features "
-                 "(blue=encoder-free, orange=encoder)", y=1.02)
-    fig.tight_layout(); fig.savefig(OUT / "fig_cka.png", dpi=130, bbox_inches="tight")
+    fig.suptitle(
+        "Where image-token reps reach encoder-grade features (blue=encoder-free, orange=encoder)",
+        y=1.02,
+    )
+    fig.tight_layout()
+    fig.savefig(OUT / "fig_cka.png", dpi=130, bbox_inches="tight")
     print("wrote fig_cka.png")
 
 

@@ -199,12 +199,16 @@ def main() -> int:
             mfa.config.cross_modal_mask_mode = "none"
             with torch.no_grad():
                 e2, m2, ml2, _ = merged(mfa, ids, attn, labels, imgs, poss)
-                hfa = mfa.model(
-                    inputs_embeds=e2,
-                    attention_mask=m2,
-                    output_hidden_states=True,
-                    use_cache=False,
-                ).hidden_states[-1].float()
+                hfa = (
+                    mfa.model(
+                        inputs_embeds=e2,
+                        attention_mask=m2,
+                        output_hidden_states=True,
+                        use_cache=False,
+                    )
+                    .hidden_states[-1]
+                    .float()
+                )
             dfa = (h_2d - hfa).abs().max().item()
             record("1b.sdpa_vs_fa2_info", True, f"max|Δ|={dfa:.2e} (info only, kernels differ)")
             del mfa
@@ -333,7 +337,9 @@ def main() -> int:
             cont = out[0, gen_ids.shape[1] :].tolist()
             if mode == "none":
                 ref_cont = cont
-            record(f"5.generate[{mode}]", consumed and finite, f"stash_cleared={consumed} cont={cont}")
+            record(
+                f"5.generate[{mode}]", consumed and finite, f"stash_cleared={consumed} cont={cont}"
+            )
         except Exception as e:  # noqa: BLE001
             import traceback
 
@@ -406,16 +412,26 @@ def throughput_probe(processor, device, dtype, base_lm):
             ids, attn, lab, imgs, poss, ntok = big_batch(m)
             for _ in range(3):
                 m.zero_grad(set_to_none=True)
-                out = m(input_ids=ids, attention_mask=attn, labels=lab, images=imgs,
-                        image_position_ids=poss)
+                out = m(
+                    input_ids=ids,
+                    attention_mask=attn,
+                    labels=lab,
+                    images=imgs,
+                    image_position_ids=poss,
+                )
                 out.loss.backward()
             torch.cuda.synchronize()
             t0 = time.time()
             steps = 15
             for _ in range(steps):
                 m.zero_grad(set_to_none=True)
-                out = m(input_ids=ids, attention_mask=attn, labels=lab, images=imgs,
-                        image_position_ids=poss)
+                out = m(
+                    input_ids=ids,
+                    attention_mask=attn,
+                    labels=lab,
+                    images=imgs,
+                    image_position_ids=poss,
+                )
                 out.loss.backward()
             torch.cuda.synchronize()
             dt = time.time() - t0

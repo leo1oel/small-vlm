@@ -1,5 +1,6 @@
 """探查任意 HF VLM 的加载/结构,决定如何接入 sufmeanabl 探针(标准 kind 分支 vs 自定义 dir)。
 Usage: python devtools/probe_arch.py <model_id> [trc]   (任意第2参数 => trust_remote_code=True)"""
+
 import inspect
 import sys
 
@@ -18,13 +19,23 @@ tc = getattr(cfg, "text_config", None)
 print("text layers:", getattr(tc, "num_hidden_layers", None) if tc else None)
 try:
     from transformers import AutoModel
-    m = AutoModel.from_pretrained(mid, trust_remote_code=trc, torch_dtype=torch.bfloat16,
-                                  attn_implementation="eager")
+
+    m = AutoModel.from_pretrained(
+        mid, trust_remote_code=trc, torch_dtype=torch.bfloat16, attn_implementation="eager"
+    )
     print("LOADED class:", type(m).__name__)
-    print("has lm_head:", hasattr(m, "lm_head"),
-          "| language_model.lm_head:", hasattr(getattr(m, "language_model", None), "lm_head"))
-    for path in ("language_model.model.layers", "model.language_model.layers",
-                 "model.layers", "language_model.layers"):
+    print(
+        "has lm_head:",
+        hasattr(m, "lm_head"),
+        "| language_model.lm_head:",
+        hasattr(getattr(m, "language_model", None), "lm_head"),
+    )
+    for path in (
+        "language_model.model.layers",
+        "model.language_model.layers",
+        "model.layers",
+        "language_model.layers",
+    ):
         obj = m
         ok = True
         for p in path.split("."):
@@ -38,4 +49,5 @@ try:
     print("forward params:", list(inspect.signature(m.forward).parameters)[:14])
 except Exception:
     import traceback
+
     traceback.print_exc()

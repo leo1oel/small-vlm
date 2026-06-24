@@ -36,6 +36,7 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from vlm.data.dataset import tokenizer_multimodal_token  # noqa: E402
 from vlm.inference.eval import (  # noqa: E402
     _data_args_from_config,
     build_prompt,
@@ -43,7 +44,6 @@ from vlm.inference.eval import (  # noqa: E402
     prepare_media_inputs,
     resolve_conv_mode,
 )
-from vlm.data.dataset import tokenizer_multimodal_token  # noqa: E402
 
 DEV = "cuda"
 POST_PROMPT = "Answer with the option's letter from the given choices directly.\n"
@@ -62,9 +62,7 @@ def doc_to_prompt(doc) -> str:
 
 class FullProbe:
     def __init__(self, ckpt: str):
-        self.model, self.processor, info = load_model(
-            ckpt, bf16=True, attn_implementation="eager"
-        )
+        self.model, self.processor, info = load_model(ckpt, bf16=True, attn_implementation="eager")
         # E4 (spec 2026-06-18): the probe runs on BOTH the encoder-free native
         # path and the matched CLIP-encoder arm (sft-clip) for the encoder-vs-
         # pixel R0 comparison — encode_images vs encode_raw_patches below.
@@ -77,7 +75,7 @@ class FullProbe:
         self.N = len(self.layers)
 
         # hook state
-        self.mode = "none"          # none | cumulative | single
+        self.mode = "none"  # none | cumulative | single
         self.depth = 0
         self.cut = -1
         self.capture = False
@@ -95,8 +93,10 @@ class FullProbe:
             n = int(self.vm.numel())
             if mask is None:
                 m = torch.zeros(1, 1, n, n, dtype=dtype, device=self.vm.device)
-                m.masked_fill_(torch.ones(n, n, dtype=torch.bool, device=self.vm.device).triu(1),
-                               torch.finfo(dtype).min)
+                m.masked_fill_(
+                    torch.ones(n, n, dtype=torch.bool, device=self.vm.device).triu(1),
+                    torch.finfo(dtype).min,
+                )
             else:
                 m = mask.clone()
             tp = (~self.vm).nonzero().squeeze(-1)
@@ -114,9 +114,12 @@ class FullProbe:
             if active:
                 kwargs = dict(kwargs)
                 hidden = args[0] if args else kwargs["hidden_states"]
-                kwargs["attention_mask"] = self._isolated(kwargs.get("attention_mask"), hidden.dtype)
+                kwargs["attention_mask"] = self._isolated(
+                    kwargs.get("attention_mask"), hidden.dtype
+                )
                 return args, kwargs
             return None
+
         return f
 
     def _post(self, k):
@@ -124,22 +127,31 @@ class FullProbe:
             if self.capture:
                 h = (out[0] if isinstance(out, tuple) else out)[0]
                 last = h[-1].float()
-                mean = (h[self.txtpool].float().mean(0) if (self.txtpool is not None
-                        and bool(self.txtpool.any())) else last)
+                mean = (
+                    h[self.txtpool].float().mean(0)
+                    if (self.txtpool is not None and bool(self.txtpool.any()))
+                    else last
+                )
                 self.cap[k] = (last, mean)
+
         return f
 
     # ---- input builders --------------------------------------------------
     def _embed_with_image(self, doc, image):
         prompt = build_prompt(self.conv, self.da.image_token + "\n" + doc_to_prompt(doc), self.da)
-        ids = tokenizer_multimodal_token(prompt, self.tok, self.da, return_tensors="pt").unsqueeze(0).to(DEV)
+        ids = (
+            tokenizer_multimodal_token(prompt, self.tok, self.da, return_tensors="pt")
+            .unsqueeze(0)
+            .to(DEV)
+        )
         gk = prepare_media_inputs(self.model, self.processor, [image.convert("RGB")], [], self.da)
         if self.encoder_free:
             feats = self.model.encode_raw_patches(gk["images"], gk["image_position_ids"])
         else:
             feats, _ = self.model.encode_images(gk["images"])
         (_, _, am, _, emb, _, blk, _) = self.model.prepare_inputs_labels_for_multimodal(
-            ids, None, torch.ones_like(ids), None, None, feats, None, with_image_block_ids=True)
+            ids, None, torch.ones_like(ids), None, None, feats, None, with_image_block_ids=True
+        )
         vm = (blk[0] >= 0).to(DEV)
         first_vis = int(vm.nonzero()[0])
         txtpool = (~vm).clone()
@@ -148,7 +160,11 @@ class FullProbe:
 
     def _embed_text_only(self, doc):
         prompt = build_prompt(self.conv, doc_to_prompt(doc), self.da)
-        ids = tokenizer_multimodal_token(prompt, self.tok, self.da, return_tensors="pt").unsqueeze(0).to(DEV)
+        ids = (
+            tokenizer_multimodal_token(prompt, self.tok, self.da, return_tensors="pt")
+            .unsqueeze(0)
+            .to(DEV)
+        )
         emb = self.model.get_input_embeddings()(ids)
         return emb, torch.ones(ids.shape, dtype=torch.long, device=DEV)
 
@@ -159,7 +175,9 @@ class FullProbe:
 
     def _score(self, lg, gt, letters):
         scores = {c: lg[self.letter_ids[c]].item() for c in letters}
-        return dict(pred=max(scores, key=scores.get), nll=-lg.log_softmax(-1)[self.letter_ids[gt]].item())
+        return dict(
+            pred=max(scores, key=scores.get), nll=-lg.log_softmax(-1)[self.letter_ids[gt]].item()
+        )
 
     @torch.no_grad()
     def capture_all(self, emb, am, vm, txtpool):
@@ -180,8 +198,13 @@ class FullProbe:
         emb, am, vm, tp = self._embed_with_image(doc, doc["image"])
         s_emb, s_am, s_vm, s_tp = self._embed_with_image(doc, donor["image"])
         t_emb, t_am = self._embed_text_only(doc)
-        rec = dict(gt=gt, letters=letters, category=doc["category"],
-                   seq_len=int(emb.shape[1]), n_vis=int(vm.sum()))
+        rec = dict(
+            gt=gt,
+            letters=letters,
+            category=doc["category"],
+            seq_len=int(emb.shape[1]),
+            n_vis=int(vm.sum()),
+        )
 
         # rho: capture all-layer hidden states for I, I', no-image
         cap_I = self.capture_all(emb, am, vm, tp)

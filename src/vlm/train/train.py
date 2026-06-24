@@ -112,9 +112,7 @@ def validate_cross_modal_mask_config(
     if mode == "none":
         return "none", [int(x) for x in (window or [1, 9])]
     if mode not in ("prefix_lm", "img2q_window"):
-        raise ValueError(
-            f"cross_modal_mask.mode must be none|prefix_lm|img2q_window, got {mode!r}"
-        )
+        raise ValueError(f"cross_modal_mask.mode must be none|prefix_lm|img2q_window, got {mode!r}")
     if bool(bidirectional):
         raise ValueError(
             "cross_modal_mask.bidirectional=true is not implemented in v1 "
@@ -129,9 +127,7 @@ def validate_cross_modal_mask_config(
             raise ValueError("img2q_window needs trainer.attn_implementation=sdpa_xmodal")
         lo, hi = int(win[0]), int(win[1])
         if not (1 <= lo <= hi <= num_hidden_layers):
-            raise ValueError(
-                f"cross_modal_mask.window {win} out of range 1..{num_hidden_layers}"
-            )
+            raise ValueError(f"cross_modal_mask.window {win} out of range 1..{num_hidden_layers}")
     return mode, win
 
 
@@ -195,7 +191,10 @@ def train(
     # CLIP signal). The dial lands on model.config at build time (load_model), so
     # validate it here — not in load_model, where direct callers (devtools/
     # breen_smoke.py) set loss_chunk_size on model.config only after load returns.
-    if bool(getattr(model.config, "visual_distill", False)) and int(training_args.loss_chunk_size) <= 0:
+    if (
+        bool(getattr(model.config, "visual_distill", False))
+        and int(training_args.loss_chunk_size) <= 0
+    ):
         raise ValueError(
             "model.visual_distill.enabled requires trainer.loss_chunk_size > 0 — the "
             "visual-distill loss (incl. breen) is implemented only in the chunked-CE "

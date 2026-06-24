@@ -28,8 +28,12 @@ from PIL import Image
 
 from vlm.inference.eval import generate_response, load_model
 
-CKPT = sys.argv[1] if len(sys.argv) > 1 else (
-    "/gscratch/scrubbed/leoym/small-vlm-outputs/sft-unified-bee-mix-visualffn/checkpoint-5000"
+CKPT = (
+    sys.argv[1]
+    if len(sys.argv) > 1
+    else (
+        "/gscratch/scrubbed/leoym/small-vlm-outputs/sft-unified-bee-mix-visualffn/checkpoint-5000"
+    )
 )
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 50
 POST = "Answer with the option's letter from the given choices directly.\n"
@@ -37,6 +41,7 @@ POST = "Answer with the option's letter from the given choices directly.\n"
 
 def get_samples(n):
     import datasets
+
     ds = datasets.load_dataset("suyc21/VMCBench", split="dev")
     out = []
     for i in range(min(n, len(ds))):
@@ -64,6 +69,7 @@ def main():
         t = out[0] if isinstance(out, tuple) else out
         if torch.is_tensor(t):
             captured["emb"] = t.detach().float().mean(dim=0)  # mean over patches -> (D,)
+
     h = conn.register_forward_hook(hook)
     print(f"hooked connector: {type(conn).__name__}", flush=True)
 
@@ -71,38 +77,51 @@ def main():
     print(f"N={len(samples)} VMCBench dev samples\n", flush=True)
 
     n_correct = 0
-    chg_blank = 0   # answer(real) != answer(blank)
-    chg_swap = 0    # answer(real) != answer(swap)
-    cos_real_blank = []   # repr: same question, real vs blank image
-    real_embs = []        # repr: collect real-image embeddings for cross-image cos
+    chg_blank = 0  # answer(real) != answer(blank)
+    chg_swap = 0  # answer(real) != answer(swap)
+    cos_real_blank = []  # repr: same question, real vs blank image
+    real_embs = []  # repr: collect real-image embeddings for cross-image cos
 
     cos = torch.nn.functional.cosine_similarity
     for i, (img, q, gold) in enumerate(samples):
         blank = Image.new("RGB", img.size, 0)
         swap = samples[(i + 1) % len(samples)][0]
 
-        a_real = first_letter(generate_response(model, processor, query=q, images=img,
-                                                temperature=0.0, max_new_tokens=8))
+        a_real = first_letter(
+            generate_response(
+                model, processor, query=q, images=img, temperature=0.0, max_new_tokens=8
+            )
+        )
         emb_real = captured.get("emb")
         if emb_real is not None:
             real_embs.append(emb_real)
 
-        a_blank = first_letter(generate_response(model, processor, query=q, images=blank,
-                                                 temperature=0.0, max_new_tokens=8))
+        a_blank = first_letter(
+            generate_response(
+                model, processor, query=q, images=blank, temperature=0.0, max_new_tokens=8
+            )
+        )
         emb_blank = captured.get("emb")
         if emb_real is not None and emb_blank is not None and emb_real.shape == emb_blank.shape:
             cos_real_blank.append(cos(emb_real[None], emb_blank[None]).item())
 
-        a_swap = first_letter(generate_response(model, processor, query=q, images=swap,
-                                                temperature=0.0, max_new_tokens=8))
+        a_swap = first_letter(
+            generate_response(
+                model, processor, query=q, images=swap, temperature=0.0, max_new_tokens=8
+            )
+        )
 
-        n_correct += (a_real == gold)
-        chg_blank += (a_real != a_blank)
-        chg_swap += (a_real != a_swap)
+        n_correct += a_real == gold
+        chg_blank += a_real != a_blank
+        chg_swap += a_real != a_swap
         if i < 12:
-            print(f"[{i:02d}] gold={gold} real={a_real} blank={a_blank} swap={a_swap} "
-                  f"cos(real,blank)={cos_real_blank[-1]:.3f}" if cos_real_blank else
-                  f"[{i:02d}] gold={gold} real={a_real} blank={a_blank} swap={a_swap}", flush=True)
+            print(
+                f"[{i:02d}] gold={gold} real={a_real} blank={a_blank} swap={a_swap} "
+                f"cos(real,blank)={cos_real_blank[-1]:.3f}"
+                if cos_real_blank
+                else f"[{i:02d}] gold={gold} real={a_real} blank={a_blank} swap={a_swap}",
+                flush=True,
+            )
     h.remove()
 
     # cross-image repr similarity: how distinct are different real images?
@@ -122,8 +141,12 @@ def main():
     print(f"accuracy (real image)            : {acc:.3f}  (random=0.25)", flush=True)
     print(f"answer change REAL->BLANK        : {rb_rate:.3f}  ({chg_blank}/{n})", flush=True)
     print(f"answer change REAL->SWAP         : {rs_rate:.3f}  ({chg_swap}/{n})", flush=True)
-    print(f"repr cosine REAL vs BLANK        : {cb:.3f}  (low=projection encodes pixels)", flush=True)
-    print(f"repr cosine across DIFFERENT imgs: {cx:.3f}  (low=embeddings vary by image)", flush=True)
+    print(
+        f"repr cosine REAL vs BLANK        : {cb:.3f}  (low=projection encodes pixels)", flush=True
+    )
+    print(
+        f"repr cosine across DIFFERENT imgs: {cx:.3f}  (low=embeddings vary by image)", flush=True
+    )
 
     print("\n========== DIAGNOSIS ==========", flush=True)
     if cb > 0.98:

@@ -30,9 +30,7 @@ for s in json.load(open("outputs/infer_demo/samples.json")):
     # first user turn text (image placeholder will be auto-prepended)
     first_user = next(m for m in convs if m["role"] == "user")
     if isinstance(first_user["content"], list):
-        text = "\n".join(
-            it["text"] for it in first_user["content"] if it.get("type") == "text"
-        )
+        text = "\n".join(it["text"] for it in first_user["content"] if it.get("type") == "text")
     else:
         text = first_user["content"]
     first_gt = next(m for m in convs if m["role"] == "assistant")

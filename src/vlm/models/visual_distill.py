@@ -60,7 +60,13 @@ CLIP_IMAGE_MEAN: tuple[float, float, float] = (0.48145466, 0.4578275, 0.40821073
 CLIP_IMAGE_STD: tuple[float, float, float] = (0.26862954, 0.26130258, 0.27577711)
 
 DISTILL_METHODS: tuple[str, ...] = (
-    "repa", "eve", "vora", "softdepth", "relational", "vae", "breen"
+    "repa",
+    "eve",
+    "vora",
+    "softdepth",
+    "relational",
+    "vae",
+    "breen",
 )
 
 
@@ -206,8 +212,8 @@ class VisualDistillTeacher(nn.Module):
 
 def _proj_head(in_dim: int, out_dim: int, hidden: int, kind: str) -> nn.Module:
     """Projection head from LLM hidden to teacher space.
-      mlp:     RMSNorm -> Linear -> GELU -> Linear   (repa/eve/softdepth/vae)
-      linear:  RMSNorm -> Linear                     (vora, faithful AuxHead)
+    mlp:     RMSNorm -> Linear -> GELU -> Linear   (repa/eve/softdepth/vae)
+    linear:  RMSNorm -> Linear                     (vora, faithful AuxHead)
     """
     if kind == "linear":
         return nn.Sequential(nn.RMSNorm(in_dim), nn.Linear(in_dim, out_dim))

@@ -71,10 +71,16 @@ def main():
         except Exception as e:  # token-safe: print id + error class only, never the URL
             print(f"[prep] FAIL {rec['id'][:12]} {type(e).__name__}", flush=True)
             continue
-        out_jsonl.append({"id": rec["id"], "image": img_path, "caption": caption,
-                          "caption_type": rec.get("caption_type", "?")})
+        out_jsonl.append(
+            {
+                "id": rec["id"],
+                "image": img_path,
+                "caption": caption,
+                "caption_type": rec.get("caption_type", "?"),
+            }
+        )
         if (i + 1) % 10 == 0:
-            print(f"[prep] {i+1}/{len(records)} downloaded ({ok} ok)", flush=True)
+            print(f"[prep] {i + 1}/{len(records)} downloaded ({ok} ok)", flush=True)
 
     (OUT / "samples.jsonl").write_text("\n".join(json.dumps(r) for r in out_jsonl))
     print(f"[prep] DONE: {ok}/{len(records)} images -> {OUT}", flush=True)

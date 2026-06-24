@@ -4,9 +4,14 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1] / "neo_analysis"
-VLMS = [("NEO1.0-2B-SFT", "neo2bsft", "free"), ("NEO1.0-9B-SFT", "neo9bsft", "free"),
-        ("Gemma-4-12B", "gemma", "free"), ("SAIL-7B", "sail", "free"),
-        ("LLaVA-1.5-7B", "llava", "enc"), ("Qwen2.5-VL-7B", "qwen", "enc")]
+VLMS = [
+    ("NEO1.0-2B-SFT", "neo2bsft", "free"),
+    ("NEO1.0-9B-SFT", "neo9bsft", "free"),
+    ("Gemma-4-12B", "gemma", "free"),
+    ("SAIL-7B", "sail", "free"),
+    ("LLaVA-1.5-7B", "llava", "enc"),
+    ("Qwen2.5-VL-7B", "qwen", "enc"),
+]
 REFS = [("DINOv2", "dino"), ("CLIP-L", "clip"), ("SigLIP", "siglip")]
 
 
@@ -33,14 +38,17 @@ out = {}
 for name, tag, fam in VLMS:
     f = ld(tag)
     if f is None:
-        print(f"MISSING {tag}"); continue
+        print(f"MISSING {tag}")
+        continue
     L = f.shape[0]
     out[name] = dict(family=fam, L=L)
     for rn, Y in refs.items():
         out[name][rn] = [cka(f[l], Y) for l in range(L)]
     c = out[name]["DINOv2"]
-    print(f"{name:16}({fam}) L={L} DINO: L0={c[0]:.2f} q.25={c[int(.25*(L-1))]:.2f} "
-          f"mid={c[L//2]:.2f} q.75={c[int(.75*(L-1))]:.2f} last={c[-1]:.2f} "
-          f"peak={max(c):.2f}@rel{np.argmax(c)/(L-1):.2f} rise={max(c)-c[0]:+.2f}")
+    print(
+        f"{name:16}({fam}) L={L} DINO: L0={c[0]:.2f} q.25={c[int(0.25 * (L - 1))]:.2f} "
+        f"mid={c[L // 2]:.2f} q.75={c[int(0.75 * (L - 1))]:.2f} last={c[-1]:.2f} "
+        f"peak={max(c):.2f}@rel{np.argmax(c) / (L - 1):.2f} rise={max(c) - c[0]:+.2f}"
+    )
 (ROOT / "cka_results.json").write_text(json.dumps(out, indent=1))
 print("wrote cka_results.json (", len(out), "models )")

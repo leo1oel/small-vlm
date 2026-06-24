@@ -31,8 +31,8 @@ sys.path.insert(0, str(REPO / "src"))
 sys.path.insert(0, str(REPO / "devtools"))
 
 from hydra import compose, initialize_config_dir  # noqa: E402
-
 from test_chunked_ce import build_batch, to_device  # noqa: E402
+
 from vlm.config import register_configs  # noqa: E402
 from vlm.data.data_arguments import DataArguments  # noqa: E402
 from vlm.utils import conversation as conversation_lib  # noqa: E402
@@ -113,7 +113,9 @@ def main():
     for k in g_full:
         r = rel_diff(g_full[k], g_off[k])
         assert r < 1e-4, f"baseline grad[{k}] rel={r}"
-    print(f"1. baseline parity (aux off): loss {loss_off:.8f} == full {loss_full:.8f} OK", flush=True)
+    print(
+        f"1. baseline parity (aux off): loss {loss_off:.8f} == full {loss_full:.8f} OK", flush=True
+    )
 
     # ---- 2. aux numerical correctness vs naive reference -------------------
     # Capture the spliced layer-k hidden states AND the spliced labels from a
@@ -124,10 +126,12 @@ def main():
         lambda m, a, o: cap.__setitem__("h", (o[0] if isinstance(o, tuple) else o).detach())
     )
     orig_prepare = model.prepare_inputs_labels_for_multimodal
+
     def _prepare_and_capture(*a, **kw):
         out = orig_prepare(*a, **kw)
         cap["labels"] = out[5].detach()
         return out
+
     model.prepare_inputs_labels_for_multimodal = _prepare_and_capture
     set_aux(model, layers=[], chunk=0)
     with torch.no_grad():

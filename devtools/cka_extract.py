@@ -12,6 +12,7 @@ pairs row-for-row. Saves neo_analysis/cka_<tag>.npz {feats, idx}.
 
 Usage: python devtools/cka_extract.py <kind> <model_id> <tag> [N]
 """
+
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ POST = "Answer with the option's letter from the given choices directly.\n"
 
 def vmc():
     import datasets
+
     return datasets.load_dataset("suyc21/VMCBench", split="dev")
 
 
@@ -41,9 +43,11 @@ def main():
     stride = max(1, len(ds) // N)
     idx = list(range(0, len(ds), stride))[:N]
     from transformers import AutoProcessor
+
     feats = []  # list over images of (L+1, H)
     if kind in ("dino", "clip", "siglip"):
         from transformers import AutoModel
+
         proc = AutoProcessor.from_pretrained(model_id)
         model = AutoModel.from_pretrained(model_id, dtype=torch.bfloat16).to(DEV).eval()
         for i in idx:
@@ -73,34 +77,51 @@ def main():
             raise ValueError(kind)
         proc = AutoProcessor.from_pretrained(model_id)
         import os as _os
+
         # big MoE (30B/26B) won't fit one a40 -> device_map=auto shards it.
         big = _os.environ.get("DEVMAP")
         if _os.environ.get("RANDINIT"):
             # causal control: identical architecture, RANDOM (untrained) weights.
             from transformers import AutoConfig
+
             cfg = AutoConfig.from_pretrained(model_id)
             model = M(cfg).to(torch.bfloat16).to(DEV).eval()
-            print(f"[cka] RANDOM-INIT {kind} ({sum(p.numel() for p in model.parameters())/1e9:.2f}B)", flush=True)
+            print(
+                f"[cka] RANDOM-INIT {kind} ({sum(p.numel() for p in model.parameters()) / 1e9:.2f}B)",
+                flush=True,
+            )
         elif big:
             model = M.from_pretrained(model_id, dtype=torch.bfloat16, device_map="auto").eval()
         else:
             model = M.from_pretrained(model_id, dtype=torch.bfloat16).to(DEV).eval()
-        img_id = (getattr(model.config, "image_token_index", None) or
-                  getattr(model.config, "image_token_id", None))
+        img_id = getattr(model.config, "image_token_index", None) or getattr(
+            model.config, "image_token_id", None
+        )
         for i in idx:
             img = ds[i]["image"].convert("RGB")
             q = prompt(ds[i])
             if kind in ("gemma", "gemma4moe"):
-                msg = [{"role": "user", "content": [{"type": "image", "image": img},
-                        {"type": "text", "text": q}]}]
-                b = proc.apply_chat_template(msg, add_generation_prompt=True, tokenize=True,
-                                             return_dict=True, return_tensors="pt")
+                msg = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image", "image": img}, {"type": "text", "text": q}],
+                    }
+                ]
+                b = proc.apply_chat_template(
+                    msg,
+                    add_generation_prompt=True,
+                    tokenize=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                )
                 b = {k: (v.to(DEV) if isinstance(v, torch.Tensor) else v) for k, v in b.items()}
             else:
-                msg = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}]
+                msg = [
+                    {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}
+                ]
                 pr = proc.apply_chat_template(msg, add_generation_prompt=True)
                 b = proc(images=[img], text=[pr], return_tensors="pt").to(DEV)
-            vm = (b["input_ids"][0] == img_id)
+            vm = b["input_ids"][0] == img_id
             with torch.no_grad():
                 out = model(**b, output_hidden_states=True)
             hs = out.hidden_states  # (L+1) of (1,S,H)

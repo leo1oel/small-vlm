@@ -23,6 +23,7 @@ VARIANTS = [
 
 def main():
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -34,8 +35,10 @@ def main():
             continue
         c = curves(rows)
         data.append((name, color, pb, c))
-        print(f"{name}: n={c['n']} intact={c['intact']:.3f} swap={c['swap']:.3f} "
-              f"R0={c['R0']:+.3f} funcCoM rel={c['com_rel']:.2f} rho@L1={c['rho'][0]:.3f}")
+        print(
+            f"{name}: n={c['n']} intact={c['intact']:.3f} swap={c['swap']:.3f} "
+            f"R0={c['R0']:+.3f} funcCoM rel={c['com_rel']:.2f} rho@L1={c['rho'][0]:.3f}"
+        )
 
     fig, ax = plt.subplots(1, 2, figsize=(13, 5))
     for name, color, pb, c in data:
@@ -43,12 +46,15 @@ def main():
         rn = [c["retained"][i] / c["R0"] if c["R0"] else 0 for i in range(c["N"])]
         ax[0].plot(x, rn, "-o", ms=3, color=color, label=f"{name}  CoM={c['com_rel']:.2f}")
         ax[1].plot(x, c["rho"], "-o", ms=3, color=color, label=name)
-        ax[0].axvline(pb, color=color, ls=":", alpha=.4)
-        ax[1].axvline(pb, color=color, ls=":", alpha=.4)
-    ax[0].axhline(0.5, color="k", lw=.6, ls="--", alpha=.4)
-    ax[0].axvspan(0.35, 0.6, color="gray", alpha=.10)
-    ax[0].set_title("retained(d)/R0 by NEO version x scale\n(dotted = each model's pre-Buffer boundary)")
-    ax[0].set_xlabel("relative blocked depth d / N"); ax[0].set_ylabel("fraction of image signal")
+        ax[0].axvline(pb, color=color, ls=":", alpha=0.4)
+        ax[1].axvline(pb, color=color, ls=":", alpha=0.4)
+    ax[0].axhline(0.5, color="k", lw=0.6, ls="--", alpha=0.4)
+    ax[0].axvspan(0.35, 0.6, color="gray", alpha=0.10)
+    ax[0].set_title(
+        "retained(d)/R0 by NEO version x scale\n(dotted = each model's pre-Buffer boundary)"
+    )
+    ax[0].set_xlabel("relative blocked depth d / N")
+    ax[0].set_ylabel("fraction of image signal")
     ax[0].legend(fontsize=8)
     ax[1].set_title("rho(l): representational content-fusion rate")
     ax[1].set_xlabel("relative depth l / N")

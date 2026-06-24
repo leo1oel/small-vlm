@@ -938,7 +938,9 @@ class VLMGenTaskEncoder(VLMChatTaskEncoder):  # pyright: ignore[reportUntypedBas
     ):
         super().__init__(processor, data_args)
         if not isinstance(self.image_processor, RawImageProcessor):
-            raise ValueError("dataset.task='generation' requires the encoder-free RawImageProcessor")
+            raise ValueError(
+                "dataset.task='generation' requires the encoder-free RawImageProcessor"
+            )
         # patch_size None -> reuse the connector's 48px model patch (legacy). When
         # the model runs an independent gen embedder (e.g. 16px), the dataset must
         # patchify at that SAME size, else target dim (psz^2*3) mismatches the

@@ -25,6 +25,7 @@ POST = "Answer with the option's letter from the given choices directly.\n"
 
 def load_vmcbench():
     import datasets
+
     return datasets.load_dataset("suyc21/VMCBench", split="dev")
 
 
@@ -34,8 +35,12 @@ def doc_to_prompt(doc):
 
 
 def find_layers(model):
-    for path in ("model.language_model.layers", "language_model.model.layers",
-                 "model.layers", "language_model.layers"):
+    for path in (
+        "model.language_model.layers",
+        "language_model.model.layers",
+        "model.layers",
+        "language_model.layers",
+    ):
         obj = model
         ok = True
         for p in path.split("."):
@@ -52,16 +57,21 @@ def find_layers(model):
 class EncProbe:
     def __init__(self, model_id, kind):
         from transformers import AutoProcessor
+
         self.kind = kind
         self.proc = AutoProcessor.from_pretrained(model_id)
         if kind == "llava":
             from transformers import LlavaForConditionalGeneration as M
         else:
             from transformers import Qwen2_5_VLForConditionalGeneration as M
-        self.model = M.from_pretrained(model_id, dtype=torch.bfloat16,
-                                       attn_implementation="eager").to(DEV).eval()
-        self.img_id = (getattr(self.model.config, "image_token_index", None) or
-                       getattr(self.model.config, "image_token_id", None))
+        self.model = (
+            M.from_pretrained(model_id, dtype=torch.bfloat16, attn_implementation="eager")
+            .to(DEV)
+            .eval()
+        )
+        self.img_id = getattr(self.model.config, "image_token_index", None) or getattr(
+            self.model.config, "image_token_id", None
+        )
         self.tok = self.proc.tokenizer
         self.letter_ids = {c: self.tok(c, add_special_tokens=False).input_ids[0] for c in "ABCD"}
         self.layers = find_layers(self.model)
@@ -94,6 +104,7 @@ class EncProbe:
                     kwargs["attention_mask"] = self._isolated(am)
                     return args, kwargs
             return None
+
         return f
 
     def _post(self, k):
@@ -101,13 +112,16 @@ class EncProbe:
             if self.capture:
                 h = (out[0] if isinstance(out, tuple) else out)[0]
                 self.cap[k] = h[-1].float()
+
         return f
 
     def _build(self, image, question):
-        msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}]
+        msgs = [
+            {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}
+        ]
         prompt = self.proc.apply_chat_template(msgs, add_generation_prompt=True)
         b = self.proc(images=[image], text=[prompt], return_tensors="pt").to(DEV)
-        vm = (b["input_ids"][0] == self.img_id)
+        vm = b["input_ids"][0] == self.img_id
         return b, vm
 
     def _build_text(self, question):
@@ -140,8 +154,12 @@ class EncProbe:
         bI, vmI = self._build(doc["image"].convert("RGB"), q)
         bIp, vmIp = self._build(donor["image"].convert("RGB"), q)
         bt = self._build_text(q)
-        rec = dict(gt=gt, category=doc["category"], n_vis=int(vmI.sum()),
-                   seq_len=int(bI["input_ids"].shape[1]))
+        rec = dict(
+            gt=gt,
+            category=doc["category"],
+            n_vis=int(vmI.sum()),
+            seq_len=int(bI["input_ids"].shape[1]),
+        )
         # rho
         cI = self._cap_all(bI, vmI)
         cIp = self._cap_all(bIp, vmIp)
@@ -156,7 +174,8 @@ class EncProbe:
                 dsw.append((cI[k] - cIp[k]).norm().item())
                 dno.append((cI[k] - c0[k]).norm().item())
             else:
-                dsw.append(float("nan")); dno.append(float("nan"))
+                dsw.append(float("nan"))
+                dno.append(float("nan"))
         rec["rho"] = dict(dswap=dsw, dnoimg=dno)
         # intact / swap
         self.mode, self.vm = "none", vmI
@@ -194,8 +213,11 @@ def main():
     stride = max(1, n // max(n_causal, 1))
     causal_set = set(range(0, n, stride))
     done = sum(1 for _ in open(out_path)) if out_path.exists() else 0
-    print(f"[encfuse] {model_id} kind={kind} n={n} n_causal={len(causal_set)} "
-          f"(strided/{stride}) resume={done}", flush=True)
+    print(
+        f"[encfuse] {model_id} kind={kind} n={n} n_causal={len(causal_set)} "
+        f"(strided/{stride}) resume={done}",
+        flush=True,
+    )
     pr = EncProbe(model_id, kind)
     print(f"[encfuse] N_layers={pr.N} img_id={pr.img_id}", flush=True)
     f = open(out_path, "a")
@@ -211,7 +233,8 @@ def main():
             rec = dict(i=i, skip=f"{type(e).__name__}: {e}")
         f.write(json.dumps(rec) + "\n")
         if (i + 1) % 25 == 0:
-            f.flush(); torch.cuda.empty_cache()
+            f.flush()
+            torch.cuda.empty_cache()
             print(f"[encfuse] {i + 1}/{n}", flush=True)
     f.close()
     print("[encfuse] done", flush=True)

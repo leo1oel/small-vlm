@@ -47,7 +47,10 @@ def main():
     steps = int(args.steps if args.steps is not None else cfg.generation_sample_steps)
     out_dir = Path(args.out) if args.out else Path(args.ckpt) / "samples"
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[infer] res={res} grid={grid}x{grid} n_patch={n_patch} cfg={cfg_scale} steps={steps}", flush=True)
+    print(
+        f"[infer] res={res} grid={grid}x{grid} n_patch={n_patch} cfg={cfg_scale} steps={steps}",
+        flush=True,
+    )
 
     # Left-pad the batch of captions (matches training assembly).
     processor.tokenizer.padding_side = "left"

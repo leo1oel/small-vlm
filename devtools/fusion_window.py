@@ -33,6 +33,7 @@ POST = "Answer with the option's letter from the given choices directly.\n"
 
 def load_vmcbench():
     import datasets
+
     return datasets.load_dataset("suyc21/VMCBench", split="dev")
 
 
@@ -42,8 +43,12 @@ def doc_to_prompt(doc):
 
 
 def find_layers(model):
-    for path in ("model.language_model.layers", "language_model.model.layers",
-                 "model.layers", "language_model.layers"):
+    for path in (
+        "model.language_model.layers",
+        "language_model.model.layers",
+        "model.layers",
+        "language_model.layers",
+    ):
         obj = model
         ok = True
         for p in path.split("."):
@@ -60,6 +65,7 @@ def find_layers(model):
 class WinProbe:
     def __init__(self, model_id, kind):
         from transformers import AutoProcessor
+
         self.kind = kind
         self.proc = AutoProcessor.from_pretrained(model_id)
         if kind == "llava":
@@ -78,10 +84,14 @@ class WinProbe:
             from transformers import JanusForConditionalGeneration as M
         else:
             raise ValueError(kind)
-        self.model = M.from_pretrained(model_id, dtype=torch.bfloat16,
-                                       attn_implementation="eager").to(DEV).eval()
-        self.img_id = (getattr(self.model.config, "image_token_index", None) or
-                       getattr(self.model.config, "image_token_id", None))
+        self.model = (
+            M.from_pretrained(model_id, dtype=torch.bfloat16, attn_implementation="eager")
+            .to(DEV)
+            .eval()
+        )
+        self.img_id = getattr(self.model.config, "image_token_index", None) or getattr(
+            self.model.config, "image_token_id", None
+        )
         self.tok = self.proc.tokenizer
         self.letter_ids = {c: self.tok(c, add_special_tokens=False).input_ids[0] for c in "ABCD"}
         self.layers = find_layers(self.model)
@@ -112,8 +122,9 @@ class WinProbe:
 
     def _pre(self, i):
         def f(_m, args, kwargs):
-            active = ((self.mode == "prefix" and i < self.depth) or
-                      (self.mode == "suffix" and i >= self.depth))
+            active = (self.mode == "prefix" and i < self.depth) or (
+                self.mode == "suffix" and i >= self.depth
+            )
             if active and self.vm is not None:
                 am = kwargs.get("attention_mask")
                 if am is not None and am.dim() == 4:
@@ -121,21 +132,35 @@ class WinProbe:
                     kwargs["attention_mask"] = self._isolated(am)
                     return args, kwargs
             return None
+
         return f
 
     def _build(self, image, question):
         if self.kind == "gemma":
-            msg = [{"role": "user", "content": [{"type": "image", "image": image},
-                    {"type": "text", "text": question}]}]
-            b = self.proc.apply_chat_template(msg, add_generation_prompt=True, tokenize=True,
-                                              return_dict=True, return_tensors="pt")
+            msg = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": question},
+                    ],
+                }
+            ]
+            b = self.proc.apply_chat_template(
+                msg,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
             b = {k: (v.to(DEV) if isinstance(v, torch.Tensor) else v) for k, v in b.items()}
         else:
-            msg = [{"role": "user", "content": [{"type": "image"},
-                    {"type": "text", "text": question}]}]
+            msg = [
+                {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}
+            ]
             prompt = self.proc.apply_chat_template(msg, add_generation_prompt=True)
             b = self.proc(images=[image], text=[prompt], return_tensors="pt").to(DEV)
-        vm = (b["input_ids"][0] == self.img_id)
+        vm = b["input_ids"][0] == self.img_id
         return b, vm
 
     @torch.no_grad()
@@ -168,8 +193,12 @@ class WinProbe:
         q = doc_to_prompt(doc)
         bI, vmI = self._build(doc["image"].convert("RGB"), q)
         bIp, vmIp = self._build(donor["image"].convert("RGB"), q)
-        rec = dict(gt=gt, category=doc.get("category"), n_vis=int(vmI.sum()),
-                   seq_len=int(bI["input_ids"].shape[1]))
+        rec = dict(
+            gt=gt,
+            category=doc.get("category"),
+            n_vis=int(vmI.sum()),
+            seq_len=int(bI["input_ids"].shape[1]),
+        )
         self.mode, self.vm = "none", None
         rec["intact"] = self._score(self._logits(bI), gt)
         rec["swap"] = self._score(self._logits(bIp), gt)
@@ -199,8 +228,11 @@ def main():
     stride = max(1, n // max(n_causal, 1))
     causal_set = set(range(0, n, stride))
     done = sum(1 for _ in open(out_path)) if out_path.exists() else 0
-    print(f"[win] {model_id} kind={kind} n={n} nc={len(causal_set)} sweeps={sweeps} "
-          f"rowscope={rowscope} resume={done}", flush=True)
+    print(
+        f"[win] {model_id} kind={kind} n={n} nc={len(causal_set)} sweeps={sweeps} "
+        f"rowscope={rowscope} resume={done}",
+        flush=True,
+    )
     pr = WinProbe(model_id, kind)
     pr.rowscope = rowscope
     print(f"[win] N_layers={pr.N} img_id={pr.img_id}", flush=True)
@@ -217,7 +249,8 @@ def main():
             rec = dict(i=i, skip=f"{type(e).__name__}: {e}")
         f.write(json.dumps(rec) + "\n")
         if (i + 1) % 25 == 0:
-            f.flush(); torch.cuda.empty_cache()
+            f.flush()
+            torch.cuda.empty_cache()
             print(f"[win] {i + 1}/{n}", flush=True)
     f.close()
     print("[win] done", flush=True)

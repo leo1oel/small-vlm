@@ -112,7 +112,9 @@ def attach_distill_teacher(model: Any) -> None:
 
     teacher = VisualDistillTeacher(
         kind=str(getattr(model.config, "visual_distill_teacher_kind", "clip")),
-        name=str(getattr(model.config, "visual_distill_teacher_name", "openai/clip-vit-base-patch16")),
+        name=str(
+            getattr(model.config, "visual_distill_teacher_name", "openai/clip-vit-base-patch16")
+        ),
         out_size=int(getattr(model.config, "visual_distill_teacher_out_size", 224) or 224),
     )
     want_dim = int(getattr(model.config, "visual_distill_teacher_dim", 0) or 0)
@@ -152,7 +154,10 @@ def init_patch_stem_from_encoder(model: Any, model_cfg: ModelConfig) -> None:
     name = str(getattr(model_cfg.connector, "patch_stem_name", "google/siglip-base-patch16-224"))
     # Rescale-only inputs are assumed by the stem's [-1,1] renorm; a non-default
     # image_mean/std would feed the transplanted conv a distribution it never saw.
-    if model_cfg.visual_encoder.image_mean is not None or model_cfg.visual_encoder.image_std is not None:
+    if (
+        model_cfg.visual_encoder.image_mean is not None
+        or model_cfg.visual_encoder.image_std is not None
+    ):
         raise ValueError(
             "connector.patch_stem assumes rescale-only patches ([0,1] -> [-1,1] "
             "renorm inside the stem); set visual_encoder.image_mean/std to null."
@@ -198,12 +203,8 @@ def init_patch_stem_from_encoder(model: Any, model_cfg: ModelConfig) -> None:
             from transformers.image_utils import OPENAI_CLIP_MEAN, OPENAI_CLIP_STD
 
             dev = embedder.stem_mean.device
-            embedder.stem_mean.copy_(
-                torch.tensor(OPENAI_CLIP_MEAN, device=dev).view(1, 3, 1, 1)
-            )
-            embedder.stem_std.copy_(
-                torch.tensor(OPENAI_CLIP_STD, device=dev).view(1, 3, 1, 1)
-            )
+            embedder.stem_mean.copy_(torch.tensor(OPENAI_CLIP_MEAN, device=dev).view(1, 3, 1, 1))
+            embedder.stem_std.copy_(torch.tensor(OPENAI_CLIP_STD, device=dev).view(1, 3, 1, 1))
     if bool(getattr(model_cfg.connector, "patch_stem_freeze", False)):
         stem.weight.requires_grad_(False)
         if stem.bias is not None:
@@ -376,13 +377,19 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         config.generation_embed_posemb_size = int(model_cfg.generation.embed_posemb_size)
         config.generation_embed_bottleneck_dim = int(model_cfg.generation.embed_bottleneck_dim)
         config.generation_perceptual_enabled = bool(model_cfg.generation.perceptual_enabled)
-        config.generation_perceptual_lpips_weight = float(model_cfg.generation.perceptual_lpips_weight)
-        config.generation_perceptual_dino_weight = float(model_cfg.generation.perceptual_dino_weight)
+        config.generation_perceptual_lpips_weight = float(
+            model_cfg.generation.perceptual_lpips_weight
+        )
+        config.generation_perceptual_dino_weight = float(
+            model_cfg.generation.perceptual_dino_weight
+        )
         config.generation_perceptual_lpips_net = str(model_cfg.generation.perceptual_lpips_net)
         config.generation_perceptual_dino_model = str(model_cfg.generation.perceptual_dino_model)
         config.generation_perceptual_resize = int(model_cfg.generation.perceptual_resize)
         config.generation_perceptual_t_gate = float(model_cfg.generation.perceptual_t_gate)
-        config.generation_perceptual_warmup_steps = int(model_cfg.generation.perceptual_warmup_steps)
+        config.generation_perceptual_warmup_steps = int(
+            model_cfg.generation.perceptual_warmup_steps
+        )
         config.generation_rope_2d = bool(model_cfg.generation.rope_2d)
         # Visual-distill structural fields (spec 2026-06-21) must be on the
         # config BEFORE construction — the causal __init__ builds the projection
@@ -482,6 +489,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         if bool(getattr(model_cfg.language_model, "random_init", False)):
             inner = model.model
             lm_mods = [inner.embed_tokens, inner.norm, *list(inner.layers)]
+
             # transformers 5.x init.normal_/ones_/zeros_ SKIP any tensor flagged
             # _is_hf_initialized=True (which every from_pretrained param carries),
             # so a bare .apply(_init_weights) is a silent no-op. Clear the flag on
@@ -545,21 +553,15 @@ def vlm(cfg: AppConfig) -> None:
         # visual_aux_objective so they serialize into checkpoint config.json and
         # inference self-describes the mask mode/window.
         model.config.cross_modal_mask_mode = str(cfg.model.cross_modal_mask.mode)
-        model.config.cross_modal_mask_window = [
-            int(x) for x in cfg.model.cross_modal_mask.window
-        ]
-        model.config.cross_modal_mask_bidirectional = bool(
-            cfg.model.cross_modal_mask.bidirectional
-        )
+        model.config.cross_modal_mask_window = [int(x) for x in cfg.model.cross_modal_mask.window]
+        model.config.cross_modal_mask_bidirectional = bool(cfg.model.cross_modal_mask.bidirectional)
         # Image-grounding margin loss dials (spec 2026-06-18). Pure training
         # loss, no module to build -> set here on model.config like the
         # cross_modal dials (branch-agnostic, before train()); flat names so
         # they serialize into checkpoint config.json (visual_aux pattern) and a
         # resume re-reads the same loss. weight=0.0 -> bit-identical baseline.
         model.config.grounding_weight = (
-            float(cfg.model.grounding.weight)
-            if bool(cfg.model.grounding.enabled)
-            else 0.0
+            float(cfg.model.grounding.weight) if bool(cfg.model.grounding.enabled) else 0.0
         )
         model.config.grounding_margin = float(cfg.model.grounding.margin)
         model.config.grounding_corruption = str(cfg.model.grounding.corruption)

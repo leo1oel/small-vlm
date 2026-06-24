@@ -80,7 +80,9 @@ def assemble_generation_inputs(
     zeros_text = torch.zeros(bsz, text_len, dtype=torch.bool, device=device)
     zeros_t = torch.zeros(bsz, 1, dtype=torch.bool, device=device)
     ones_img = torch.ones(bsz, n_img, dtype=torch.bool, device=device)
-    prefix_mask = torch.cat([tm, ones_t, torch.zeros(bsz, n_img, dtype=torch.bool, device=device)], dim=1)
+    prefix_mask = torch.cat(
+        [tm, ones_t, torch.zeros(bsz, n_img, dtype=torch.bool, device=device)], dim=1
+    )
     image_mask = torch.cat([zeros_text, zeros_t, ones_img], dim=1)
     seq_len = inputs_embeds.shape[1]
     position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(bsz, seq_len)

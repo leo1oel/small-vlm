@@ -462,9 +462,7 @@ def inject_query_placeholders(
                 turn[key] = text.rstrip() + "\n" + qt
                 break
     else:
-        raise ValueError(
-            f"unknown query_placement {mode!r} (after_image|after_text)"
-        )
+        raise ValueError(f"unknown query_placement {mode!r} (after_image|after_text)")
 
 
 def preprocess_llama_2(
@@ -606,7 +604,9 @@ def preprocess_qwen(
         tokenizer.convert_tokens_to_ids(data_args.audio_token) if has_image else None
     )
     query_token_index = (
-        tokenizer.convert_tokens_to_ids(data_args.query_token) if (has_image and use_query) else None
+        tokenizer.convert_tokens_to_ids(data_args.query_token)
+        if (has_image and use_query)
+        else None
     )
     im_start = tokenizer.convert_tokens_to_ids("<|im_start|>")
     im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")

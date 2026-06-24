@@ -26,6 +26,7 @@ POST = "Answer with the option's letter from the given choices directly.\n"
 
 def load_vmcbench():
     import datasets
+
     return datasets.load_dataset("suyc21/VMCBench", split="dev")
 
 
@@ -49,10 +50,14 @@ def main():
         from transformers import Gemma4UnifiedForConditionalGeneration as M
     else:
         raise ValueError(kind)
-    model = M.from_pretrained(model_id, dtype=torch.bfloat16,
-                             attn_implementation="eager").to(DEV).eval()
-    img_id = getattr(model.config, "image_token_index", None) or \
-        getattr(model.config, "image_token_id", None)
+    model = (
+        M.from_pretrained(model_id, dtype=torch.bfloat16, attn_implementation="eager")
+        .to(DEV)
+        .eval()
+    )
+    img_id = getattr(model.config, "image_token_index", None) or getattr(
+        model.config, "image_token_id", None
+    )
     ds = load_vmcbench()
     n = min(n, len(ds))
 
@@ -65,21 +70,29 @@ def main():
             img = doc["image"].convert("RGB")
             q = doc_to_prompt(doc)
             if kind == "gemma":
-                messages = [{"role": "user", "content": [
-                    {"type": "image", "image": img}, {"type": "text", "text": q}]}]
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image", "image": img}, {"type": "text", "text": q}],
+                    }
+                ]
                 inp = proc.apply_chat_template(
-                    messages, add_generation_prompt=True, tokenize=True,
-                    return_dict=True, return_tensors="pt")
-                inp = {k: (v.to(DEV) if isinstance(v, torch.Tensor) else v)
-                       for k, v in inp.items()}
+                    messages,
+                    add_generation_prompt=True,
+                    tokenize=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                )
+                inp = {k: (v.to(DEV) if isinstance(v, torch.Tensor) else v) for k, v in inp.items()}
             else:
-                messages = [{"role": "user", "content": [
-                    {"type": "image"}, {"type": "text", "text": q}]}]
+                messages = [
+                    {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}
+                ]
                 prompt = proc.apply_chat_template(messages, add_generation_prompt=True)
                 inp = proc(images=[img], text=[prompt], return_tensors="pt").to(DEV)
             out = model(**inp, output_attentions=True)
             ids = inp["input_ids"][0]
-            vis = (ids == img_id)
+            vis = ids == img_id
             if not bool(vis.any()):
                 continue
             attns = out.attentions  # tuple(L) of (1,H,S,S)
@@ -89,10 +102,11 @@ def main():
                 per_layer_sink = [0.0] * L
             first_vis = int(vis.nonzero()[0])
             # sink class = non-image tokens BEFORE the image (system/template)
-            pre = torch.zeros_like(vis); pre[:first_vis] = True
+            pre = torch.zeros_like(vis)
+            pre[:first_vis] = True
             for li, a in enumerate(attns):
                 am = a[0].float().mean(0)  # mean over heads -> (S,S)
-                last = am[-1]              # last-token query
+                last = am[-1]  # last-token query
                 per_layer_img[li] += last[vis].sum().item()
                 per_layer_sink[li] += last[pre].sum().item()
             cnt += 1
@@ -108,15 +122,17 @@ def main():
 
     img = [x / max(cnt, 1) for x in per_layer_img]
     sink = [x / max(cnt, 1) for x in per_layer_sink]
-    rec = dict(model=model_id, kind=kind, n=cnt, n_layers=len(img),
-               last2img=img, last2sink=sink)
+    rec = dict(model=model_id, kind=kind, n=cnt, n_layers=len(img), last2img=img, last2sink=sink)
     out = json.loads(out_path.read_text()) if out_path.exists() else {}
     out[model_id] = rec
     out_path.write_text(json.dumps(out, indent=1))
     import statistics as st
-    print(f"[encattn] {model_id}: last->image mean={st.mean(img):.3f} "
-          f"peak={max(img):.3f}@L{img.index(max(img))} | last->sink mean={st.mean(sink):.3f}",
-          flush=True)
+
+    print(
+        f"[encattn] {model_id}: last->image mean={st.mean(img):.3f} "
+        f"peak={max(img):.3f}@L{img.index(max(img))} | last->sink mean={st.mean(sink):.3f}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

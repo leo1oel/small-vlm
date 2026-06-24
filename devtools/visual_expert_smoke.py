@@ -25,6 +25,9 @@ import tempfile
 import torch
 from omegaconf import OmegaConf
 
+# reuse the encoder-free batch builders from the xmodal smoke
+from xmodal_smoke import make_image, splice  # noqa: E402
+
 from vlm.config.config_schema import (
     ConnectorConfig,
     LanguageModelConfig,
@@ -34,9 +37,6 @@ from vlm.config.config_schema import (
     VisualExpertConfig,
 )
 from vlm.vlm import load_model
-
-# reuse the encoder-free batch builders from the xmodal smoke
-from xmodal_smoke import make_image, splice  # noqa: E402
 
 OK = True
 
@@ -62,7 +62,10 @@ def build(device: str, base_lm: str, from_pretrained: str | None = None):
     )
     trainer_cfg = OmegaConf.structured(
         TrainerConfig(
-            name="smoke", bf16=bf16, fp16=False, attn_implementation="sdpa",
+            name="smoke",
+            bf16=bf16,
+            fp16=False,
+            attn_implementation="sdpa",
             from_pretrained=from_pretrained,
         )
     )
@@ -100,8 +103,11 @@ def main() -> None:
         model, processor, device, dtype, questions=[[5, 6, 7], [8, 9]]
     )
     out = model(
-        input_ids=input_ids, attention_mask=attn, labels=labels,
-        images=images, image_position_ids=poss,
+        input_ids=input_ids,
+        attention_mask=attn,
+        labels=labels,
+        images=images,
+        image_position_ids=poss,
     )
     check("train: finite loss", torch.isfinite(out.loss).item(), f"loss={out.loss.item():.4f}")
     out.loss.backward()
@@ -117,13 +123,19 @@ def main() -> None:
     # (3) generate(): prefill must route image tokens through mlp_visual
     model.eval()
     calls = {"n": 0}
-    hooks = [m.mlp_visual.register_forward_hook(lambda *_: calls.__setitem__("n", calls["n"] + 1))
-             for m in experts]
+    hooks = [
+        m.mlp_visual.register_forward_hook(lambda *_: calls.__setitem__("n", calls["n"] + 1))
+        for m in experts
+    ]
     prompt_ids = torch.tensor([[model.config.image_token_index, 5, 6, 7]], device=device)
     pix, pos = make_image(processor, device, dtype)
     with torch.no_grad():
         gen = model.generate(
-            inputs=prompt_ids, images=[pix], image_position_ids=[pos], max_new_tokens=3, do_sample=False,
+            inputs=prompt_ids,
+            images=[pix],
+            image_position_ids=[pos],
+            max_new_tokens=3,
+            do_sample=False,
         )
     for h in hooks:
         h.remove()
@@ -149,7 +161,9 @@ def main() -> None:
         if device == "cuda":
             torch.cuda.empty_cache()
         rl, _ = build(device, args.base_lm, from_pretrained=d)
-        check("reload: config carries visual_expert", bool(getattr(rl.config, "visual_expert", False)))
+        check(
+            "reload: config carries visual_expert", bool(getattr(rl.config, "visual_expert", False))
+        )
         rexperts = rl.model._visual_expert_mlps
         check("reload: experts rebuilt", len(rexperts) == n_layers)
         rl_w = rexperts[0].mlp_visual.gate_proj.weight.detach().to(saved.device)

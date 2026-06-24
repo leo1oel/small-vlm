@@ -39,13 +39,17 @@ QWEN_SIDE = int(os.environ.get("QWEN_SIDE", "448"))
 
 def load_vmcbench():
     import datasets
+
     return datasets.load_dataset("suyc21/VMCBench", split="dev")
 
 
 def load_dataset_bench(bench):
     import datasets
+
     if bench == "mmstar":
-        return datasets.load_dataset("Lin-Chen/MMStar")["val"]  # 1500 MCQ, options embedded in `question`
+        return datasets.load_dataset("Lin-Chen/MMStar")[
+            "val"
+        ]  # 1500 MCQ, options embedded in `question`
     if bench == "worldbench":
         # 2000 MCQ, 7 visually-diverse domains; option_a..d + bare-letter answer + `domain` label.
         # Dataset is stored ORDERED BY DOMAIN -> shuffle(seed=0) so any contiguous slice / strided
@@ -66,8 +70,12 @@ def doc_to_prompt(doc):
 
 
 def find_layers(model):
-    for path in ("model.language_model.layers", "language_model.model.layers",
-                 "model.layers", "language_model.layers"):
+    for path in (
+        "model.language_model.layers",
+        "language_model.model.layers",
+        "model.layers",
+        "language_model.layers",
+    ):
         obj = model
         ok = True
         for p in path.split("."):
@@ -84,6 +92,7 @@ def find_layers(model):
 class PatchProbe:
     def __init__(self, model_id, kind):
         from transformers import AutoProcessor
+
         self.kind = kind
         self.trc = kind in ("onevision15", "onevision2")  # self-contained trust_remote_code models
         # Qwen is native-resolution => image-token count varies per image, which would make
@@ -103,37 +112,55 @@ class PatchProbe:
             from transformers import Qwen2_5_VLForConditionalGeneration as M
         elif kind == "gemma":
             from transformers import Gemma4UnifiedForConditionalGeneration as M
-        elif kind == "internvl":   # InternVL3.5-{8B-HF dense, 30B-A3B-HF MoE}; native-res (variable n_vis)
+        elif (
+            kind == "internvl"
+        ):  # InternVL3.5-{8B-HF dense, 30B-A3B-HF MoE}; native-res (variable n_vis)
             from transformers import InternVLForConditionalGeneration as M
-        elif kind == "janus":      # Janus-Pro-7B (probe understanding path)
+        elif kind == "janus":  # Janus-Pro-7B (probe understanding path)
             from transformers import JanusForConditionalGeneration as M
         elif kind in ("onevision15", "onevision2"):  # LLaVA-OneVision-1.5 / -2 (self-contained TRC)
-            from transformers import AutoModel as M  # repo auto_map maps AutoModel -> its *ForConditionalGeneration
-        elif kind == "gemma4moe":  # Gemma-4-26B-A4B (sparse MoE, encoder-free); same image handling as gemma
+            from transformers import (
+                AutoModel as M,  # repo auto_map maps AutoModel -> its *ForConditionalGeneration
+            )
+        elif (
+            kind == "gemma4moe"
+        ):  # Gemma-4-26B-A4B (sparse MoE, encoder-free); same image handling as gemma
             from transformers import Gemma4ForConditionalGeneration as M
         else:
             raise ValueError(kind)
         load_kwargs = {}
-        if self.trc:  # onevision TRC: its custom text_config lacks pad_token_id (transformers 5.10 incompat)
+        if (
+            self.trc
+        ):  # onevision TRC: its custom text_config lacks pad_token_id (transformers 5.10 incompat)
             from transformers import AutoConfig
+
             cfg = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
             tc = getattr(cfg, "text_config", None)
             if tc is not None and not hasattr(tc, "pad_token_id"):
                 tc.pad_token_id = None
             load_kwargs["config"] = cfg
-        self.model = M.from_pretrained(model_id, dtype=torch.bfloat16,
-                                       attn_implementation="eager",
-                                       trust_remote_code=self.trc, **load_kwargs).to(DEV).eval()
-        self.img_id = (getattr(self.model.config, "image_token_index", None) or
-                       getattr(self.model.config, "image_token_id", None))
+        self.model = (
+            M.from_pretrained(
+                model_id,
+                dtype=torch.bfloat16,
+                attn_implementation="eager",
+                trust_remote_code=self.trc,
+                **load_kwargs,
+            )
+            .to(DEV)
+            .eval()
+        )
+        self.img_id = getattr(self.model.config, "image_token_index", None) or getattr(
+            self.model.config, "image_token_id", None
+        )
         self.tok = self.proc.tokenizer
         self.letter_ids = {c: self.tok(c, add_special_tokens=False).input_ids[0] for c in "ABCD"}
         self.layers = find_layers(self.model)
         self.N = len(self.layers)
-        self.mode = "none"   # none | capture | denoise | meanabl
-        self.depth = 0       # patch layers [0..depth)
-        self.pos = None      # bool (S,) image positions of the CURRENT run
-        self.cache = {}      # layer i -> clean image-position outputs [n_vis, D]
+        self.mode = "none"  # none | capture | denoise | meanabl
+        self.depth = 0  # patch layers [0..depth)
+        self.pos = None  # bool (S,) image positions of the CURRENT run
+        self.cache = {}  # layer i -> clean image-position outputs [n_vis, D]
         for i, lyr in enumerate(self.layers):
             lyr.register_forward_hook(self._post(i), with_kwargs=True)
 
@@ -151,23 +178,39 @@ class PatchProbe:
             elif self.mode == "sufmeanabl" and i >= self.depth:
                 h[0, self.pos] = h[0, self.pos].mean(0, keepdim=True)
             return None
+
         return f
 
     def _build(self, image, question):
         if self.kind == "qwen":
-            image = image.resize((QWEN_SIDE, QWEN_SIDE))   # fixed grid => aligned image-token positions
+            image = image.resize(
+                (QWEN_SIDE, QWEN_SIDE)
+            )  # fixed grid => aligned image-token positions
         if self.kind in ("gemma", "gemma4moe"):
-            msg = [{"role": "user", "content": [{"type": "image", "image": image},
-                    {"type": "text", "text": question}]}]
-            b = self.proc.apply_chat_template(msg, add_generation_prompt=True, tokenize=True,
-                                              return_dict=True, return_tensors="pt")
+            msg = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": question},
+                    ],
+                }
+            ]
+            b = self.proc.apply_chat_template(
+                msg,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
             b = {k: (v.to(DEV) if isinstance(v, torch.Tensor) else v) for k, v in b.items()}
         else:
-            msg = [{"role": "user", "content": [{"type": "image"},
-                    {"type": "text", "text": question}]}]
+            msg = [
+                {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}
+            ]
             prompt = self.proc.apply_chat_template(msg, add_generation_prompt=True)
             b = self.proc(images=[image], text=[prompt], return_tensors="pt").to(DEV)
-        vm = (b["input_ids"][0] == self.img_id)
+        vm = b["input_ids"][0] == self.img_id
         return b, vm
 
     @torch.no_grad()
@@ -186,8 +229,13 @@ class PatchProbe:
         q = doc_to_prompt(doc)
         bI, vmI = self._build(doc["image"].convert("RGB"), q)
         bIp, vmIp = self._build(donor["image"].convert("RGB"), q)
-        rec = dict(gt=gt, category=doc.get("category"), domain=doc.get("domain"),
-                   n_vis=int(vmI.sum()), seq_len=int(bI["input_ids"].shape[1]))
+        rec = dict(
+            gt=gt,
+            category=doc.get("category"),
+            domain=doc.get("domain"),
+            n_vis=int(vmI.sum()),
+            seq_len=int(bI["input_ids"].shape[1]),
+        )
         self.mode = "none"
         rec["intact"] = self._score(self._logits(bI), gt)
         rec["swap"] = self._score(self._logits(bIp), gt)
@@ -201,7 +249,7 @@ class PatchProbe:
         aligned = int(vmI.sum()) == int(vmIp.sum())
         if "denoise" in modes and aligned:
             self.mode, self.pos, self.cache = "capture", vmI, {}
-            _ = self._logits(bI)                      # cache clean image-position outputs
+            _ = self._logits(bI)  # cache clean image-position outputs
             out = []
             for d in depths:
                 self.mode, self.depth, self.pos = "denoise", d, vmIp
@@ -239,7 +287,9 @@ def main():
     n = int(sys.argv[4]) if len(sys.argv) > 4 else 1000
     n_causal = int(sys.argv[5]) if len(sys.argv) > 5 else 200
     mode = sys.argv[6] if len(sys.argv) > 6 else "sufmeanabl"
-    modes = {"both": ("denoise", "meanabl"), "all": ("denoise", "meanabl", "sufmeanabl")}.get(mode, (mode,))
+    modes = {"both": ("denoise", "meanabl"), "all": ("denoise", "meanabl", "sufmeanabl")}.get(
+        mode, (mode,)
+    )
     bench = sys.argv[7] if len(sys.argv) > 7 else "vmcbench"
     ds = load_dataset_bench(bench)
     n = min(n, len(ds))
@@ -247,9 +297,12 @@ def main():
     causal_set = set(range(0, n, stride))
     done = sum(1 for _ in open(out_path)) if out_path.exists() else 0
     pr = PatchProbe(model_id, kind)
-    depths = list(range(0, pr.N + 1))                 # [0..N]
-    print(f"[patch] {model_id} kind={kind} N={pr.N} modes={modes} n={n} "
-          f"nc={len(causal_set)} resume={done}", flush=True)
+    depths = list(range(0, pr.N + 1))  # [0..N]
+    print(
+        f"[patch] {model_id} kind={kind} N={pr.N} modes={modes} n={n} "
+        f"nc={len(causal_set)} resume={done}",
+        flush=True,
+    )
     print(f"[patch] img_id={pr.img_id} letter_ids={pr.letter_ids}", flush=True)
     f = open(out_path, "a")
     for i in range(done, n):
@@ -264,7 +317,8 @@ def main():
             rec = dict(i=i, skip=f"{type(e).__name__}: {e}")
         f.write(json.dumps(rec) + "\n")
         if (i + 1) % 25 == 0:
-            f.flush(); torch.cuda.empty_cache()
+            f.flush()
+            torch.cuda.empty_cache()
             print(f"[patch] {i + 1}/{n}", flush=True)
     f.close()
     print("[patch] done", flush=True)
