@@ -23,16 +23,14 @@ trainer:
     # The breen distill loss runs ONLY on the chunked-CE path -> required > 0.
     loss_chunk_size: 1024
     visual_distill_weight: 1.0
-    # S0 data budget = 5M caption samples (directive). Energon batches by TOKEN
-    # budget, so effective batch (tokens) = dataset.batch_token_budget(32000) x
-    # world_size x grad_accum, and samples/step = that / avg_tokens_per_sample.
-    # accum=4 @ 4 GPU targets BREEN's ~1024-sample effective batch; max_steps is
-    # then ~5M / samples_per_step. These are estimates — the pre-launch dry-run
-    # (devtools/breen_orchestrate.sh) MEASURES samples/step on the real stream
-    # and overrides max_steps via HYDRA_EXTRA to hit the 5M budget exactly.
+    # S0 budget (captain revision 2026-06-24): 4000 steps (was 5000). At the
+    # MEASURED ~715 samples/step (accum=4 @ 4 GPU on this caption stream) that is
+    # ~2.86M samples (the captain's "~4M" label assumes ~1000/step; the measured
+    # number is reported at launch). save_steps=2000 -> checkpoints at 2000 and
+    # 4000; final = checkpoint-4000, the resume point the afterok chain feeds S1.
     gradient_accumulation_steps: 4
-    max_steps: 5000
-    save_steps: 1000
+    max_steps: 4000
+    save_steps: 2000
     save_total_limit: null
     # BREEN ptr0 LR: proj/vision side 4e-4, base 4e-5. Encoder-free -> the
     # connector group (connector + queries + distill head) gets 4e-4; the

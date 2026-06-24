@@ -24,11 +24,11 @@ trainer:
     # and gradient_accumulation_steps: 1 — the smaller accum gives BREEN's ~256-
     # sample SFT effective batch (vs ~1024 for the accum=4 alignment stages).
     visual_distill_weight: 1.0
-    # S2 data budget = Honey-Data-1M ~= 1 epoch over 1M samples. max_steps ~
-    # 1M / measured samples_per_step (~4000 at eff-batch 256); orchestrator
-    # refines. (Was 5000 — overshot ~1M by ~1.3x at this effective batch.)
+    # S2 budget (captain revision 2026-06-24): 4000 steps (unchanged), ~1M Honey.
+    # Honey throughput is measured at launch (single-image instruct, accum=1).
+    # save_steps=2000 (was 500) -> final = checkpoint-4000.
     max_steps: 4000
-    save_steps: 500
+    save_steps: 2000
     learning_rate:
         visual_encoder_learning_rate: 2e-5
         connector_learning_rate: 2e-5
