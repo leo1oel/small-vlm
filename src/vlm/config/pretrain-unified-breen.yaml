@@ -23,12 +23,13 @@ trainer:
     # The breen distill loss runs ONLY on the chunked-CE path -> required > 0.
     loss_chunk_size: 1024
     visual_distill_weight: 1.0
-    # S0 budget (captain revision 2026-06-24): 4000 steps (was 5000). At the
-    # MEASURED ~715 samples/step (accum=4 @ 4 GPU on this caption stream) that is
-    # ~2.86M samples (the captain's "~4M" label assumes ~1000/step; the measured
-    # number is reported at launch). save_steps=2000 -> checkpoints at 2000 and
-    # 4000; final = checkpoint-4000, the resume point the afterok chain feeds S1.
-    gradient_accumulation_steps: 4
+    # S0 budget (captain revision 2026-06-24): 4000 steps. At ~715 samples/step
+    # that is ~2.86M samples. Effective batch (tokens) = batch_token_budget(32000)
+    # x world x accum; on 8 GPU accum=2 -> 32000*8*2 = the same 512k tokens/step as
+    # the prior 4 GPU x accum=4, so eff-batch stays ~739 samples (BREEN ~1024
+    # target, modest deviation) while throughput ~doubles. save_steps=2000 ->
+    # final = checkpoint-4000, the resume point the afterok chain feeds S1.
+    gradient_accumulation_steps: 2
     max_steps: 4000
     save_steps: 2000
     save_total_limit: null

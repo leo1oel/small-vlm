@@ -15,6 +15,9 @@ jsonl_name: train.jsonl
 
 shuffle_buffer_size: 1000
 length_buckets: [512, 768, 1024, 1536, 2304, 4096]
-batch_token_budget: 32000 # 48G-safe (matches the SFT mix)
+# 16000 (was 32000) so S2's effective batch stays at BREEN's ~256-sample SFT
+# target on 8 GPU: eff-batch(tokens) = budget x world x accum, and S2 has accum=1
+# (can't halve like the alignment stages). 16000*8*1 == the prior 32000*4*1.
+batch_token_budget: 16000
 max_samples_per_sequence: 100
 num_workers: 12

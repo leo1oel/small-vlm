@@ -1125,4 +1125,15 @@ def build_energon_train_loader(
         worker_config=wc,
         task_encoder=task_encoder,
     )
+    # PicklingError mitigation (2026-06-24): energon's rolling in-memory checkpoint
+    # (default checkpoint_every_sec=60) snapshots+pickles each worker's state about
+    # every other step. A worker mid-Azure-read holds a live ssl.SSLSocket, which
+    # is not picklable, so every snapshot logs a (caught, non-fatal) PicklingError —
+    # harmless to data flow (samples_seen stays smooth) but it balloons the logs
+    # over a multi-day stream. Durable resume does NOT use this rolling buffer: the
+    # HF checkpoint saves energon_state_rank*.pt via a SEPARATE coordinated
+    # get_checkpoint (verified present + correct). So lengthening the rolling
+    # interval just cuts the noise without touching resume. setdefault keeps it
+    # overridable.
+    savable_loader_kwargs.setdefault("checkpoint_every_sec", 900)
     return get_savable_loader(dataset, **savable_loader_kwargs)

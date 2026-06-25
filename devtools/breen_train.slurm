@@ -21,8 +21,8 @@
 #SBATCH --requeue
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus=l40s:4
-#SBATCH --cpus-per-task=64
+#SBATCH --gpus=l40s:8
+#SBATCH --cpus-per-task=112
 #SBATCH --mem=700G
 #SBATCH --time=1-00:00:00
 #SBATCH --output=/mmfs1/gscratch/krishna/leoym/herdr-worktrees/small-vlm/fm-breen-port-h7/logs/breen_train_%j.log
@@ -67,7 +67,7 @@ mkdir -p "${VLM_ENERGON_DATA_DIR}"
 # slow first-warmup blob fetch).
 export NCCL_TIMEOUT=3600
 
-export NGPUS="${NGPUS:-4}"
+export NGPUS="${NGPUS:-8}"
 CONFIG_NAME="${CONFIG_NAME:?set CONFIG_NAME (pretrain-unified-breen | -s1 | sft-unified-breen)}"
 NUM_WORKERS="${NUM_WORKERS:-12}"
 # Stable, scrubbed output dir (separate quota, immune to the krishna inode
