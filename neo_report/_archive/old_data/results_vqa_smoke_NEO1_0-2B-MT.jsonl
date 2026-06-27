@@ -1,0 +1,13 @@
+{"image": "synth_shapes.jpg", "question": "What shapes do you see and what are their colors?", "expected": "red circle (left), blue square (right), green strip at bottom", "answer": "I see two shapes in the image. The first shape is a red circle, and the second shape is a blue square."}
+{"image": "synth_shapes.jpg", "question": "Is the circle to the left or to the right of the square?", "expected": "left", "answer": "The circle is to the left of the square."}
+{"image": "synth_stars.jpg", "question": "How many stars are in the image?", "expected": "5", "answer": "There are six stars in the image."}
+{"image": "synth_text.jpg", "question": "What text is written in the image?", "expected": "HELLO WORLD", "answer": "The text in the image is \"HELLO WORLD\"."}
+{"image": "synth_count.jpg", "question": "How many red circles are there?", "expected": "3", "answer": "3"}
+{"image": "synth_count.jpg", "question": "How many blue circles are there?", "expected": "2", "answer": "2"}
+{"image": "coco_000000039769.jpg", "question": "How many cats are in the image?", "expected": "2", "answer": "There are two cats in the image."}
+{"image": "coco_000000039769.jpg", "question": "What are the cats lying on?", "expected": "pink couch / blanket (remotes nearby)", "answer": "The cats are lying on a pink blanket or sheet."}
+{"image": "coco_000000000285.jpg", "question": "What animal is shown in this picture?", "expected": "(brown) bear", "answer": "The animal shown in the picture is a bear."}
+{"image": "coco_000000000632.jpg", "question": "What room of the house is this?", "expected": "bedroom", "answer": "This appears to be a bedroom."}
+{"image": "coco_000000000632.jpg", "question": "What color is the comforter on the bed?", "expected": "blue", "answer": "The comforter on the bed is blue."}
+{"image": "coco_000000000724.jpg", "question": "What does the sign say?", "expected": "STOP", "answer": "It says stop on it."}
+{"image": "coco_000000000724.jpg", "question": "Is there anything unusual about the sign?", "expected": "it is upside down", "answer": "The sign is upside down."}

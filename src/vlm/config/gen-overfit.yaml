@@ -1,0 +1,32 @@
+defaults:
+    - sft-unified
+    - _self_
+
+# Milestone 1: generation-ONLY overfit of a SINGLE GPIC sample, to validate the
+# flow-matching pathway end-to-end (loss -> ~0, sampler reconstructs the image).
+# The standalone script devtools/gen_overfit.py uses load_model(cfg.model,
+# cfg.trainer) + a manual loop; the dataset block here is unused. Generation
+# reuses the encoder-free connector's 48px patch space (patch_dim 6912), so
+# patch_size MUST be 48 and resolution a multiple of 48.
+#   384 / 48 = 8  ->  8x8 = 64 image tokens.
+
+model:
+    generation:
+        enabled: true
+        resolution: 384
+        patch_size: 48
+        noise_scale: 2.0
+        t_mu: -0.8
+        t_sigma: 0.8
+        sample_steps: 100
+        cfg_scale: 1.0       # single-sample overfit: no classifier-free guidance
+        label_drop: 0.0      # no text dropout when overfitting one sample
+    visual_expert:
+        # Milestone 1 isolates the generation pathway from the FFN-expert
+        # routing — pure shared backbone. Flip on for the expert arm later.
+        enabled: false
+
+trainer:
+    run_name: gen-overfit
+    attn_implementation: sdpa
+    from_pretrained: null

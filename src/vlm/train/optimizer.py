@@ -27,6 +27,23 @@ def configure_optimizers(model: PreTrainedModel | nn.Module, trainer_config: Tra
         "vision_model": "vision_model",
         "connector": "connector",
         "lm_head": "model",
+        "visual_aux_head": "visual_aux_head",
+        # Generation x-pred head + timestep embedder train with the LM lr/wd
+        # ("model" config) — a single LR is fine for v1 (a dedicated higher gen
+        # lr can be added as generation_lr later). Mapping it here ensures the
+        # group is NOT silently dropped (configure_optimizers skips unmapped
+        # groups).
+        "generation": "model",
+        # BREEN port (spec 2026-06-24): the learnable queries and the CLIP->LLM
+        # distill head (+ norm_layer) are fresh visual-interface adapters — train
+        # them with the connector/projector lr/wd (BREEN's higher "proj" LR in
+        # S0; identical to the LM lr in the single-LR SFT configs, so no
+        # regression for the existing eve/repa distill arms). MUST be mapped here
+        # or configure_optimizers silently drops them (trainable but never
+        # stepped). The per-layer visual FFN expert (mlp_visual) + gates stay in
+        # the "language_model"->"model" bucket (in-stack capacity at the LM lr).
+        "learnable_query": "connector",
+        "visual_distill_head": "connector",
     }
 
     for component, params_list in grouped_params.items():
@@ -84,6 +101,16 @@ def build_optimizer_params(
         "connector": {
             "weight_decay": trainer_config.connector_wd,
             "learning_rate": trainer_config.connector_lr,
+        },
+        "visual_aux_head": {
+            # None falls back to the run's default lr / the LM weight decay —
+            # the head is fresh, so a higher dedicated lr is a legitimate dial.
+            "weight_decay": trainer_config.visual_aux_head_wd
+            if trainer_config.visual_aux_head_wd is not None
+            else trainer_config.language_model_wd,
+            "learning_rate": trainer_config.visual_aux_head_lr
+            if trainer_config.visual_aux_head_lr is not None
+            else trainer_config.learning_rate,
         },
     }
 

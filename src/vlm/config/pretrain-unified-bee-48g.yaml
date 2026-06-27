@@ -1,0 +1,26 @@
+defaults:
+    - pretrain-unified-bee
+    - _self_
+
+# 48G matrix — Arm 3 stage-1: the Bee connector-only pretrain at the 48G
+# token budget (64000, probe-derived — see dataset/energon-vision-bee.yaml).
+# At 64000 + acc=1 the loader yields ~525 samples/step (64/153.5 of the
+# H200-budget rate), so 1900 steps ≈ 1.0M ≈ one epoch over the ~998k pairs —
+# same exposure the original 800-step/153.5k config targeted. save_steps 200
+# -> 9 connector checkpoints (~3.7GB each).
+#
+# Stage-2 picks up the final checkpoint via sft-unified-staged:
+#   VLM_PRETRAIN_CKPT=<run_dir>/checkpoint-1900 \
+#     CONFIG_NAME=sft-unified-staged sbatch train_l40s.slurm
+#
+# Cluster launch:
+#   CONFIG_NAME=pretrain-unified-bee-48g sbatch train_l40s.slurm
+
+trainer:
+    max_steps: 1900
+    save_steps: 200
+    # 32k budget x acc2: same ~525 samples/step as the 64k/acc1 plan, 48G-safe.
+    gradient_accumulation_steps: 2
+
+dataset:
+    batch_token_budget: 32000

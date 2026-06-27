@@ -168,6 +168,20 @@ ignore = [
     "ISC002", # https://docs.astral.sh/ruff/rules/multi-line-implicit-string-concatenation/
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# devtools/ holds research, figure, and probe scripts that are not shipped with the
+# package. They carry pre-existing lint debt (loop-variable closures, ambiguous
+# single-letter math names, %-formatting, etc.) that is intentionally tolerated there.
+# The BREEN feature code under src/ and the test suite under tests/ stay fully linted.
+"devtools/**" = [
+    "B007", # unused loop control variable
+    "B023", # function uses loop variable (late-binding closure)
+    "B905", # zip() without explicit strict=
+    "E741", # ambiguous variable name (l/I/O)
+    "F841", # local variable assigned but never used
+    "UP031", # printf-style string formatting
+]
+
 [tool.basedpyright]
 # BasedPyright currently seems like the best type checker option, much faster
 # than mypy and with a good extension for VSCode/Cursor.
@@ -206,9 +220,26 @@ reportUnusedParameter = false
 
 
 [tool.codespell]
-# Add here as needed:
-# ignore-words-list = "foo,bar"
+# devtools/lint.py runs `codespell --write-changes`, so any flagged word would be
+# rewritten in place. The entries below are real identifiers / domain abbreviations in
+# the research scripts and tests (e.g. `ans`=answer tokens, `te`=train/test split,
+# `nd`=num-depths, `mot`=mixture-of-transformers, `arange`=torch.arange) that codespell
+# would otherwise "correct" (ans->and, nd->And, ...) and corrupt. Case-insensitive.
+ignore-words-list = "afile,ans,arange,ist,mot,nd,oce,strat,te"
 # skip = "foo.py,bar.py"
+
+[tool.typos.default.extend-words]
+# crate-ci/typos (the `typos` pre-commit hook) flags these research-script identifiers
+# and sub-word fragments as misspellings. They are intentional: `oce`/`pn`/`ist`/`Nd`
+# are local variables, `consol` is part of `rho_consol`, `strat` of `neo_strat`, and
+# `PN` of `PNGs`. Map each to itself so typos leaves them (and real identifiers) intact.
+oce = "oce"
+Nd = "Nd"
+pn = "pn"
+strat = "strat"
+ist = "ist"
+consol = "consol"
+PN = "PN"
 
 [tool.pytest.ini_options]
 python_files = ["*.py"]

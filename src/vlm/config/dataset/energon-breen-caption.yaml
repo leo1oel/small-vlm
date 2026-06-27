@@ -1,0 +1,38 @@
+# BREEN alignment caption stream (arXiv:2503.12446 port, spec 2026-06-24).
+# Image->dense-caption pairs for the encoder-free alignment stages (S0 frozen-LLM,
+# S1 unfreeze). Uses the format-generic energon understanding loader (no new
+# loader code): one Azure blob folder with <folder>/train.jsonl (messages with an
+# image + an assistant caption), media rooted at the jsonl dir — the SAME format
+# as the gpic generation data (energon-gpic-gen-train.yaml).
+#
+# STREAMED, not downloaded: bee_stage2 is ~4.8M loose image files and the cluster
+# is at ~96% inodes globally — a loose-file download would blow the inode ceiling.
+# The energon/MSC pipeline streams it from Azure (msc://azure/data/<folder>) with
+# zero local inodes, the same way the live gpic run streams data/gpic/train.
+#
+# Caption set = the captain's bee_stage2 (training-directive.md): layout is
+# `train.jsonl` (uploaded LAST — its presence == upload complete; wait for it
+# before launching) + `images/` (~4.8M, growing). Same line format as Stage1:
+# {id, source, messages}; messages[0]=user(image), messages[1]=assistant(caption);
+# media paths relative to the jsonl dir. Credentials: AZURE_SAS_TOKEN (.env).
+# Split per directive: 5M for S0 pre-align, 10M for S1 pretrain (S0 ⊂ S1 ok).
+
+name: energon-breen-caption
+type: energon
+task: understanding # image -> caption (NOT generation)
+
+# Azure blob prefix under container `data` (streamed via msc://azure/data/<prefix>).
+folders:
+    yiming/bee_stage2/train: 1.0
+jsonl_name: train.jsonl
+
+# Stage1 captions carry a constant empty "<think>\n\n</think>" prefix; strip it at
+# the messages->conversations bridge. bee_stage2 is the SAME line format as Stage1,
+# so keep this on; it is a harmless no-op if a given line has no such prefix.
+strip_empty_think: true
+
+shuffle_buffer_size: 2000
+length_buckets: [320, 512, 768, 1024, 1536, 4096]
+batch_token_budget: 32000 # 48G-safe (see energon-vision-bee.yaml rationale)
+max_samples_per_sequence: 100
+num_workers: 12

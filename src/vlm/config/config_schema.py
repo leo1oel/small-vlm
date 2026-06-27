@@ -28,6 +28,13 @@ class VisualEncoderConfig:
 class LanguageModelConfig:
     hf_name: str = MISSING
     max_seq_length: int | None = None
+    # Causal control for the text-prior hypothesis (E1, spec 2026-06-18): after
+    # building the model, re-initialize ONLY the LM backbone (embeddings/layers/
+    # norm/untied lm_head) to the config initializer, destroying the pretrained
+    # language prior while keeping the connector + vision params. Tests whether,
+    # with no cheap prior to ride, the native model is forced to use the image.
+    # Fresh-build only; False = normal pretrained load (bit-identical baseline).
+    random_init: bool = False
     use_start_end_tokens: bool = False
     use_image_patch_token: bool = False
     image_start_token: str = "<im_start>"
@@ -41,6 +48,13 @@ class LanguageModelConfig:
     # the splice swaps for audio features.
     audio_token: str = "<audio>"
     audio_token_index: int = -201
+    # Learnable-query placeholder (BREEN arXiv:2503.12446 port, spec 2026-06-24):
+    # "<query>" in the text is tokenized then replaced by this (non-vocab) sentinel
+    # index, which the splice swaps for the model's learnable query Parameter (the
+    # CLIP-distillation site). -202 is the next free id after image (-200) /
+    # audio (-201). Inert unless model.learnable_query.enabled.
+    query_token: str = "<query>"
+    query_token_index: int = -202
     padding_side: str = "left"
 
 
@@ -51,6 +65,27 @@ class ConnectorConfig:
     # --- raw_patch dials (ignored by other connector types) ---
     mm_embed_dim: int | None = None  # embedder internal width; None = LM hidden_size
     mm_posemb_size: int | None = None  # per-axis posemb rows; None = max_soft_tokens
+    # Low-rank bottleneck inside the shared patch embedding (minit2i/PRX/
+    # HiDream-O1): patch_dim -> bottleneck -> mm_embed_dim. 0 = off (single
+    # Linear, bit-identical). Shared by understanding + generation.
+    bottleneck_dim: int = 0
+    # Pretrained-conv "warm tokenizer" (spec 2026-06-22, encoder-free catch-up):
+    # re-encode each raw model-patch with a transplanted ViT conv patch-embed
+    # (the conv is a per-16px-sub-patch linear; NO cross-patch attention, so the
+    # model stays encoder-free) BEFORE the learned projection — swapping
+    # random-init pixel features for pretrained low-level visual features so the
+    # from-scratch tokenizer isn't from scratch. null = off (bit-identical).
+    # "siglip"|"clip" select the source family; weights are transplanted in
+    # vlm.load_model on fresh build only (reloads carry the trained stem).
+    patch_stem: str | None = None
+    patch_stem_name: str = "google/siglip-base-patch16-224"
+    patch_stem_kernel: int = 16  # teacher patch edge px; must divide model patch side
+    patch_stem_freeze: bool = False  # keep the transplanted conv frozen (preserve features)
+    # 2-layer GELU MLP patch head (LLaVA-1.5): patch_dim -> hidden -> GELU ->
+    # mm_embed_dim. 0 = off (single Linear). Gives the connector nonlinear
+    # capacity to combine the transplanted sub-patch features. Takes precedence
+    # over bottleneck_dim when both are set.
+    patch_mlp_hidden: int = 0
 
 
 @dataclass
@@ -71,12 +106,243 @@ class AudioConfig:
 
 
 @dataclass
+class VisualAuxConfig:
+    """Visual auxiliary prediction loss at image positions (spec:
+    docs/superpowers/specs/2026-06-06-visual-aux-loss-design.md). Structural
+    dials only — they size the head module, so they live on the model config
+    (the loss weight/layer are trainer dials). "none" = no head built,
+    bit-identical baseline path."""
+
+    # none | aim_pixel (next-patch z-scored pixel MSE, AIM/AIMv2-style)
+    #      | nepa (next-patch connector-embedding cosine, stop-grad target)
+    objective: str = "none"
+    # Head MLP: depth 1 = single Linear; depth d = (d-1) x [Linear, GELU] + Linear.
+    head_depth: int = 2
+    # Internal width of the head MLP (input is always the LM hidden size).
+    # Default matches the Qwen3-1.7B hidden size — set explicitly for other
+    # backbone sizes (the head does not auto-scale).
+    head_hidden: int = 2048
+
+
+@dataclass
+class VisualExpertConfig:
+    """Per-decoder-layer modality-routed visual FFN expert (Mono-InternVL
+    arXiv:2410.08202 / BREEN arXiv:2503.12446 style; spec:
+    docs/superpowers/specs/2026-06-14-native-vlm-capacity-readiness-design.md).
+    Structural — it attaches a sibling `mlp.mlp_visual` to each selected decoder
+    layer and routes the FFN by the per-token image mask, so it lives on the
+    model config and serializes into checkpoint config.json (visual_aux pattern).
+    enabled=False = bit-identical baseline (no module attached, no routing)."""
+
+    # Attach the per-layer visual FFN expert and route image tokens through it.
+    enabled: bool = False
+    # null = every decoder layer; else explicit 0-based layer indices.
+    layers: list[int] | None = None
+    # Fresh-build only: initialize each visual FFN by copying the text FFN's
+    # weights (so training starts from an identical, then diverging, FFN).
+    init_from_text: bool = True
+    # Per-expert sigmoid gate (BREEN arXiv:2503.12446: F.sigmoid(gate(x))*expert(x)
+    # on both the text and image FFN). A localized fidelity upgrade over the hard
+    # 0/1 mask; each gate is a Linear(hidden, 1) initialized near-identity (zero
+    # weight, bias 4 -> sigmoid(4)≈0.982) — close to identity but NOT a literal
+    # t=0 no-op: it attenuates each FFN by ~1.8%/layer from step 0. False =
+    # bit-identical to the hard-mask routing.
+    gate: bool = False
+
+
+@dataclass
+class VisualPrefixConfig:
+    """Dedicated internal "visual prefix" stack (spec 2026-06-14, early-capacity
+    arm; NEO pre-Buffer style). K bidirectional layers process each image's
+    connector tokens BEFORE they enter the shared LLM — a data-grown visual
+    encoder with its own params, no imported ViT. Structural: built next to the
+    connector and serialized into checkpoint config.json. enabled=False = no
+    module (bit-identical baseline)."""
+
+    enabled: bool = False
+    # Number of bidirectional prefix layers (NEO 2B uses ~0.3*depth).
+    depth: int = 6
+    # 0 -> inherit the LM's num_attention_heads / intermediate_size.
+    heads: int = 0
+    intermediate: int = 0
+
+
+@dataclass
+class GroundingConfig:
+    """Image-grounding margin loss (spec 2026-06-18): the gold answer must be
+    more likely WITH the real image than with a blanked image. A pure training
+    loss (no module/head), so all dials live on the model config and are read in
+    chunked_ce_forward; weight=0.0 = bit-identical baseline (loss never built).
+    Directly optimizes the R0 (intact - swap) quantity the FDI probe measures —
+    pushes the model out of the language-prior basin so it conditions on pixels."""
+
+    enabled: bool = False
+    # Loss weight λ_g: L = L_CE + λ_g · L_ground. 0.0 -> off.
+    weight: float = 0.0
+    # Hinge margin m (nats): the gold-token logp with the real image must beat
+    # the blanked-image logp by at least m, else a per-token penalty applies.
+    margin: float = 1.0
+    # How to build the negative ("no usable image") pass. "blank": zero the
+    # image-position embeddings (shape-preserving ablation; the robust default).
+    corruption: str = "blank"
+
+
+@dataclass
+class VisualDistillConfig:
+    """Visual-encoder distillation for the native VLM (spec 2026-06-21): align
+    the LLM's hidden states at image positions to a frozen vision encoder's
+    per-patch features, so the visual pathway is supervised directly instead of
+    discovered through next-token loss alone. Structural dials (they size the
+    projection head + select the teacher, and serialize into checkpoint
+    config.json — visual_aux pattern) live here; the loss WEIGHT is a trainer
+    dial. enabled=False = no head built, bit-identical baseline."""
+
+    enabled: bool = False
+    # repa | eve | vora | softdepth | relational | vae | breen
+    # (see models/visual_distill.py). "breen" distills the learnable queries
+    # (not image patches) to a dual-granularity avg-pooled CLIP grid.
+    method: str = "repa"
+    # Teacher: "clip" loads a CLIPVisionModel, "vae" a diffusers AutoencoderKL.
+    teacher_kind: str = "clip"
+    teacher_name: str = "openai/clip-vit-base-patch16"
+    # Square edge (px) the reconstructed RGB is resized to before the teacher.
+    # 224 (default) -> a 16x16 CLIP-B/16 grid; BREEN uses 336 with
+    # clip-vit-large-patch14-336 -> a 24x24 grid (= 8x8 fine + 6x6 coarse pools).
+    teacher_out_size: int = 224
+    # 1-based decoder-output layer index/indices to align. null = method default
+    # (repa/relational/vae: ~0.3 depth; vora: first half block-wise; softdepth:
+    # all intermediate layers as the selection pool; eve: ignored, uses final).
+    layers: list[int] | None = None
+    # Internal width of the MLP projection head (input = LM hidden). 0 = LM hidden.
+    head_hidden: int = 0
+    # Per-token alignment: "cosine" (neg cosine, CLIP) or "smoothl1" (huber, vae).
+    # "" = method default (cosine for clip, smoothl1 for vae).
+    loss: str = ""
+
+
+@dataclass
+class LearnableQueryConfig:
+    """Learnable CLIP-distillation queries (BREEN arXiv:2503.12446 port, spec
+    2026-06-24). A trainable nn.Parameter(num_fine+num_coarse, hidden) on the
+    ForCausalLM, spliced in at each "<query>" placeholder (one block per image),
+    routed to the visual FFN expert, and label-masked (excluded from CE). The
+    breen distill method aligns the first num_fine query rows to the 8x8 fine
+    avg-pool of the CLIP grid and the last num_coarse rows to the 6x6 coarse
+    pool. Structural — it sizes the Parameter, so it lives on the model config
+    and serializes into checkpoint config.json (visual_aux pattern).
+    enabled=False = no Parameter built, bit-identical baseline."""
+
+    enabled: bool = False
+    # 8x8 fine pool of a 24x24 CLIP-L/14-336 grid = 64; 6x6 coarse pool = 36.
+    num_fine: int = 64
+    num_coarse: int = 36
+    # Where the data path emits the "<query>" placeholder relative to the image
+    # and the user text: "after_image" (BREEN pretrain: image then queries) |
+    # "after_text" (BREEN SFT: queries attend the question, placed after it).
+    placement: str = "after_image"
+
+
+@dataclass
+class CrossModalMaskConfig:
+    # "none" (default, bit-identical baseline) | "prefix_lm" | "img2q_window".
+    # prefix_lm: bidirectional attention over [system+image+question], causal
+    # suffix, loss unchanged (PaliGemma masking). img2q_window: image-query
+    # rows attend question keys in decoder layers window[0]..window[1] only
+    # (1-based, inclusive) — the forced-early-fusion arm.
+    mode: str = "none"
+    window: list[int] = field(default_factory=lambda: [1, 9])
+    # Mutual windowing (also confining text->image attention to the window)
+    # is NOT implemented in v1: it requires per-layer decode-step masking.
+    # The field exists so the config surface is stable; True is rejected.
+    bidirectional: bool = False
+
+
+@dataclass
+class GenerationConfig:
+    """Text->image generation pathway: continuous flow matching in patch space
+    (Transfusion / minit2i MM-JiT style; spec 2026-06-20). Structural dials size
+    the x-prediction head + in-context timestep token and set the noise
+    schedule; they serialize into checkpoint config.json (visual_aux pattern) so
+    the sampler self-describes. enabled=False = understanding-only (no module
+    built, no generation forward — bit-identical baseline)."""
+
+    enabled: bool = False
+    # Square target canvas edge (px). Patch grid = (resolution // patch_size)^2.
+    resolution: int = 384
+    # Generation patch edge (px). Generation REUSES the encoder-free connector's
+    # patch space, so this MUST equal the connector model patch
+    # (visual_encoder.patch_size * pooling_kernel_size, default 16*3 = 48).
+    # resolution % patch_size must be 0.
+    patch_size: int = 48
+    # Flow-matching noise scale (minit2i: 2.0) and logit-normal timestep
+    # sampling t = sigmoid(N(t_mu, t_sigma))  (t=1 clean, t=0 pure noise).
+    noise_scale: float = 2.0
+    t_mu: float = -0.8
+    t_sigma: float = 0.8
+    # Sampler defaults (inference only): Euler steps + classifier-free guidance.
+    sample_steps: int = 100
+    cfg_scale: float = 1.0
+    # Train-time probability of dropping the text condition (CFG training).
+    label_drop: float = 0.1
+    # Independent generation embedder (decouples generation from the 48px
+    # understanding connector). When True, generation builds its own raw-patch
+    # embedder + x-head at embed_patch_size (e.g. 16px -> finer grid, smaller
+    # per-patch target -> sharper images; minit2i 32px/256-token mechanism).
+    # When False, generation reuses the connector at patch_size (48px, legacy).
+    independent_embed: bool = False
+    embed_patch_size: int = 16
+    # Per-axis position-table size for the independent embedder (>= grid side =
+    # resolution // embed_patch_size).
+    embed_posemb_size: int = 64
+    # Low-rank bottleneck in the generation patch embedder (minit2i/PRX/
+    # HiDream-O1 "BottleneckPatchEmbed"): patch_dim -> bottleneck -> hidden. 0 =
+    # off (single Linear). HiDream-O1 uses hidden//4 (=512 at hidden 2048).
+    embed_bottleneck_dim: int = 0
+    # Perceptual losses on the unpatchified x0 prediction vs the clean image
+    # (PRX/HiDream-O1 pixel-space recipe; weights from PRX configs). Off by
+    # default — pure flow-matching MSE baseline is bit-identical.
+    perceptual_enabled: bool = False
+    perceptual_lpips_weight: float = 0.1
+    perceptual_dino_weight: float = 0.01
+    perceptual_lpips_net: str = "vgg"
+    perceptual_dino_model: str = "dinov2_vitb14_reg"
+    # Resize the x0/gt images to this square edge before the perceptual nets
+    # (memory; PRX uses 256 for DINO).
+    perceptual_resize: int = 256
+    # Noise gating (PixelGen sec 3.4): only apply perceptual losses to LOW-noise
+    # samples (t > gate; our convention t=1 clean). PixelGen disables the first
+    # 30% high-noise steps -> 0.3. 0 = apply to all samples (PRX behaviour).
+    perceptual_t_gate: float = 0.3
+    # Warmup: train flow-MSE ONLY for the first N steps, then add perceptual.
+    # The zero-init x-head makes step-0 predictions a constant (grey) image; the
+    # LPIPS/DINO feature-normalization gradient is singular there and overflows
+    # DeepSpeed's bf16 loss scaler (collapses -> training stalls). Warming up
+    # lets the flow loss produce a non-degenerate x0 first (PixelGen-style staged
+    # training). Counted in micro-batch forwards (== optimizer steps at
+    # grad_accum=1); 0 = no warmup.
+    perceptual_warmup_steps: int = 1000
+    # 2D (axial/interleaved-MRoPE) rotary for the image tokens (FLUX/minit2i/
+    # HiDream-O1 via Qwen3-VL): vertically-adjacent patches become close in
+    # rotary space. Bit-identical for text/understanding (replaces model.
+    # rotary_emb with an MRoPE that reduces to 1D on equal-axis positions).
+    rope_2d: bool = True
+
+
+@dataclass
 class ModelConfig:
     name: str = MISSING
     visual_encoder: VisualEncoderConfig = field(default_factory=VisualEncoderConfig)
     language_model: LanguageModelConfig = field(default_factory=LanguageModelConfig)
     connector: ConnectorConfig = field(default_factory=ConnectorConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
+    visual_aux: VisualAuxConfig = field(default_factory=VisualAuxConfig)
+    visual_expert: VisualExpertConfig = field(default_factory=VisualExpertConfig)
+    learnable_query: LearnableQueryConfig = field(default_factory=LearnableQueryConfig)
+    visual_prefix: VisualPrefixConfig = field(default_factory=VisualPrefixConfig)
+    cross_modal_mask: CrossModalMaskConfig = field(default_factory=CrossModalMaskConfig)
+    grounding: GroundingConfig = field(default_factory=GroundingConfig)
+    visual_distill: VisualDistillConfig = field(default_factory=VisualDistillConfig)
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
 
 
 @dataclass
@@ -120,6 +386,33 @@ class DatasetConfig:
     # default only. None = fixed batch size per bucket.
     batch_token_budget: int | None = None
     use_local_jsonl: bool | None = None  # None = prefer a local jsonl copy if present
+    # Strip the empty `<think>\n\n</think>` prefix that distilled caption sets
+    # (e.g. Bee Stage-1) prepend to every assistant turn, so the boilerplate
+    # never enters the loss. Whitespace-bodied blocks only — real reasoning
+    # text is preserved. Energon path only.
+    strip_empty_think: bool = False
+    # Image-placeholder layout inside human turns (plan 2026-06-10, access
+    # arms): "keep" preserves today's layout on both paths; "question_first"
+    # / "sandwich" / "random" rewrite single-image human turns. Applied on
+    # the energon path after placeholder injection and on the local-json
+    # path after preprocess_multimodal's image-first normalization.
+    image_position: str = "keep"
+    # --- generation task (text->image flow matching; spec 2026-06-20) ---
+    # "understanding" (default) = image->text chat encoder; "generation" =
+    # caption->image: each record yields (caption prompt, target image patches
+    # at a fixed canvas). Selects VLMGenTaskEncoder in build_energon_train_loader.
+    task: str = "understanding"
+    # Generation target canvas edge (px); must be a multiple of the connector
+    # model patch (visual_encoder.patch_size * pooling_kernel_size, default 48).
+    gen_resolution: int = 384
+    # Max caption (prompt) tokens for the generation condition.
+    gen_caption_max_len: int = 128
+    # Generation target patch edge (px). null -> use the connector's 48px model
+    # patch (legacy, reuse-the-connector path). Set to model.generation.
+    # embed_patch_size (e.g. 16) when model.generation.independent_embed is on,
+    # so the dataloader patchifies targets at the SAME granularity the model's
+    # independent gen embedder + x-head expect (else 768-vs-6912 dim mismatch).
+    gen_patch_size: int | None = None
 
 
 @dataclass
@@ -195,12 +488,51 @@ class TrainerConfig:
     # (batch*seq, vocab) logits (~25GB fp32 at bs4/seq4k with the 152k vocab).
     # Numerically replicates transformers' ForCausalLMLoss mean reduction.
     loss_chunk_size: int = 0
+    # Aux-exit deep supervision for the early-fusion ablation (spec:
+    # docs/superpowers/specs/2026-06-05-aux-exit-loss-design.md): at each
+    # listed decoder layer k (1-based output index, valid [1, n_layers-1])
+    # decode through the SHARED final RMSNorm + lm_head and add the CE to
+    # the main loss: L = L_final + aux_exit_weight * sum_k L_k. Empty = off
+    # (bit-identical baseline path). Requires loss_chunk_size > 0.
+    aux_exit_layers: list[int] = field(default_factory=list)
+    # EE-LLM's validated few-exit weight range is 0.1-0.5 (arXiv:2312.04916);
+    # only read when aux_exit_layers is non-empty.
+    aux_exit_weight: float = 0.25
+    # True = detach the shared norm/lm_head weights inside the aux branch so
+    # its gradient flows only into layers <= k (fuse for the tied-embedding
+    # gradient coupling, arXiv:2603.26663); default False follows the
+    # LayerSkip shared-with-grad recipe (arXiv:2404.16710).
+    aux_exit_detach: bool = False
+    # Visual-aux loss weight λ (spec 2026-06-06): only read when
+    # model.visual_aux.objective != "none". L = L_CE + λ·L_visual.
+    # AIMv2's literature prior is α=0.4 (arXiv:2411.14402); 0.5 is the
+    # user-set value for both v1 arms (spec decision 2026-06-06).
+    visual_aux_weight: float = 0.5
+    # null = attach the head to the post-final-norm last hidden state;
+    # k = decode layer k's output through the shared final RMSNorm first
+    # (aux-exit capture mechanism; valid [1, n_layers-1]).
+    visual_aux_layer: int | None = None
+    # Optimizer dials for the (always-trainable) head; None falls back to
+    # default_lr / language_model weight decay.
+    visual_aux_head_lr: float | None = None
+    visual_aux_head_wd: float | None = None
+    # Visual-distill loss weight λ_d (spec 2026-06-21): only read when
+    # model.visual_distill.enabled. L = L_CE + λ_d·L_distill. REPA/VoRA use an
+    # equal-ish weighting (~0.5-1.0); the head trains with the LM (it falls
+    # through to the language_model optimizer group, so no separate lr dial).
+    visual_distill_weight: float = 1.0
     # Native transformers token accounting, surfaced per log step in wandb
     # (num_input_tokens_seen + train tokens/sec): "non_padding" sums
     # attention_mask across ranks (small per-step gather), "all" counts
     # padding too, "no" disables. Counts input_ids-level tokens — media
     # sentinels count as 1 (the FLOPs metric uses spliced length instead).
     include_num_input_tokens_seen: str = "no"
+    # Collective-op watchdog timeout (seconds). Streaming + token-budget
+    # bucketing makes batch-to-batch latency fat-tailed (a rank can wait on a
+    # slow bucket flush / Azure stall while peers sit in allreduce) — the
+    # 10-min NCCL default killed a run at step 4848; 1h tolerates stalls and
+    # lets the run continue instead of paying a full requeue+restore.
+    ddp_timeout: int = 3600
     # torch.compile via the HF Trainer (inductor). The multimodal splice and
     # chunked CE graph-break, but the decoder stack (the compute bulk) still
     # compiles; variable spliced lengths settle into dynamic-shape graphs

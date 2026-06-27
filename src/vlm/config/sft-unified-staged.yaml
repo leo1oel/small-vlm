@@ -1,0 +1,29 @@
+defaults:
+    - sft-unified
+    - _self_
+
+# 48G matrix — Arm 3 stage-2: SFT on the OV+FV blend (dataset unchanged from
+# sft-unified) starting from the stage-1 connector checkpoint instead of the
+# raw HF backbone. VLM_PRETRAIN_CKPT is REQUIRED (no default on purpose —
+# launching this arm without the stage-1 checkpoint would silently train a
+# baseline duplicate):
+#   VLM_PRETRAIN_CKPT=/gscratch/scrubbed/leoym/small-vlm-outputs/pretrain-unified-bee-48g/checkpoint-1600 \
+#     CONFIG_NAME=sft-unified-staged sbatch train_l40s.slurm
+#
+# 5000 steps x ~500 samples/step ≈ 2.5M samples of OV+FV (1:1), matching
+# Arms 1/2's step count; this arm additionally saw ~1M Bee captions in
+# stage-1 (the staged recipe's defining difference — report it as such).
+
+trainer:
+    max_steps: 5000
+    save_steps: 500
+    # See energon-vision-bee.yaml: 32k budget x acc2 = the 48G-safe shape of
+    # the same 256k-token optimizer step.
+    gradient_accumulation_steps: 2
+    # Re-enable the stage-1 checkpoint env hook that sft-unified pins to null.
+    from_pretrained: ${oc.env:VLM_PRETRAIN_CKPT}
+
+dataset:
+    # 48G token budget — same value as energon-vision-bee.yaml; see the
+    # probe-derived rationale there.
+    batch_token_budget: 32000

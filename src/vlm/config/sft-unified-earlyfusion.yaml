@@ -1,0 +1,22 @@
+defaults:
+    - sft-unified
+    - _self_
+
+# Early-fusion ablation arm (spec:
+# docs/superpowers/specs/2026-06-05-aux-exit-loss-design.md): identical to
+# sft-unified — same seed, so the energon stream order matches the baseline
+# step for step — plus an aux-exit CE at decoder layer 6: decode layer-6
+# output through the SHARED final RMSNorm + lm_head and add
+# 0.25 * L_aux to the loss (LayerSkip mechanism, EE-LLM weight range).
+#
+# wandb: ce_final must track the baseline's 'loss' curve (within ~1%, else
+# the aux pressure is hurting the main objective); ce_aux's own decay curve
+# is the layer-6 readability signal. Decision point at ckpt-5000: final-CE
+# parity + isolation-sweep onset shift + MME/POPE before committing to 20k.
+#
+# Cluster launch: CONFIG_NAME=sft-unified-earlyfusion sbatch train_h200.slurm
+
+trainer:
+    aux_exit_layers: [6]
+    aux_exit_weight: 0.25
+    aux_exit_detach: false

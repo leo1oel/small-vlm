@@ -36,6 +36,7 @@ or, keeping the model loaded across calls::
 import logging
 import re
 import warnings
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,8 @@ from PIL import Image
 
 from ..data.data_arguments import DataArguments
 from ..data.dataset import (
+    apply_image_position,
+    inject_query_placeholders,
     load_audio_frames,
     tokenizer_multimodal_token,
 )
@@ -188,6 +191,13 @@ def _data_args_from_config(config: Any) -> DataArguments:
         max_audio_tokens=getattr(audio_cfg, "max_audio_tokens", 750)
         if audio_cfg is not None
         else 750,
+        # BREEN port: a query-trained checkpoint must inject "<query>" at
+        # inference too (the model expects the query block to summarize the
+        # image). Self-describing from the saved config.
+        learnable_query_enabled=bool(getattr(config, "learnable_query", False)),
+        query_token=getattr(config, "query_token", "<query>"),
+        query_token_index=getattr(config, "query_token_index", -202),
+        query_placement=str(getattr(config, "learnable_query_placement", "after_image")),
     )
 
 
@@ -225,7 +235,18 @@ def load_model(
                 "'namespace/name' if you meant one)"
             )
     processor = VLMProcessor.from_pretrained(pretrained)
-    VLMForCausalLM, _ = get_dynamic_vlm(pretrained)
+    VLMForCausalLM, VLMConfig = get_dynamic_vlm(pretrained)
+    # Self-describing mask arms (plan 2026-06-10): the img2q_window arm's
+    # per-layer masks are consumed only by the registered "sdpa_xmodal"
+    # attention function — plain sdpa would silently drop them and evaluate
+    # the model as text-blind causal. _attn_implementation never serializes
+    # into config.json, so auto-upgrade from the persisted mask mode instead.
+    ckpt_config = VLMConfig.from_pretrained(pretrained)
+    if (
+        str(getattr(ckpt_config, "cross_modal_mask_mode", "none") or "none") == "img2q_window"
+        and attn_implementation == "sdpa"
+    ):
+        attn_implementation = "sdpa_xmodal"
     model: VLMForCausalLM = VLMForCausalLM.from_pretrained(
         pretrained,
         dtype=torch.bfloat16 if bf16 else torch.float16 if fp16 else torch.float32,
@@ -468,7 +489,29 @@ def generate_response(
             f"templates, got conv_mode={conv_mode!r}"
         )
 
+    # Self-describing checkpoints: rebuild the prompt with the SAME image
+    # layout the model was trained on (plan 2026-06-10). Only the single-image
+    # case is repositioned (mirrors apply_image_position's training-side guard);
+    # the seed mirrors the energon path (crc32 of the rendered query).
+    image_token = str(getattr(model.config, "image_token", "<image>") or "<image>")
+    image_position = str(getattr(model.config, "image_position", "keep") or "keep")
+    if image_position != "keep" and query.count(image_token) == 1:
+        _turns = [{"from": "human", "value": query}]
+        apply_image_position(
+            _turns,
+            mode=image_position,
+            image_token=image_token,
+            seed=zlib.crc32(query.encode()),
+        )
+        query = _turns[0]["value"]
+
     query = ensure_placeholders(query, len(images), len(audios), data_args)
+    # BREEN port: emit one "<query>" per image at the trained placement, mirroring
+    # the training data path so the splice inserts the learnable query block.
+    if data_args.learnable_query_enabled and images:
+        _turns = [{"from": "human", "value": query}]
+        inject_query_placeholders(_turns, n_images=len(images), data_args=data_args)
+        query = _turns[0]["value"]
     prompt = build_prompt(conv_mode, query, data_args)
 
     tokenizer = processor.tokenizer

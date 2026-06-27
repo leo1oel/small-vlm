@@ -1,0 +1,26 @@
+defaults:
+    - gen-overfit
+    - _self_
+
+# 48px overfit (SHARED connector — native, understanding+generation use the one
+# patch embedding) + the two pixel-space sharpness levers from PRX / HiDream-O1:
+#   (1) bottleneck in the shared connector (6912 -> 512 -> 2048), and
+#   (2) perceptual supervision on the unpatchified x0 (LPIPS 0.1 + P-DINO 0.01).
+# Stays at 48px (8x8 = 64 tokens) so understanding can keep the SAME embedding
+# without blowing the 280-token budget. Compare compare_grid_step0500 vs _1000
+# to see if it overfits fast. Consumed by gen_overfit_multi.py -cn gen-overfit-48pp.
+
+model:
+    connector:
+        bottleneck_dim: 512           # shared patch embedding: 6912 -> 512 -> 2048
+    generation:
+        independent_embed: false      # reuse the shared 48px connector (native/unified)
+        perceptual_enabled: true
+        perceptual_lpips_weight: 0.1
+        perceptual_dino_weight: 0.01
+        perceptual_lpips_net: vgg
+        perceptual_dino_model: dinov2_vitb14_reg
+        perceptual_resize: 224
+
+trainer:
+    run_name: gen-overfit-48pp

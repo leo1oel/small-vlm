@@ -1,0 +1,245 @@
+{
+ "PT": {
+  "rows": [
+   {
+    "question": "What color is the circle?",
+    "nll_base": 7.35546875,
+    "nll_bypass": 3.951171875
+   },
+   {
+    "question": "What shape is on the right side?",
+    "nll_base": 9.356249809265137,
+    "nll_bypass": 8.681249618530273
+   },
+   {
+    "question": "How many stars are there?",
+    "nll_base": 6.418526649475098,
+    "nll_bypass": 4.255580425262451
+   },
+   {
+    "question": "What color are the stars?",
+    "nll_base": 8.020833015441895,
+    "nll_bypass": 4.186197757720947
+   },
+   {
+    "question": "What text is written in the image?",
+    "nll_base": 9.947265625,
+    "nll_bypass": 11.609375
+   },
+   {
+    "question": "How many red circles are there?",
+    "nll_base": 6.04833984375,
+    "nll_bypass": 2.8179931640625
+   },
+   {
+    "question": "How many blue circles are there?",
+    "nll_base": 6.1845703125,
+    "nll_bypass": 2.908447265625
+   },
+   {
+    "question": "How many cats are there?",
+    "nll_base": 7.536458492279053,
+    "nll_bypass": 3.9407551288604736
+   },
+   {
+    "question": "What color is the blanket?",
+    "nll_base": 8.192708015441895,
+    "nll_bypass": 4.047525882720947
+   },
+   {
+    "question": "What animal is this?",
+    "nll_base": 7.58984375,
+    "nll_bypass": 5.319010257720947
+   },
+   {
+    "question": "What is the bear standing on?",
+    "nll_base": 6.15185546875,
+    "nll_bypass": 5.36328125
+   },
+   {
+    "question": "What room is this?",
+    "nll_base": 7.243489742279053,
+    "nll_bypass": 4.086588382720947
+   },
+   {
+    "question": "What color is the comforter?",
+    "nll_base": 6.841517925262451,
+    "nll_bypass": 4.898995399475098
+   },
+   {
+    "question": "What does the sign say?",
+    "nll_base": 9.466145515441895,
+    "nll_bypass": 5.986979007720947
+   },
+   {
+    "question": "What color is the sign?",
+    "nll_base": 7.986979007720947,
+    "nll_bypass": 4.309895992279053
+   }
+  ],
+  "mean_dnll": -2.531813700993856,
+  "mean_base": 7.622683461507162
+ },
+ "MT": {
+  "rows": [
+   {
+    "question": "What color is the circle?",
+    "nll_base": 0.7285969853401184,
+    "nll_bypass": 0.9410807490348816
+   },
+   {
+    "question": "What shape is on the right side?",
+    "nll_base": 3.2694334983825684,
+    "nll_bypass": 4.173047065734863
+   },
+   {
+    "question": "How many stars are there?",
+    "nll_base": 0.7557896375656128,
+    "nll_bypass": 1.7548828125
+   },
+   {
+    "question": "What color are the stars?",
+    "nll_base": 1.2273355722427368,
+    "nll_bypass": 1.7587890625
+   },
+   {
+    "question": "What text is written in the image?",
+    "nll_base": 4.29931640625,
+    "nll_bypass": 9.12109375
+   },
+   {
+    "question": "How many red circles are there?",
+    "nll_base": 0.7173647880554199,
+    "nll_bypass": 1.026947021484375
+   },
+   {
+    "question": "How many blue circles are there?",
+    "nll_base": 0.695338249206543,
+    "nll_bypass": 1.0945968627929688
+   },
+   {
+    "question": "How many cats are there?",
+    "nll_base": 0.8424072265625,
+    "nll_bypass": 1.5885416269302368
+   },
+   {
+    "question": "What color is the blanket?",
+    "nll_base": 1.3740234375,
+    "nll_bypass": 1.732421875
+   },
+   {
+    "question": "What animal is this?",
+    "nll_base": 1.8138427734375,
+    "nll_bypass": 2.4720051288604736
+   },
+   {
+    "question": "What is the bear standing on?",
+    "nll_base": 1.972869873046875,
+    "nll_bypass": 2.29345703125
+   },
+   {
+    "question": "What room is this?",
+    "nll_base": 0.6341959834098816,
+    "nll_bypass": 1.708984375
+   },
+   {
+    "question": "What color is the comforter?",
+    "nll_base": 0.8334721326828003,
+    "nll_bypass": 1.7491629123687744
+   },
+   {
+    "question": "What does the sign say?",
+    "nll_base": 2.3543293476104736,
+    "nll_bypass": 3.6979167461395264
+   },
+   {
+    "question": "What color is the sign?",
+    "nll_base": 0.6776530146598816,
+    "nll_bypass": 1.3170572519302368
+   }
+  ],
+  "mean_dnll": 0.9489343563715616,
+  "mean_base": 1.479731261730194
+ },
+ "SFT": {
+  "rows": [
+   {
+    "question": "What color is the circle?",
+    "nll_base": 0.67431640625,
+    "nll_bypass": 0.8090006709098816
+   },
+   {
+    "question": "What shape is on the right side?",
+    "nll_base": 3.529296875,
+    "nll_bypass": 4.519335746765137
+   },
+   {
+    "question": "How many stars are there?",
+    "nll_base": 0.7463727593421936,
+    "nll_bypass": 1.4384765625
+   },
+   {
+    "question": "What color are the stars?",
+    "nll_base": 1.3038736581802368,
+    "nll_bypass": 0.9483235478401184
+   },
+   {
+    "question": "What text is written in the image?",
+    "nll_base": 4.13671875,
+    "nll_bypass": 8.69140625
+   },
+   {
+    "question": "How many red circles are there?",
+    "nll_base": 0.5906219482421875,
+    "nll_bypass": 0.7511978149414062
+   },
+   {
+    "question": "How many blue circles are there?",
+    "nll_base": 0.6467685699462891,
+    "nll_bypass": 0.79559326171875
+   },
+   {
+    "question": "How many cats are there?",
+    "nll_base": 1.0927835702896118,
+    "nll_bypass": 1.1488443613052368
+   },
+   {
+    "question": "What color is the blanket?",
+    "nll_base": 1.3101400136947632,
+    "nll_bypass": 0.8311360478401184
+   },
+   {
+    "question": "What animal is this?",
+    "nll_base": 2.5231120586395264,
+    "nll_bypass": 2.0797526836395264
+   },
+   {
+    "question": "What is the bear standing on?",
+    "nll_base": 2.5977783203125,
+    "nll_bypass": 1.93475341796875
+   },
+   {
+    "question": "What room is this?",
+    "nll_base": 1.4820963144302368,
+    "nll_bypass": 1.0887044668197632
+   },
+   {
+    "question": "What color is the comforter?",
+    "nll_base": 1.1201599836349487,
+    "nll_bypass": 1.4314662218093872
+   },
+   {
+    "question": "What does the sign say?",
+    "nll_base": 2.2845051288604736,
+    "nll_bypass": 4.244954586029053
+   },
+   {
+    "question": "What color is the sign?",
+    "nll_base": 0.7750651240348816,
+    "nll_bypass": 1.1686197519302368
+   }
+  ],
+  "mean_dnll": 0.47119706074396767,
+  "mean_base": 1.6542406320571899
+ }
+}

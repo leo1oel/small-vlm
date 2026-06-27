@@ -1,0 +1,19 @@
+defaults:
+    - sft-unified-bee-mix-warmstem
+    - _self_
+
+# 1000-step catch-up matrix (2026-06-22) — delta-vs-joint test for the warm
+# tokenizer. Identical to sft-unified-bee-mix-warmstem (SigLIP conv transplant +
+# high connector LR) but launched WITHOUT DELTA_TUNING, so the whole LLM trains
+# (text FFN included). Hypothesis: vmcbench is multiple-choice VQA that needs
+# language reasoning, so freezing the text FFN (delta) may cap the ceiling;
+# joint training lets the LLM adapt to use the transplanted visual tokens.
+# Distinct config name -> distinct run_dir (no collision with the delta arm).
+#
+# Launch (NO DELTA_TUNING):
+#   CONFIG_NAME=sft-unified-bee-mix-warmstem-joint \
+#   sbatch -p ckpt-all -A krishna-ckpt --gpus=a40:4 --cpus-per-task=32 \
+#     --mem=320G --time=8:00:00 train_l40s.slurm
+
+trainer:
+    run_name: warmstem-joint-1k

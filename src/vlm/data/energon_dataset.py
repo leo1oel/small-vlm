@@ -44,22 +44,28 @@ import hashlib
 import io
 import logging
 import os
+import re
 import threading
 import time
+import zlib
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import torch
 from PIL import Image
 
+from ..models.gen_image import make_position_ids, pixels_to_patches
 from ..models.image_processing_raw import RawImageProcessor
 from .data_arguments import DataArguments
 from .dataset import (
     DataCollatorForSupervisedDataset,
+    apply_image_position,
     check_audio_template_supported,
     inject_missing_media_tokens,
+    inject_query_placeholders,
     load_audio_frames,
     make_dummy_audio_frames,
     make_dummy_image_entry,
@@ -628,6 +634,11 @@ def cook_mm_chat(sample: dict, media_root: FileStore) -> MMChatRawSample:
 
 _ROLE_MAP = {"user": "human", "human": "human", "assistant": "gpt", "gpt": "gpt"}
 
+# Empty reasoning block some distilled caption sets (e.g. Bee Stage-1) prepend
+# to every assistant turn. Only a whitespace-bodied block is boilerplate —
+# real reasoning content must never be stripped.
+_EMPTY_THINK_RE = re.compile(r"^<think>\s*</think>\s*")
+
 
 def messages_to_conversations(messages: list[dict], data_args: DataArguments) -> list[dict]:
     """Convert messages-style records (typed content items) to the LLaVA
@@ -656,7 +667,10 @@ def messages_to_conversations(messages: list[dict], data_args: DataArguments) ->
             text = "\n".join(parts)
         else:
             raise ValueError(f"message has no usable content: {msg!r}")
-        conversations.append({"from": _ROLE_MAP.get(role, role), "value": text})
+        mapped_role = _ROLE_MAP.get(role, role)
+        if data_args.strip_empty_think and mapped_role == "gpt":
+            text = _EMPTY_THINK_RE.sub("", text)
+        conversations.append({"from": mapped_role, "value": text})
     return conversations
 
 
@@ -710,6 +724,16 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
         inject_missing_media_tokens(
             conversations, n_images=len(images), n_audios=len(audios), data_args=self.data_args
         )
+        apply_image_position(
+            conversations,
+            mode=self.data_args.image_position,
+            image_token=self.data_args.image_token,
+            # Stable per-sample seed: deterministic across epochs/resumes.
+            seed=zlib.crc32(str(sample.__key__).encode()),
+        )
+        # BREEN port: emit one "<query>" per image at the configured placement
+        # (after the image-position rewrite, so it follows the final image spot).
+        inject_query_placeholders(conversations, n_images=len(images), data_args=self.data_args)
 
         has_media = bool(images) or bool(audios)
         out = preprocess([conversations], self.tokenizer, self.data_args, has_image=has_media)
@@ -896,6 +920,105 @@ def _check_distributed_consistency(signature: tuple) -> None:
             )
 
 
+class VLMGenTaskEncoder(VLMChatTaskEncoder):  # pyright: ignore[reportUntypedBaseClass]
+    """Text->image GENERATION encoder (spec 2026-06-20). Reuses the chat cooker
+    (image bytes + messages) but emits a GENERATION sample: the assistant
+    caption becomes the conditioning prompt (no CE labels) and the image is
+    resized to a FIXED square canvas and patchified into the connector's patch
+    space as the flow-matching target. batch() stacks the fixed-N targets; the
+    model's forward routes on `target_patches` to the flow-matching loss."""
+
+    def __init__(
+        self,
+        processor: Any,
+        data_args: DataArguments,
+        resolution: int,
+        caption_max_len: int = 128,
+        patch_size: int | None = None,
+    ):
+        super().__init__(processor, data_args)
+        if not isinstance(self.image_processor, RawImageProcessor):
+            raise ValueError(
+                "dataset.task='generation' requires the encoder-free RawImageProcessor"
+            )
+        # patch_size None -> reuse the connector's 48px model patch (legacy). When
+        # the model runs an independent gen embedder (e.g. 16px), the dataset must
+        # patchify at that SAME size, else target dim (psz^2*3) mismatches the
+        # gen embedder/x-head (e.g. 768 vs 6912).
+        self.model_patch_size: int = int(
+            patch_size if patch_size else self.image_processor.model_patch_size
+        )
+        if resolution % self.model_patch_size != 0:
+            raise ValueError(
+                f"gen_resolution {resolution} must be a multiple of the generation "
+                f"patch size {self.model_patch_size}"
+            )
+        self.resolution: int = int(resolution)
+        self.grid: int = self.resolution // self.model_patch_size
+        self.n_patch: int = self.grid * self.grid
+        self.caption_max_len: int = int(caption_max_len)
+
+    def _caption(self, messages: list[dict]) -> str:
+        """The assistant turn's text (the caption used as the prompt)."""
+        text = ""
+        for msg in messages:
+            role = msg.get("role") or msg.get("from")
+            if _ROLE_MAP.get(role, role) != "gpt":
+                continue
+            content = msg.get("content") if "content" in msg else msg.get("value")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = " ".join(
+                    it["text"]
+                    for it in content
+                    if isinstance(it, dict) and it.get("type") == "text"
+                )
+        return text
+
+    @stateless  # pyright: ignore[reportUntypedFunctionDecorator]
+    def encode_sample(self, sample: MMChatRawSample) -> dict:
+        if not sample.image_bytes:
+            raise ValueError(f"generation sample {sample.__key__} has no image")
+        pil = Image.open(io.BytesIO(sample.image_bytes[0])).convert("RGB")
+        pil = pil.resize((self.resolution, self.resolution), Image.BICUBIC)
+        arr = np.asarray(pil, dtype=np.float32) / 255.0  # (H, W, 3) in [0, 1]
+        chw = torch.from_numpy(arr).permute(2, 0, 1).contiguous() * 2.0 - 1.0  # (3,H,W) [-1,1]
+        target_patches = pixels_to_patches(chw, self.model_patch_size)  # (N, patch_dim)
+        position_ids = make_position_ids(self.grid, self.grid)  # (N, 2)
+        caption = self._caption(sample.messages)
+        ids = self.tokenizer(
+            caption,
+            truncation=True,
+            max_length=self.caption_max_len,
+            add_special_tokens=True,
+        ).input_ids
+        return {
+            "input_ids": ids,  # list[int]
+            "target_patches": target_patches,  # (N, patch_dim) fp32
+            "image_position_ids": position_ids,  # (N, 2) long
+            "id": sample.__key__,
+            "__restore_key__": getattr(sample, "__restore_key__", ()),
+        }
+
+    def batch(self, samples: list[dict]) -> dict:
+        # Left-pad the caption so the timestep token + image block sit
+        # immediately after the real text (no RoPE position gap); positions are
+        # structural arange in assemble_generation_inputs.
+        enc = self.tokenizer.pad(
+            {"input_ids": [s["input_ids"] for s in samples]},
+            padding=True,
+            padding_side="left",
+            return_tensors="pt",
+        )
+        return {
+            "input_ids": enc["input_ids"],
+            "attention_mask": enc["attention_mask"],
+            "target_patches": torch.stack([s["target_patches"] for s in samples]),
+            "image_position_ids": torch.stack([s["image_position_ids"] for s in samples]),
+        }
+
+
 def build_energon_train_loader(
     dataset_config: Any,
     processor: Any,
@@ -970,6 +1093,15 @@ def build_energon_train_loader(
 
     metadataset_yaml = _metadataset_yaml(specs)
     wc = worker_config or WorkerConfig.default_worker_config(num_workers=dataset_config.num_workers)
+    if task_encoder is None and getattr(dataset_config, "task", "understanding") == "generation":
+        _gen_psz = getattr(dataset_config, "gen_patch_size", None)
+        task_encoder = VLMGenTaskEncoder(
+            processor,
+            data_args,
+            resolution=int(getattr(dataset_config, "gen_resolution", 384)),
+            caption_max_len=int(getattr(dataset_config, "gen_caption_max_len", 128)),
+            patch_size=int(_gen_psz) if _gen_psz else None,
+        )
     if task_encoder is None:
         length_buckets = getattr(dataset_config, "length_buckets", None)
         if length_buckets:
@@ -993,4 +1125,15 @@ def build_energon_train_loader(
         worker_config=wc,
         task_encoder=task_encoder,
     )
+    # PicklingError mitigation (2026-06-24): energon's rolling in-memory checkpoint
+    # (default checkpoint_every_sec=60) snapshots+pickles each worker's state about
+    # every other step. A worker mid-Azure-read holds a live ssl.SSLSocket, which
+    # is not picklable, so every snapshot logs a (caught, non-fatal) PicklingError —
+    # harmless to data flow (samples_seen stays smooth) but it balloons the logs
+    # over a multi-day stream. Durable resume does NOT use this rolling buffer: the
+    # HF checkpoint saves energon_state_rank*.pt via a SEPARATE coordinated
+    # get_checkpoint (verified present + correct). So lengthening the rolling
+    # interval just cuts the noise without touching resume. setdefault keeps it
+    # overridable.
+    savable_loader_kwargs.setdefault("checkpoint_every_sec", 900)
     return get_savable_loader(dataset, **savable_loader_kwargs)

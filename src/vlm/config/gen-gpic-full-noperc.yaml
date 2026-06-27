@@ -1,0 +1,8 @@
+defaults:
+    - gen-gpic-full
+    - _self_
+model:
+    generation:
+        perceptual_enabled: false
+trainer:
+    run_name: gen-gpic-full-noperc

@@ -1,0 +1,24 @@
+defaults:
+    - sft-unified
+    - override /dataset: energon-vision-bee
+    - _self_
+
+# 48G matrix — Arm 1 (baseline-mix): single-stage training on the 1:1:1
+# Bee-caption + OV-Instruct + FineVision blend. Everything else inherits
+# sft-unified (qwen_2_5 template, lr 6e-5, acc=1, chunked CE); the 48G token
+# budget lives in dataset/energon-vision-bee.yaml.
+#
+# 5000 steps x ~500 samples/step (acc=1 at the halved budget) ≈ 2.5M samples
+# (~0.83 epoch of Bee, ~0.83M each of OV/FV). save_steps 500 -> 10 ckpts for
+# checkpoint-wise curves. Pilot scale: ~14h on 4x L40S.
+#
+# Cluster launch (dedicated L40S, non-preemptible):
+#   CONFIG_NAME=sft-unified-bee-mix sbatch train_l40s.slurm
+
+trainer:
+    max_steps: 5000
+    save_steps: 500
+    # Pairs with batch_token_budget 32000 (see energon-vision-bee.yaml):
+    # 32k x 4 x 2 = 256k tokens/optimizer step, same effective batch as the
+    # 64k/acc1 plan that OOMed on 48G tail batches.
+    gradient_accumulation_steps: 2

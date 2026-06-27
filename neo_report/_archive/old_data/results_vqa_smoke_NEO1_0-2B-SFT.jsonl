@@ -1,0 +1,13 @@
+{"image": "synth_shapes.jpg", "question": "What shapes do you see and what are their colors?", "expected": "red circle (left), blue square (right), green strip at bottom", "answer": "I see two shapes in the image. One is a red circle, and the other is a blue square."}
+{"image": "synth_shapes.jpg", "question": "Is the circle to the left or to the right of the square?", "expected": "left", "answer": "The circle is to the left of the square. The image shows a red circle on the left and a blue square on the right."}
+{"image": "synth_stars.jpg", "question": "How many stars are in the image?", "expected": "5", "answer": "There are 5 stars in the image."}
+{"image": "synth_text.jpg", "question": "What text is written in the image?", "expected": "HELLO WORLD", "answer": "All words in the image:\nHELLO\nWORLD"}
+{"image": "synth_count.jpg", "question": "How many red circles are there?", "expected": "3", "answer": "There are 3 red circles in the image."}
+{"image": "synth_count.jpg", "question": "How many blue circles are there?", "expected": "2", "answer": "There are 2 blue circles in the image."}
+{"image": "coco_000000039769.jpg", "question": "How many cats are in the image?", "expected": "2", "answer": "There are two cats in the image."}
+{"image": "coco_000000039769.jpg", "question": "What are the cats lying on?", "expected": "pink couch / blanket (remotes nearby)", "answer": "The cats are lying on a pink blanket."}
+{"image": "coco_000000000285.jpg", "question": "What animal is shown in this picture?", "expected": "(brown) bear", "answer": "The animal shown in the picture is a bear."}
+{"image": "coco_000000000632.jpg", "question": "What room of the house is this?", "expected": "bedroom", "answer": "Based on the presence of a bed, dresser, mirror, bookshelf, and window, this room is most likely a bedroom."}
+{"image": "coco_000000000632.jpg", "question": "What color is the comforter on the bed?", "expected": "blue", "answer": "The comforter on the bed is blue."}
+{"image": "coco_000000000724.jpg", "question": "What does the sign say?", "expected": "STOP", "answer": "The sign says \"STOP\"."}
+{"image": "coco_000000000724.jpg", "question": "Is there anything unusual about the sign?", "expected": "it is upside down", "answer": "Yes, there is something unusual about the sign. The word \"STOP\" is written backwards on the stop sign. This is not a typical or standard way to write the word \"STOP\"."}
