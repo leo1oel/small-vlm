@@ -45,11 +45,17 @@ def main():
             continue
         ks = causal[0]["ks"]
         causal = [r for r in causal if r["ks"] == ks]
-        N = {"LLaVA-1.5-7B": 32, "Qwen2.5-VL-7B": 28, "Gemma-4-12B": 48,
-             "NEO1.0-2B-SFT": 40, "SAIL-7B": 32}[name]
+        N = {
+            "LLaVA-1.5-7B": 32,
+            "Qwen2.5-VL-7B": 28,
+            "Gemma-4-12B": 48,
+            "NEO1.0-2B-SFT": 40,
+            "SAIL-7B": 32,
+        }[name]
 
         def acc(g):
             return mean(g(r)["pred"] == r["gt"] for r in causal)
+
         intact = acc(lambda r: r["intact"])
         swap = acc(lambda r: r["swap"])
         R0 = intact - swap
@@ -60,19 +66,25 @@ def main():
             rec[f"acc_{mode}"] = a
             rec[f"R0_{mode}"] = [a[j] - an[j] for j in range(len(ks))]
         res[name] = rec
-        print(f"\n{name} ({fam}) nc={len(causal)} N={N} | baseline intact={intact:.2f} R0={R0:+.2f}")
-        print(f"  k/N        : " + " ".join(f"{k/N:5.2f}" for k in ks))
-        print(f"  frzIMG acc : " + " ".join(f"{x:5.2f}" for x in rec["acc_img"]) + "   (vs intact)")
-        print(f"  frzIMG R0  : " + " ".join(f"{x:+5.2f}" for x in rec["R0_img"]) + f"   (vs {R0:+.2f})")
-        print(f"  frzTXT acc : " + " ".join(f"{x:5.2f}" for x in rec["acc_txt"]))
-        print(f"  frzTXT R0  : " + " ".join(f"{x:+5.2f}" for x in rec["R0_txt"]))
+        print(
+            f"\n{name} ({fam}) nc={len(causal)} N={N} | baseline intact={intact:.2f} R0={R0:+.2f}"
+        )
+        print("  k/N        : " + " ".join(f"{k / N:5.2f}" for k in ks))
+        print("  frzIMG acc : " + " ".join(f"{x:5.2f}" for x in rec["acc_img"]) + "   (vs intact)")
+        print(
+            "  frzIMG R0  : " + " ".join(f"{x:+5.2f}" for x in rec["R0_img"]) + f"   (vs {R0:+.2f})"
+        )
+        print("  frzTXT acc : " + " ".join(f"{x:5.2f}" for x in rec["acc_txt"]))
+        print("  frzTXT R0  : " + " ".join(f"{x:+5.2f}" for x in rec["R0_txt"]))
     (ROOT / "freeze_results.json").write_text(json.dumps(res, indent=1))
 
     if not res:
         return
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     fig, axes = plt.subplots(1, len(res), figsize=(4.4 * len(res), 4.0), squeeze=False)
     for i, (name, v) in enumerate(res.items()):
         a = axes[0][i]
@@ -86,8 +98,11 @@ def main():
         if i == 0:
             a.set_ylabel("usable image signal R0(k)")
         a.legend(fontsize=7)
-    fig.suptitle("FREEZE test: image signal surviving when one stream's residual is held at "
-                 "layer-0 values through [0..k)", fontsize=11)
+    fig.suptitle(
+        "FREEZE test: image signal surviving when one stream's residual is held at "
+        "layer-0 values through [0..k)",
+        fontsize=11,
+    )
     fig.tight_layout()
     fig.savefig(OUT / "fig_freeze.png", dpi=130)
     print("\nwrote fig_freeze.png")

@@ -63,16 +63,12 @@ def doc_to_prompt(doc) -> str:
 
 class ProbeRunner:
     def __init__(self, ckpt: str):
-        self.model, self.processor, info = load_model(
-            ckpt, bf16=True, attn_implementation="eager"
-        )
+        self.model, self.processor, info = load_model(ckpt, bf16=True, attn_implementation="eager")
         assert info["encoder_free"], "probe assumes the encoder-free unified path"
         self.data_args = _data_args_from_config(self.model.config)
         self.conv_mode = resolve_conv_mode(self.model.config, ckpt, conv_mode=None)
         self.tok = self.processor.tokenizer
-        self.letter_ids = {
-            c: self.tok(c, add_special_tokens=False).input_ids[0] for c in "ABCD"
-        }
+        self.letter_ids = {c: self.tok(c, add_special_tokens=False).input_ids[0] for c in "ABCD"}
         self.layers = self.model.model.layers
         self.final_norm = self.model.model.norm
         self.n_layers = len(self.layers)
@@ -136,16 +132,18 @@ class ProbeRunner:
         )
         from vlm.data.dataset import tokenizer_multimodal_token
 
-        input_ids = tokenizer_multimodal_token(
-            prompt, self.tok, self.data_args, return_tensors="pt"
-        ).unsqueeze(0).to(DEV)
+        input_ids = (
+            tokenizer_multimodal_token(prompt, self.tok, self.data_args, return_tensors="pt")
+            .unsqueeze(0)
+            .to(DEV)
+        )
         gen_kwargs = prepare_media_inputs(
             self.model, self.processor, [image.convert("RGB")], [], self.data_args
         )
         image_features = self.model.encode_raw_patches(
             gen_kwargs["images"], gen_kwargs["image_position_ids"]
         )
-        (_, _, attention_mask, _, inputs_embeds, _, block_ids) = (
+        (_, _, attention_mask, _, inputs_embeds, _, block_ids, _) = (
             self.model.prepare_inputs_labels_for_multimodal(
                 input_ids,
                 None,
@@ -171,8 +169,9 @@ class ProbeRunner:
         )
 
     @torch.no_grad()
-    def forward_scored(self, embeds, mask2d, vm, gt, letters, depth=0,
-                       capture=False, want_attn=False):
+    def forward_scored(
+        self, embeds, mask2d, vm, gt, letters, depth=0, capture=False, want_attn=False
+    ):
         self.depth = depth
         self.vm = vm
         self._mask_cache.clear()
@@ -229,17 +228,25 @@ def main():
             embeds, mask2d, vm = runner.build(doc, doc["image"])
             seq_len = int(embeds.shape[1])
             rec = dict(
-                i=i, gt=gt, letters=letters, category=doc["category"],
-                seq_len=seq_len, n_vis=int(vm.sum()),
+                i=i,
+                gt=gt,
+                letters=letters,
+                category=doc["category"],
+                seq_len=seq_len,
+                n_vis=int(vm.sum()),
             )
             rec["intact"] = runner.forward_scored(
-                embeds, mask2d, vm, gt, letters, depth=0, capture=True,
+                embeds,
+                mask2d,
+                vm,
+                gt,
+                letters,
+                depth=0,
+                capture=True,
                 want_attn=seq_len <= ATTN_SEQ_CAP,
             )
             for d in DEPTHS:
-                rec[f"iso_d{d}"] = runner.forward_scored(
-                    embeds, mask2d, vm, gt, letters, depth=d
-                )
+                rec[f"iso_d{d}"] = runner.forward_scored(embeds, mask2d, vm, gt, letters, depth=d)
             s_embeds, s_mask2d, s_vm = runner.build(doc, donor["image"])
             rec["swap"] = runner.forward_scored(
                 s_embeds, s_mask2d, s_vm, gt, letters, depth=0, capture=True

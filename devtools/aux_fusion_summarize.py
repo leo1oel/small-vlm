@@ -48,11 +48,15 @@ def main():
 
     # ---- 1. isolation depth sweep --------------------------------------
     print("== Isolation sweep: block text->vision in layers [0..d) ==")
-    print(f"{'cond':>8} | {'base acc':>8} {'aux acc':>8} | {'base NLL':>8} {'aux NLL':>8} | drop-vs-d0 (base/aux)")
+    print(
+        f"{'cond':>8} | {'base acc':>8} {'aux acc':>8} | {'base NLL':>8} {'aux NLL':>8} | drop-vs-d0 (base/aux)"
+    )
     b0 = acc(B, lambda r: r["intact"])
     a0 = acc(A, lambda r: r["intact"])
-    print(f"{'d0':>8} | {b0:8.3f} {a0:8.3f} | "
-          f"{mean_nll(B, lambda r: r['intact']):8.3f} {mean_nll(A, lambda r: r['intact']):8.3f} |")
+    print(
+        f"{'d0':>8} | {b0:8.3f} {a0:8.3f} | "
+        f"{mean_nll(B, lambda r: r['intact']):8.3f} {mean_nll(A, lambda r: r['intact']):8.3f} |"
+    )
     for d in DEPTHS:
         key = f"iso_d{d}"
         ab, aa = acc(B, lambda r: r[key]), acc(A, lambda r: r[key])
@@ -60,17 +64,24 @@ def main():
         # within-arm McNemar vs intact: is the damage at depth d significant?
         _, _, pb = mcnemar(B, lambda r: r["intact"], lambda r: r[key])
         _, _, pa = mcnemar(A, lambda r: r["intact"], lambda r: r[key])
-        print(f"{'d'+str(d):>8} | {ab:8.3f} {aa:8.3f} | {nb:8.3f} {na:8.3f} | "
-              f"{ab-b0:+.3f} (p={pb:.3f}) / {aa-a0:+.3f} (p={pa:.3f})")
+        print(
+            f"{'d' + str(d):>8} | {ab:8.3f} {aa:8.3f} | {nb:8.3f} {na:8.3f} | "
+            f"{ab - b0:+.3f} (p={pb:.3f}) / {aa - a0:+.3f} (p={pa:.3f})"
+        )
     sb = acc(B, lambda r: r["swap"])
     sa = acc(A, lambda r: r["swap"])
-    print(f"{'swap':>8} | {sb:8.3f} {sa:8.3f} | "
-          f"{mean_nll(B, lambda r: r['swap']):8.3f} {mean_nll(A, lambda r: r['swap']):8.3f} | (wrong-image floor)")
+    print(
+        f"{'swap':>8} | {sb:8.3f} {sa:8.3f} | "
+        f"{mean_nll(B, lambda r: r['swap']):8.3f} {
+            mean_nll(A, lambda r: r['swap']):8.3f} | (wrong-image floor)"
+    )
 
     # ---- 2. logit-lens arrival + image-swap sensitivity ------------------
     print("\n== Layer-k readout (final-norm + tied lm_head), answer position ==")
-    print(f"{'layer':>6} | {'base acc':>8} {'aux acc':>8} | {'base NLL':>9} {'aux NLL':>9} | "
-          f"{'swapΔNLL base':>13} {'swapΔNLL aux':>13}")
+    print(
+        f"{'layer':>6} | {'base acc':>8} {'aux acc':>8} | {'base NLL':>9} {'aux NLL':>9} | "
+        f"{'swapΔNLL base':>13} {'swapΔNLL aux':>13}"
+    )
     for k in EXITS:
         gk = lambda r, k=k: r["intact"].get("exits", {}).get(str(k))
         gks = lambda r, k=k: r["swap"].get("exits", {}).get(str(k))

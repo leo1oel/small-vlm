@@ -9,10 +9,12 @@ baselines are from GENERALIZATION_RESULTS.md. Run with neo venv python (matplotl
 
 Usage: python devtools/fig_worldbench.py
 """
+
 import json
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
@@ -41,16 +43,24 @@ def main():
     ax1.bar(x - w, vmc, w, label="VMCBench", color="#8da0cb")
     ax1.bar(x, mms, w, label="MMStar", color="#66c2a5")
     ax1.bar(x + w, wb, w, label="WorldBench", color="#fc8d62")
-    ax1.set_xticks(x); ax1.set_xticklabels([BASE[t][0] for t in tags], rotation=20, ha="right", fontsize=9)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([BASE[t][0] for t in tags], rotation=20, ha="right", fontsize=9)
     ax1.set_ylabel("fusion depth  (sufmeanabl q50, relative)")
     ax1.set_ylim(0, 0.7)
     ax1.axhspan(0.35, 0.55, color="#cccccc", alpha=0.3, zorder=0)  # mid-stack band
-    ax1.set_title("Fusion depth is benchmark-invariant\n(WorldBench tracks VMCBench/MMStar, all mid-stack)")
-    ax1.legend(fontsize=8); ax1.grid(alpha=0.25, axis="y")
+    ax1.set_title(
+        "Fusion depth is benchmark-invariant\n(WorldBench tracks VMCBench/MMStar, all mid-stack)"
+    )
+    ax1.legend(fontsize=8)
+    ax1.grid(alpha=0.25, axis="y")
 
     # ---- panel 2: by-domain (strongest anchor) ----
     # by-domain panel: prefer the full-data anchor (Gemma ran all 2000; InternVL timed out at 875)
-    anchor = "wb_gemma12" if (ROOT / "wb_domain_wb_gemma12.json").exists() else (tags[0] if tags else None)
+    anchor = (
+        "wb_gemma12"
+        if (ROOT / "wb_domain_wb_gemma12.json").exists()
+        else (tags[0] if tags else None)
+    )
     if anchor:
         d = json.load(open(ROOT / f"wb_domain_{anchor}.json"))
         doms = sorted(d["by_domain"].keys())
@@ -59,16 +69,26 @@ def main():
         cols = ["#fc8d62" if rr >= 0.05 else "#dddddd" for rr in r0]
         ax2.bar(range(len(doms)), q, color=cols)
         if d.get("overall"):
-            ax2.axhline(d["overall"]["q50"], color="#d53e4f", ls="--", lw=1,
-                        label=f"overall q50={d['overall']['q50']:.2f}")
+            ax2.axhline(
+                d["overall"]["q50"],
+                color="#d53e4f",
+                ls="--",
+                lw=1,
+                label=f"overall q50={d['overall']['q50']:.2f}",
+            )
         ax2.axhspan(0.35, 0.55, color="#cccccc", alpha=0.3, zorder=0)
         ax2.set_xticks(range(len(doms)))
-        ax2.set_xticklabels([k.replace(", ", ",\n").replace(" ", "\n", 1) for k in doms], fontsize=7)
+        ax2.set_xticklabels(
+            [k.replace(", ", ",\n").replace(" ", "\n", 1) for k in doms], fontsize=7
+        )
         ax2.set_ylabel("fusion depth (sufmeanabl q50)")
         ax2.set_ylim(0, 0.7)
-        ax2.set_title(f"{BASE.get(anchor, (anchor,))[0]}: by visual domain\n(grey = R0<0.05, no signal; "
-                      "coloured = mid-stack regardless of domain)")
-        ax2.legend(fontsize=8); ax2.grid(alpha=0.25, axis="y")
+        ax2.set_title(
+            f"{BASE.get(anchor, (anchor,))[0]}: by visual domain\n(grey = R0<0.05, no signal; "
+            "coloured = mid-stack regardless of domain)"
+        )
+        ax2.legend(fontsize=8)
+        ax2.grid(alpha=0.25, axis="y")
 
     plt.tight_layout()
     plt.savefig(OUT, dpi=140)

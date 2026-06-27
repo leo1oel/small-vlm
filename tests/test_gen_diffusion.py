@@ -55,8 +55,8 @@ def test_add_noise_broadcasts_per_sample_t():
     noise = torch.randn_like(x1)
     t = torch.tensor([0.0, 0.5, 1.0])
     x_t, _ = add_noise(x1, t, noise_scale=1.0, noise=noise)
-    assert torch.allclose(x_t[0], noise[0], atol=1e-5)          # t=0
-    assert torch.allclose(x_t[2], x1[2], atol=1e-5)             # t=1
+    assert torch.allclose(x_t[0], noise[0], atol=1e-5)  # t=0
+    assert torch.allclose(x_t[2], x1[2], atol=1e-5)  # t=1
     assert torch.allclose(x_t[1], 0.5 * x1[1] + 0.5 * noise[1], atol=1e-5)
 
 

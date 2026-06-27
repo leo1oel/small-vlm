@@ -89,9 +89,13 @@ def main():
                 bv = barvmc(s)
                 if bv and bv[0] is not None:
                     gap = f"{vmc - bv[0]:+.1f}@{bv[1]}"
-            print(f"{label:32s} {s:>5} {str(vmc or ''):>5} {str(m.get('pope') or ''):>5} "
-                  f"{str(m.get('mmvp') or ''):>5} {gap:>8}")
-    print("\nGOAL: a native arm with gap ≥ -5.0 (within 5 vmcbench points of the bar) at step 1000.")
+            print(
+                f"{label:32s} {s:>5} {str(vmc or ''):>5} {str(m.get('pope') or ''):>5} "
+                f"{str(m.get('mmvp') or ''):>5} {gap:>8}"
+            )
+    print(
+        "\nGOAL: a native arm with gap ≥ -5.0 (within 5 vmcbench points of the bar) at step 1000."
+    )
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ dense OCR) fuse at a different depth than coarse-object domains (Objects/Scenes)
 
 Usage: python devtools/wb_domain_analysis.py <results_wb.jsonl> <tag> [min_domain_n]
 """
+
 import json
 import sys
 from collections import defaultdict
@@ -33,11 +34,22 @@ def suf_quants(rows):
     if abs(R0) < 1e-6:
         return None
     Nd = len(sm[0]["depths"]) - 1
-    ret = [(mean(r["sufmeanabl"][d]["pred"] == r["gt"] for r in sm)
-            - mean(r["sufmeanabl_null"][d]["pred"] == r["gt"] for r in sm)) / R0 for d in range(Nd + 1)]
+    ret = [
+        (
+            mean(r["sufmeanabl"][d]["pred"] == r["gt"] for r in sm)
+            - mean(r["sufmeanabl_null"][d]["pred"] == r["gt"] for r in sm)
+        )
+        / R0
+        for d in range(Nd + 1)
+    ]
     q = quants_from_retained(ret, rising=True)
-    return {"n": len(sm), "intact": round(iacc, 3), "swap": round(sacc, 3),
-            "R0": round(R0, 3), **{k: round(v, 3) for k, v in q.items()}}
+    return {
+        "n": len(sm),
+        "intact": round(iacc, 3),
+        "swap": round(sacc, 3),
+        "R0": round(R0, 3),
+        **{k: round(v, 3) for k, v in q.items()},
+    }
 
 
 def main():
@@ -48,9 +60,11 @@ def main():
     overall = suf_quants(cz)
     print(f"== {tag} (WorldBench) ==  n_causal={len(cz)}")
     if overall:
-        print(f"  OVERALL  intact={overall['intact']} swap={overall['swap']} R0={overall['R0']} "
-              f"sufmeanabl q50={overall['q50']} [{overall['q25']},{overall['q75']}]"
-              + ("  ⚠R0<0.05" if overall["R0"] < 0.05 else ""))
+        print(
+            f"  OVERALL  intact={overall['intact']} swap={overall['swap']} R0={overall['R0']} "
+            f"sufmeanabl q50={overall['q50']} [{overall['q25']},{overall['q75']}]"
+            + ("  ⚠R0<0.05" if overall["R0"] < 0.05 else "")
+        )
     by = defaultdict(list)
     for r in cz:
         by[r.get("domain", "?")].append(r)
@@ -62,13 +76,17 @@ def main():
             print(f"    {dom:28s} n={len(by[dom]):3d}  (too few / R0~0, skipped)")
             continue
         flag = "  ⚠R0<0.05" if q["R0"] < 0.05 else ""
-        print(f"    {dom:28s} n={q['n']:3d}  R0={q['R0']:+.2f}  q50={q['q50']:.2f} [{q['q25']:.2f},{q['q75']:.2f}]{flag}")
+        print(
+            f"    {dom:28s} n={q['n']:3d}  R0={q['R0']:+.2f}  q50={q['q50']:.2f} [{q['q25']:.2f},{q['q75']:.2f}]{flag}"
+        )
         rowsout.append((dom, q))
     # spread across domains (the headline number: does fusion depth move with visual domain?)
     qs = [q["q50"] for _, q in rowsout if q["R0"] >= 0.05]
     if len(qs) >= 2:
-        print(f"  => domain q50 spread: min={min(qs):.2f} max={max(qs):.2f} range={max(qs)-min(qs):.2f} "
-              f"(small range = fusion depth is domain-invariant)")
+        print(
+            f"  => domain q50 spread: min={min(qs):.2f} max={max(qs):.2f} range={max(qs) - min(qs):.2f} "
+            f"(small range = fusion depth is domain-invariant)"
+        )
     out = {"tag": tag, "overall": overall, "by_domain": {d: q for d, q in rowsout}}
     Path(f"neo_analysis/wb_domain_{tag}.json").write_text(json.dumps(out, indent=2))
     print(f"  saved neo_analysis/wb_domain_{tag}.json", flush=True)

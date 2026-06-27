@@ -21,7 +21,10 @@ INK = "#2b2b2b"
 
 def setup_font():
     from matplotlib import font_manager, rcParams
-    for f in glob.glob("/gscratch/krishna/leoym/fonts/gillius_ctan/gillius/opentype/GilliusADF-*.otf"):
+
+    for f in glob.glob(
+        "/gscratch/krishna/leoym/fonts/gillius_ctan/gillius/opentype/GilliusADF-*.otf"
+    ):
         if "Cond" not in f and "Italic" not in f:
             font_manager.fontManager.addfont(f)
     rcParams["font.family"] = "Gillius ADF"
@@ -33,6 +36,7 @@ def setup_font():
 
 def main():
     import matplotlib
+
     matplotlib.use("Agg")
     setup_font()
     import matplotlib.pyplot as plt
@@ -50,28 +54,53 @@ def main():
     fig, ax = plt.subplots(figsize=(8.6, 5.0))
     qwen0 = d["Qwen2.5-VL-7B"][REF][0]
     ax.axhline(qwen0, color="#e07b39", lw=1.0, ls=":", alpha=0.9, zorder=1)
-    ax.text(0.995, qwen0 + 0.015,
-            "output level of a real vision encoder\n(Qwen ViT features at LLM entry)",
-            ha="right", va="bottom", fontsize=9, color="#b65c1e")
+    ax.text(
+        0.995,
+        qwen0 + 0.015,
+        "output level of a real vision encoder\n(Qwen ViT features at LLM entry)",
+        ha="right",
+        va="bottom",
+        fontsize=9,
+        color="#b65c1e",
+    )
 
     for label, key, color, ls, pb in series:
         c = d[key][REF]
         L = len(c)
         x = [i / (L - 1) for i in range(L)]
-        ax.plot(x, c, color=color, ls=ls, lw=2.2 if pb else 1.7,
-                label=label, zorder=3, solid_capstyle="round")
+        ax.plot(
+            x,
+            c,
+            color=color,
+            ls=ls,
+            lw=2.2 if pb else 1.7,
+            label=label,
+            zorder=3,
+            solid_capstyle="round",
+        )
         if pb:
             ax.axvspan(0, pb, color=color, alpha=0.08, zorder=0)
-            ax.plot([pb, pb], [0.05, 0.8], color=color, lw=1.0,
-                    ls=(0, (2.6, 1.8)), zorder=2)
+            ax.plot([pb, pb], [0.05, 0.8], color=color, lw=1.0, ls=(0, (2.6, 1.8)), zorder=2)
             ax.plot(pb, 0.8, marker="v", ms=5, color=color, zorder=4)
         # entry marker
         ax.plot(x[0], c[0], "o", ms=6, mfc="white", mec=color, mew=1.6, zorder=4)
 
-    ax.text(12 / 40 + 0.012, 0.115, "pre-Buffer\nboundary (2B)", fontsize=8.5,
-            color="#1f4e9c", va="bottom")
-    ax.text(6 / 42 + 0.012, 0.185, "pre-Buffer\nboundary (9B)", fontsize=8.5,
-            color="#2e8bc0", va="bottom")
+    ax.text(
+        12 / 40 + 0.012,
+        0.115,
+        "pre-Buffer\nboundary (2B)",
+        fontsize=8.5,
+        color="#1f4e9c",
+        va="bottom",
+    )
+    ax.text(
+        6 / 42 + 0.012,
+        0.185,
+        "pre-Buffer\nboundary (9B)",
+        fontsize=8.5,
+        color="#2e8bc0",
+        va="bottom",
+    )
 
     ax.set_xlim(0, 1)
     ax.set_ylim(0.05, 0.88)

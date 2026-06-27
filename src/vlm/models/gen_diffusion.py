@@ -81,9 +81,7 @@ def timestep_embedding(t: Tensor, dim: int, max_period: int = 10000) -> Tensor:
     minit2i convention (mini_t2i/model.py:36). Odd dim is zero-padded by one."""
     half = dim // 2
     freqs = torch.exp(
-        -math.log(max_period)
-        * torch.arange(half, device=t.device, dtype=torch.float32)
-        / half
+        -math.log(max_period) * torch.arange(half, device=t.device, dtype=torch.float32) / half
     )
     args = t.float()[:, None] * freqs[None]
     emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)

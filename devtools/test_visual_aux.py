@@ -138,7 +138,10 @@ def main():
     for k in g_full:
         r = rel_diff(g_full[k], g_chunk[k])
         assert r < 1e-4, f"baseline grad[{k}] rel={r}"
-    print(f"1. baseline parity: chunked {loss_chunk:.8f} == full {loss_full:.8f}, grads OK", flush=True)
+    print(
+        f"1. baseline parity: chunked {loss_chunk:.8f} == full {loss_full:.8f}, grads OK",
+        flush=True,
+    )
     del model
     torch.cuda.empty_cache()
 
@@ -309,7 +312,9 @@ def main():
     # (lm_head as output projection) is provably untouched by the visual loss.
     r_h = rel_diff(h_on, h_off)
     ce_on = loss_on - VA_W * comps_on["visual_aux"]
-    assert r_h == 0.0, f"post-norm hidden changed (rel={r_h}) — visual loss leaked into the CE forward"
+    assert r_h == 0.0, (
+        f"post-norm hidden changed (rel={r_h}) — visual loss leaked into the CE forward"
+    )
     assert abs(ce_on - loss_off) < 2e-5, f"CE component changed: ce_on={ce_on} ce_off={loss_off}"
     # Connector receives the visual prediction-path gradient (through the trunk).
     r_conn = rel_diff(g_on["connector"], g_off["connector"])
@@ -368,7 +373,10 @@ def main():
     head_grad = model.visual_aux_head[0].weight.grad
     assert head_grad is not None, "head grad is None on degenerate batch (broke the anchor)"
     assert head_grad.abs().max().item() == 0.0, "degenerate head grad should be exactly zero"
-    print("5. degenerate text-only: finite loss, visual_aux==0, head grad zero (not None) OK", flush=True)
+    print(
+        "5. degenerate text-only: finite loss, visual_aux==0, head grad zero (not None) OK",
+        flush=True,
+    )
 
     # ---- 6. mid-layer + gradient checkpointing -----------------------------
     batch = fresh_batch(processor, data_args)
@@ -444,7 +452,10 @@ def main():
 
     # positive cases
     assert validate_visual_aux_config("none", None, n_layers, 1024, True) == ("none", None)
-    assert validate_visual_aux_config("aim_pixel", None, n_layers, 1024, True) == ("aim_pixel", None)
+    assert validate_visual_aux_config("aim_pixel", None, n_layers, 1024, True) == (
+        "aim_pixel",
+        None,
+    )
     assert validate_visual_aux_config("nepa", 6, n_layers, 1024, True) == ("nepa", 6)
     # ValueError matrix
     bad_cases = [

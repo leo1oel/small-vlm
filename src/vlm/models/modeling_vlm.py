@@ -319,10 +319,17 @@ def _routed_mlp_forward(self: Any, hidden_states: Tensor) -> Tensor:
     on the module across the forward+backward of a step, so gradient-checkpoint
     recompute reproduces the same routing."""
     text_out = self._text_mlp_cls_forward(self, hidden_states)
+    gated = getattr(self, "_expert_gate", False)
+    if gated:
+        # BREEN per-expert sigmoid gate: F.sigmoid(gate(x)) * expert(x). Applied
+        # to the text FFN for every token; the visual FFN gate is applied below.
+        text_out = torch.sigmoid(self.expert_gate_text(hidden_states)) * text_out
     mask = self._visual_mask
     if mask is None:
         return text_out
     visual_out = self.mlp_visual(hidden_states)
+    if gated:
+        visual_out = torch.sigmoid(self.expert_gate_visual(hidden_states)) * visual_out
     return text_out * (1.0 - mask) + visual_out * mask
 
 
@@ -351,6 +358,17 @@ def install_visual_experts(model: Any, config: Any) -> None:
         # shards on reload — exactly like visual_aux_head).
         mlp.mlp_visual = type(mlp)(config)
         mlp._visual_mask = None
+        # Per-expert sigmoid gate (BREEN, optional). Built on BOTH paths so
+        # checkpoint shards have a module to load into; near-identity init is a
+        # fresh-build-only step (init_visual_expert_gates). _expert_gate flips
+        # the gated forward on.
+        if bool(getattr(config, "visual_expert_gate", False)):
+            h = int(config.hidden_size)
+            mlp.expert_gate_text = nn.Linear(h, 1)
+            mlp.expert_gate_visual = nn.Linear(h, 1)
+            mlp._expert_gate = True
+        else:
+            mlp._expert_gate = False
         # The ORIGINAL (text) FFN computation as the unbound class forward:
         # calling it on `self` runs only gate/up/down and never recurses into
         # mlp_visual or this override.
@@ -368,11 +386,62 @@ def init_visual_experts_from_text(model: Any) -> None:
     there (Mono-InternVL init-from-LLM-FFN). No-op when no experts installed."""
     count = 0
     for mlp in getattr(model, "_visual_expert_mlps", []):
-        text_sd = {k: v for k, v in mlp.state_dict().items() if not k.startswith("mlp_visual.")}
+        # Only the base text-FFN weights (gate_proj/up_proj/down_proj) — exclude
+        # the visual expert itself AND the per-expert sigmoid gates (expert_gate_*),
+        # which mlp_visual (a plain FFN) does not have.
+        text_sd = {
+            k: v
+            for k, v in mlp.state_dict().items()
+            if not k.startswith("mlp_visual.") and not k.startswith("expert_gate")
+        }
         mlp.mlp_visual.load_state_dict(text_sd)
         count += 1
     if count:
         log.info(f"Initialized {count} visual FFN experts from their text FFN weights.")
+
+
+def init_learnable_query(model: Any) -> None:
+    """Fresh-build only: initialize the learnable query Parameter (BREEN port).
+
+    A bare nn.Parameter added to a `from_pretrained` model is a MISSING KEY in
+    the base-LM checkpoint, and the backbone's `_init_weights` only initializes
+    recognized module types (Linear/Embedding/RMSNorm) — it never touches a
+    top-level Parameter. So the query is left as `to_empty` (uninitialized)
+    memory → garbage/NaN → a NaN forward from step 0. Materialize it on a real
+    device and randn-init at the LM's init scale. Reloads carry the trained
+    queries (this is fresh-build only). No-op when absent."""
+    q = getattr(model, "learnable_query", None)
+    if q is None:
+        return
+    std = float(getattr(model.config, "initializer_range", 0.02) or 0.02)
+    dev = next(
+        (p.device for p in model.parameters() if p.device.type != "meta"),
+        torch.device("cpu"),
+    )
+    new = torch.empty(tuple(q.shape), dtype=q.dtype, device=dev).normal_(mean=0.0, std=std)
+    model.learnable_query = nn.Parameter(new)
+    log.info(f"Initialized learnable_query {tuple(new.shape)} (randn x {std:.3g}).")
+
+
+def init_visual_expert_gates(model: Any) -> None:
+    """Fresh-build only: initialize each per-expert sigmoid gate to near-identity
+    (zero weight, bias 4.0 -> sigmoid(4)≈0.982) so training starts from a nearly
+    ungated routed FFN, then learns to attenuate. Near-identity, NOT a literal
+    t=0 no-op: it scales each FFN by ~0.982 (≈1.8% attenuation) from step 0
+    (raise the bias toward 6-8 for a closer-to-identity start).
+    Reloads skip this — the checkpoint carries trained gates. No-op when gates
+    are off (no expert_gate_* modules)."""
+    count = 0
+    for mlp in getattr(model, "_visual_expert_mlps", []):
+        for name in ("expert_gate_text", "expert_gate_visual"):
+            g = getattr(mlp, name, None)
+            if g is None:
+                continue
+            nn.init.zeros_(g.weight)
+            nn.init.constant_(g.bias, 4.0)
+            count += 1
+    if count:
+        log.info(f"Initialized {count} visual-expert sigmoid gates to near-identity.")
 
 
 def create_dynamic_causal_vlm_class(
@@ -395,6 +464,14 @@ def create_dynamic_causal_vlm_class(
         # module the distill loss trains). The frozen teacher is attached
         # separately by vlm.attach_distill_teacher (off the module tree).
         self.visual_distill_head = self._build_visual_distill_head(config)
+        # Learnable CLIP-distillation queries (BREEN port, spec 2026-06-24): a
+        # trainable Parameter spliced in at "<query>" placeholders (the distill
+        # site). None unless config.learnable_query — baseline models carry no
+        # extra param, and old checkpoints (no learnable_query_* keys) load
+        # unchanged. A bare Parameter on the top module is NOT touched by
+        # post_init's _init_weights (which only re-inits known nn.Module types),
+        # so this randn init survives; reloads overwrite it from the checkpoint.
+        self.learnable_query = self._build_learnable_query(config)
         self._build_generation_modules(config)
         self.post_init()
         log.info(f"DynamicCausalVLM class {self.__class__.__name__} initialized.")
@@ -436,7 +513,29 @@ def create_dynamic_causal_vlm_class(
             layers=layers,
             head_hidden=int(getattr(config, "visual_distill_head_hidden", 0) or 0),
             loss_type=loss_type,
+            num_fine=int(getattr(config, "learnable_query_num_fine", 64)),
+            num_coarse=int(getattr(config, "learnable_query_num_coarse", 36)),
         )
+
+    def _build_learnable_query(self: Any, config: Any) -> "nn.Parameter | None":
+        """Learnable query Parameter for BREEN distillation (spec 2026-06-24).
+        randn(num_fine+num_coarse, hidden); None when disabled. It is the
+        distillation SITE: spliced in at "<query>" placeholders, routed to the
+        visual FFN expert, label-masked (no CE), and aligned to the dual-pooled
+        CLIP grid by the breen distill method."""
+        if not bool(getattr(config, "learnable_query", False)):
+            return None
+        n = int(getattr(config, "learnable_query_num_fine", 64)) + int(
+            getattr(config, "learnable_query_num_coarse", 36)
+        )
+        # randn at the LM's init scale, NOT unit randn. BREEN's raw
+        # randn(0,1) queries have magnitude ~sqrt(hidden) (≈32 at 1024) — ~30x
+        # the token-embedding scale a PRETRAINED backbone expects; fed into the
+        # residual stream they overflow bf16 to NaN over the decoder stack
+        # (BREEN trains a less-stable-input-tolerant from-scratch setup). Scaling
+        # by initializer_range keeps the queries random + in-distribution.
+        std = float(getattr(config, "initializer_range", 0.02) or 0.02)
+        return nn.Parameter(torch.randn(n, int(config.hidden_size)) * std)
 
     def _build_visual_aux_head(self: Any, config: Any) -> nn.Sequential | None:
         """Visual-aux prediction head (spec 2026-06-06): a small MLP on trunk
@@ -531,9 +630,12 @@ def create_dynamic_causal_vlm_class(
         )
         # Visual FFN experts (spec 2026-06-14) need the per-token image mask, so
         # request image_block_ids whenever they are enabled (same source the
-        # visual-aux / img2q_window paths use).
+        # visual-aux / img2q_window paths use). Learnable queries (BREEN port)
+        # need the parallel query_block_ids built in the same splice pass.
         has_ve = bool(getattr(self.config, "visual_expert", False))
+        has_lq = getattr(self, "learnable_query", None) is not None
         image_block_ids = None
+        query_block_ids = None
         if inputs_embeds is None:
             (
                 input_ids,
@@ -543,6 +645,7 @@ def create_dynamic_causal_vlm_class(
                 inputs_embeds,
                 labels,
                 image_block_ids,
+                query_block_ids,
             ) = self.prepare_inputs_labels_for_multimodal(
                 input_ids,
                 position_ids,
@@ -554,6 +657,7 @@ def create_dynamic_causal_vlm_class(
                 with_image_block_ids=visual_aux_on
                 or xmodal_mode == "img2q_window"
                 or has_ve
+                or has_lq
                 or grounding_on
                 or distill_on,
             )
@@ -594,13 +698,17 @@ def create_dynamic_causal_vlm_class(
                 vmask = ve_gen.to(inputs_embeds.dtype)
                 self._ve_gen_mask = None
             elif image_block_ids is not None:
-                vmask = (image_block_ids >= 0).unsqueeze(-1).to(
+                # Route BOTH image patches and learnable-query positions through
+                # the visual FFN expert (BREEN: image and query tokens -> image
+                # expert). query_block_ids is None unless learnable_query is on.
+                routed = image_block_ids >= 0
+                if query_block_ids is not None:
+                    routed = routed | (query_block_ids >= 0)
+                vmask = routed.unsqueeze(-1).to(
                     inputs_embeds.dtype if inputs_embeds is not None else self.dtype
                 )
             elif self.training and inputs_embeds is not None:
-                vmask = inputs_embeds.new_zeros(
-                    (inputs_embeds.shape[0], inputs_embeds.shape[1], 1)
-                )
+                vmask = inputs_embeds.new_zeros((inputs_embeds.shape[0], inputs_embeds.shape[1], 1))
             elif self.training and input_ids is not None:
                 vmask = torch.zeros(
                     (input_ids.shape[0], input_ids.shape[1], 1),
@@ -635,6 +743,7 @@ def create_dynamic_causal_vlm_class(
                 image_block_ids=image_block_ids,
                 distill_images=images if distill_on else None,
                 distill_positions=image_position_ids if distill_on else None,
+                query_block_ids=query_block_ids if distill_on else None,
             )
         return super(self.__class__, self).forward(
             input_ids=input_ids,
@@ -667,6 +776,8 @@ def create_dynamic_causal_vlm_class(
         # reconstruct the teacher's view and locate per-image patch positions)
         distill_images: list[Tensor] | None = None,
         distill_positions: list[Tensor] | None = None,
+        # consumed by the breen distill loss (locates the learnable-query rows)
+        query_block_ids: LongTensor | None = None,
     ) -> CausalLMOutputWithPast:
         """Training-only loss path that never materializes the full
         (batch*seq, vocab) fp32 logits: ignore_index positions are dropped
@@ -693,9 +804,7 @@ def create_dynamic_causal_vlm_class(
         # _CAN_RECORD_REGISTRY by str(self.__class__), which is not guaranteed
         # for this dynamically generated backbone class, and a scoped hook
         # also only keeps the layers we need.
-        aux_layers = sorted(
-            {int(k) for k in (getattr(self.config, "aux_exit_layers", None) or [])}
-        )
+        aux_layers = sorted({int(k) for k in (getattr(self.config, "aux_exit_layers", None) or [])})
         aux_weight = float(getattr(self.config, "aux_exit_weight", 0.0) or 0.0)
         aux_active = bool(aux_layers) and aux_weight > 0.0
         # Visual-aux loss (spec 2026-06-06): forward only passes
@@ -800,16 +909,12 @@ def create_dynamic_causal_vlm_class(
                         "aux_exit_detach=True needs an RMSNorm-style final norm "
                         f"with .variance_epsilon (got {type(final_norm).__name__})"
                     )
-                head_weight = (
-                    self.lm_head.weight.detach() if detach else self.lm_head.weight
-                )
+                head_weight = self.lm_head.weight.detach() if detach else self.lm_head.weight
                 aux_sum = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
                 for k in aux_layers:
                     h_k = captured.get(k)
                     if h_k is None:
-                        raise RuntimeError(
-                            f"aux exit layer {k}: forward hook captured nothing"
-                        )
+                        raise RuntimeError(f"aux exit layer {k}: forward hook captured nothing")
                     if torch.is_grad_enabled() and not h_k.requires_grad:
                         raise RuntimeError(
                             f"aux exit layer {k}: captured hidden states are not "
@@ -826,9 +931,7 @@ def create_dynamic_causal_vlm_class(
                         )
                     else:
                         normed = final_norm(h_k_valid)
-                    total_k = torch.zeros(
-                        (), dtype=torch.float32, device=flat_hidden.device
-                    )
+                    total_k = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
                     for hidden_chunk, target_chunk in zip(
                         normed.split(chunk_size), targets_valid.split(chunk_size), strict=True
                     ):
@@ -960,12 +1063,16 @@ def create_dynamic_causal_vlm_class(
                         inputs_embeds=blank_embeds,
                         use_cache=False,
                     )
-                    flat_blank = blank_out.last_hidden_state.reshape(
-                        -1, hidden_states.shape[-1]
-                    )[g_valid]
+                    flat_blank = blank_out.last_hidden_state.reshape(-1, hidden_states.shape[-1])[
+                        g_valid
+                    ]
                     lp_blank = torch.cat(
                         [
-                            self.lm_head(hb).float().log_softmax(-1).gather(1, tc[:, None]).squeeze(1)
+                            self.lm_head(hb)
+                            .float()
+                            .log_softmax(-1)
+                            .gather(1, tc[:, None])
+                            .squeeze(1)
                             for hb, tc in zip(
                                 flat_blank.split(chunk_size), tgt_g.split(chunk_size), strict=True
                             )
@@ -981,7 +1088,9 @@ def create_dynamic_causal_vlm_class(
                     lp_blank.split(chunk_size),
                     strict=True,
                 ):
-                    lp_real = self.lm_head(hr).float().log_softmax(-1).gather(1, tc[:, None]).squeeze(1)
+                    lp_real = (
+                        self.lm_head(hr).float().log_softmax(-1).gather(1, tc[:, None]).squeeze(1)
+                    )
                     g_total = g_total + torch.clamp(margin + lpb - lp_real, min=0.0).sum()
                 g_loss = g_total / n_g
                 loss = loss + g_weight * g_loss
@@ -991,13 +1100,22 @@ def create_dynamic_causal_vlm_class(
         # positions to the frozen teacher's per-patch features. Returns a
         # rank-symmetric component set every step (anchor on no-image batches).
         if distill_active:
-            d_loss, d_comps = self.compute_distill_loss(
-                captured=captured,
-                final_hidden=hidden_states,
-                image_block_ids=image_block_ids,
-                distill_images=distill_images,
-                distill_positions=distill_positions,
-            )
+            if distill_head.method == "breen":
+                d_loss, d_comps = self.compute_breen_distill_loss(
+                    final_hidden=hidden_states,
+                    query_block_ids=query_block_ids,
+                    distill_images=distill_images,
+                    distill_positions=distill_positions,
+                    image_block_ids=image_block_ids,
+                )
+            else:
+                d_loss, d_comps = self.compute_distill_loss(
+                    captured=captured,
+                    final_hidden=hidden_states,
+                    image_block_ids=image_block_ids,
+                    distill_images=distill_images,
+                    distill_positions=distill_positions,
+                )
             loss = loss + distill_weight * d_loss
             components.update(d_comps)
 
@@ -1113,7 +1231,7 @@ def create_dynamic_causal_vlm_class(
             return g[:, coords[:, 1], coords[:, 0]].t()
 
         samples: list[dict[str, Any]] = []
-        for k, b, flat_pos, coords, gh, gw in blocks:
+        for k, _b, flat_pos, coords, gh, gw in blocks:
             j = k_to_j[k]
             target = _resize_to(tout["grid"][j], gh, gw, coords).to(mdtype)
             native: dict[int, Tensor] = {}
@@ -1142,6 +1260,145 @@ def create_dynamic_causal_vlm_class(
 
         return head.compute(samples)
 
+    def compute_breen_distill_loss(
+        self: Any,
+        final_hidden: Tensor,
+        query_block_ids: LongTensor | None,
+        distill_images: list[Tensor] | None,
+        distill_positions: list[Tensor] | None,
+        image_block_ids: LongTensor | None = None,
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        """BREEN query distillation (spec 2026-06-24).
+
+        Gather the LLM final post-norm hidden at each image's learnable-query
+        positions (in row order, tagged by query_block_ids), split into the
+        first num_fine + last num_coarse rows, and align them to the 8x8 fine
+        and 6x6 coarse avg-pools of the frozen CLIP grid (the head's norm_layer
+        projects the CLIP target up to LLM-hidden; 1-cos is taken there). Each
+        query block is paired with its image by nearest-preceding image block in
+        the SAME row (via image_block_ids) — robust to multi-image rows where a
+        query block's id need not equal the image's index into distill_images;
+        a query block with no preceding image in its row is skipped. When
+        image_block_ids is absent we fall back to the cursor-lockstep identity
+        (query block id == image index), which holds for single-image rows.
+        Always returns the same component keys via an anchor that still touches
+        the head + query params on no-query microbatches, so the trainer's
+        cross-rank all-reduce of sorted(components) never deadlocks.
+        """
+        from .visual_distill import reconstruct_image_from_patches
+
+        head = self.visual_distill_head
+        device = final_hidden.device
+
+        def _anchor() -> tuple[Tensor, dict[str, Tensor]]:
+            z = torch.zeros((), dtype=torch.float32, device=device)
+            anchor = z
+            for prm in head.parameters():
+                anchor = anchor + prm.float().sum()
+            if self.learnable_query is not None:
+                anchor = anchor + self.learnable_query.float().sum()
+            return anchor * 0.0, {"distill": z, "distill_cos": z}
+
+        teacher_box = getattr(self, "_distill_teacher", None)
+        if query_block_ids is None or not teacher_box or distill_images is None:
+            return _anchor()
+        teacher = teacher_box[0]
+        mdtype = final_hidden.dtype
+        # Run the (frozen, detached) teacher in fp32. CLIP-L/14-336 — the BREEN
+        # teacher — is numerically unstable in bf16 (its ViT attention overflows
+        # to inf/NaN), which would poison the distill target. The teacher is off
+        # the module tree and its output is detached, so fp32 here is free of
+        # any effect on the trained graph (only the target features change dtype).
+        teacher.to(device=device, dtype=torch.float32)
+
+        vc = self.config.vision_config
+        vc_get = vc.get if isinstance(vc, dict) else (lambda k_, d=None: getattr(vc, k_, d))
+        patch_px = int(vc_get("patch_size")) * int(vc_get("pooling_kernel_size"))
+        src_mean = vc_get("image_mean", None)
+        src_std = vc_get("image_std", None)
+
+        nq = head.num_fine + head.num_coarse
+        qbid = query_block_ids.to(device)
+        bsz, seqlen = qbid.shape
+        ibid = image_block_ids.to(device) if image_block_ids is not None else None
+        ar = torch.arange(seqlen, device=device)
+        n_imgs = len(distill_positions) if distill_positions is not None else 0
+        blocks: list[tuple[int, Tensor]] = []  # (image index, flat query positions)
+        for b in range(bsz):
+            row = qbid[b]
+            for k_t in torch.unique(row[row >= 0]).tolist():
+                k = int(k_t)
+                pos = (row == k).nonzero(as_tuple=True)[0]
+                # Skip a query block whose rows were tail-truncated (< nq present)
+                # or whose paired image is the 1x1 dummy — can't align cleanly.
+                if int(pos.numel()) != nq:
+                    continue
+                # Pair this query block with its image by nearest-preceding
+                # image block in the SAME row b: among image positions p < the
+                # query block's first position, take the largest p and use
+                # image_block_ids[b, p] as the index into distill_images /
+                # distill_positions (NOT the query block id k — those differ on
+                # multi-image rows). No preceding image in the row -> skip.
+                if ibid is not None:
+                    first = int(pos[0].item())
+                    cand = ((ibid[b] >= 0) & (ar < first)).nonzero(as_tuple=True)[0]
+                    if int(cand.numel()) == 0:
+                        continue
+                    img_idx = int(ibid[b, int(cand.max().item())].item())
+                else:
+                    img_idx = k  # cursor-lockstep fallback (single-image rows)
+                if img_idx < 0 or img_idx >= n_imgs:
+                    continue
+                coords_full = distill_positions[img_idx].to(device)
+                grid_h = int(coords_full[:, 1].max().item()) + 1
+                grid_w = int(coords_full[:, 0].max().item()) + 1
+                if grid_h * grid_w < 2:
+                    continue
+                blocks.append((img_idx, b * seqlen + pos))
+        if not blocks:
+            return _anchor()
+
+        uniq_k = sorted({k for k, _ in blocks})
+        k_to_j = {k: j for j, k in enumerate(uniq_k)}
+        imgs01 = torch.stack(
+            [
+                reconstruct_image_from_patches(
+                    distill_images[k].to(device),
+                    distill_positions[k].to(device),
+                    patch_px,
+                    teacher.out_size,
+                    src_mean,
+                    src_std,
+                )
+                for k in uniq_k
+            ]
+        ).to(mdtype)
+        grids = teacher.encode(imgs01)["grid"]  # (J, side, side, C)
+        side = int(grids.shape[1])
+        if (side // 3) ** 2 != head.num_fine or (side // 4) ** 2 != head.num_coarse:
+            raise ValueError(
+                f"breen distill: CLIP grid {side}x{side} avg-pools to "
+                f"{(side // 3) ** 2} fine / {(side // 4) ** 2} coarse rows, but "
+                f"learnable_query expects {head.num_fine}/{head.num_coarse}. Use "
+                "teacher_out_size=336 with clip-vit-large-patch14-336 (24x24 -> 64/36)."
+            )
+
+        flat_hidden = final_hidden.reshape(-1, final_hidden.shape[-1])
+        samples: list[dict[str, Any]] = []
+        for k, flat_pos in blocks:
+            g = grids[k_to_j[k]].permute(2, 0, 1).unsqueeze(0).float()  # (1, C, side, side)
+            c = g.shape[1]
+            fine = nn.functional.avg_pool2d(g, kernel_size=3, stride=3)  # (1, C, 8, 8)
+            coarse = nn.functional.avg_pool2d(g, kernel_size=4, stride=4)  # (1, C, 6, 6)
+            samples.append(
+                {
+                    "query_hidden": flat_hidden[flat_pos],
+                    "target_fine": fine.reshape(c, -1).t().to(mdtype),
+                    "target_coarse": coarse.reshape(c, -1).t().to(mdtype),
+                }
+            )
+        return head.compute_breen(samples)
+
     @override
     def generate(
         self: Any,
@@ -1168,18 +1425,26 @@ def create_dynamic_causal_vlm_class(
             if audios is not None:
                 audio_features = self.encode_raw_audio(audios)
             xmodal_mode = str(getattr(self.config, "cross_modal_mask_mode", "none") or "none")
-            (_, position_ids, attention_mask, _, inputs_embeds, _, image_block_ids) = (
-                self.prepare_inputs_labels_for_multimodal(
-                    inputs,
-                    position_ids,
-                    attention_mask,
-                    None,
-                    None,
-                    image_features,
-                    audio_features,
-                    with_image_block_ids=(xmodal_mode == "img2q_window")
-                    or bool(getattr(self.config, "visual_expert", False)),
-                )
+            (
+                _,
+                position_ids,
+                attention_mask,
+                _,
+                inputs_embeds,
+                _,
+                image_block_ids,
+                query_block_ids,
+            ) = self.prepare_inputs_labels_for_multimodal(
+                inputs,
+                position_ids,
+                attention_mask,
+                None,
+                None,
+                image_features,
+                audio_features,
+                with_image_block_ids=(xmodal_mode == "img2q_window")
+                or bool(getattr(self.config, "visual_expert", False))
+                or getattr(self, "learnable_query", None) is not None,
             )
             if xmodal_mode != "none" and attention_mask is not None:
                 # Prefill-only custom mask; whole prompt = prefix (labels=None).
@@ -1196,7 +1461,13 @@ def create_dynamic_causal_vlm_class(
             # (forward consumes it by shape-match, like _xmodal_gen_mask). Decode
             # steps emit text tokens -> text FFN, correct by construction.
             if bool(getattr(self.config, "visual_expert", False)) and image_block_ids is not None:
-                self._ve_gen_mask = (image_block_ids >= 0).unsqueeze(-1).to(inputs_embeds.dtype)
+                # Route image patches AND learnable-query positions through the
+                # visual expert at prefill (BREEN). query_block_ids is None unless
+                # learnable_query is on.
+                routed = image_block_ids >= 0
+                if query_block_ids is not None:
+                    routed = routed | (query_block_ids >= 0)
+                self._ve_gen_mask = routed.unsqueeze(-1).to(inputs_embeds.dtype)
         else:
             inputs_embeds = self.get_input_embeddings()(inputs)
 
@@ -1405,9 +1676,19 @@ def create_dynamic_causal_vlm_class(
         Tensor | None,
         LongTensor | None,
         LongTensor | None,
+        LongTensor | None,
     ]:
         if (image_features is None and audio_features is None) or input_ids.shape[1] == 1:  # pyright: ignore
-            return input_ids, position_ids, attention_mask, past_key_values, None, labels, None
+            return (
+                input_ids,
+                position_ids,
+                attention_mask,
+                past_key_values,
+                None,
+                labels,
+                None,
+                None,
+            )
 
         # Let's just add dummy tensors if they do not exist,
         # it is a headache to deal with None all the time.
@@ -1455,6 +1736,23 @@ def create_dynamic_causal_vlm_class(
                 audio_features,
                 [0],
             )
+        # Learnable queries (BREEN port, spec 2026-06-24): register the query
+        # Parameter as a modality so the existing splice inserts one query block
+        # per "<query>" placeholder, tags it (query_block_ids below), and
+        # label-masks it (excluded from CE) for free. The SAME Parameter is reused
+        # for every block (broadcast); the list only needs enough references to
+        # cover one per placeholder plus one zero-width dummy per query-free row.
+        # The query cursor walks in lockstep with the image cursor (one query per
+        # image, query-free rows consume an image dummy too), so a query block's
+        # feature_index equals its image's index into distill_images.
+        query_token_index = int(getattr(self.config, "query_token_index", -202))
+        learnable_query = getattr(self, "learnable_query", None)
+        if learnable_query is not None:
+            n_q = sum(int((row == query_token_index).sum()) for row in input_ids)
+            modality_features[query_token_index] = (
+                [learnable_query] * (n_q + len(input_ids)),
+                [0],
+            )
 
         new_input_embeds = []
         new_labels = []
@@ -1462,6 +1760,11 @@ def create_dynamic_causal_vlm_class(
         # positions belong to which image (flat batch-cursor index). Built only
         # on request so the baseline assembly loop stays byte-identical.
         new_image_block_ids: list[Tensor] | None = [] if with_image_block_ids else None
+        # Query block-id tracking (BREEN port): which spliced positions are query
+        # rows of which block (the query cursor index, == its image index). Same
+        # request gate; -1 everywhere that is not a query. Routed to the visual
+        # expert and gathered by the breen distill loss.
+        new_query_block_ids: list[Tensor] | None = [] if with_image_block_ids else None
         for batch_idx, cur_input_ids in enumerate(input_ids):
             is_mm_token = torch.zeros_like(cur_input_ids, dtype=torch.bool)
             for token_index in modality_features:
@@ -1484,6 +1787,10 @@ def create_dynamic_causal_vlm_class(
                     new_image_block_ids.append(
                         torch.full_like(labels[batch_idx], -1)  # pyright: ignore
                     )
+                if new_query_block_ids is not None:
+                    new_query_block_ids.append(
+                        torch.full_like(labels[batch_idx], -1)  # pyright: ignore
+                    )
                 continue
 
             # Split the row into text segments around the (interleaved) modality
@@ -1502,12 +1809,15 @@ def create_dynamic_causal_vlm_class(
             cur_new_input_embeds = []
             cur_new_labels = []
             cur_new_block_ids: list[Tensor] = []
+            cur_new_query_ids: list[Tensor] = []
 
             for i in range(len(mm_positions) + 1):
                 cur_new_input_embeds.append(text_segment_embeds[i])
                 cur_new_labels.append(cur_labels_segments[i])
                 if new_image_block_ids is not None:
                     cur_new_block_ids.append(torch.full_like(cur_labels_segments[i], -1))
+                if new_query_block_ids is not None:
+                    cur_new_query_ids.append(torch.full_like(cur_labels_segments[i], -1))
                 if i < len(mm_positions):
                     token_index = int(cur_input_ids[mm_positions[i]].item())
                     features, cursor = modality_features[token_index]
@@ -1534,6 +1844,15 @@ def create_dynamic_causal_vlm_class(
                                 dtype=cur_labels.dtype,
                             )
                         )
+                    if new_query_block_ids is not None:
+                        cur_new_query_ids.append(
+                            torch.full(
+                                (cur_features.shape[0],),
+                                feature_index if token_index == query_token_index else -1,
+                                device=cur_labels.device,
+                                dtype=cur_labels.dtype,
+                            )
+                        )
 
             cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
             cur_new_input_embeds.extend(absent_dummies)
@@ -1545,6 +1864,8 @@ def create_dynamic_causal_vlm_class(
             new_labels.append(cur_new_labels)
             if new_image_block_ids is not None:
                 new_image_block_ids.append(torch.cat(cur_new_block_ids))
+            if new_query_block_ids is not None:
+                new_query_block_ids.append(torch.cat(cur_new_query_ids))
 
         # Truncate sequences to max length as image embeddings can make the sequence longer
         tokenizer_model_max_length = self.config.max_seq_length
@@ -1553,6 +1874,8 @@ def create_dynamic_causal_vlm_class(
             new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
             if new_image_block_ids is not None:
                 new_image_block_ids = [x[:tokenizer_model_max_length] for x in new_image_block_ids]
+            if new_query_block_ids is not None:
+                new_query_block_ids = [x[:tokenizer_model_max_length] for x in new_query_block_ids]
 
         # Combine them
         max_len = max(x.shape[0] for x in new_input_embeds)
@@ -1573,6 +1896,16 @@ def create_dynamic_causal_vlm_class(
                 device=new_labels[0].device,
             )
             if new_image_block_ids is not None
+            else None
+        )
+        query_block_ids_padded = (
+            torch.full(
+                (batch_size, max_len),
+                -1,
+                dtype=new_labels[0].dtype,
+                device=new_labels[0].device,
+            )
+            if new_query_block_ids is not None
             else None
         )
         attention_mask = torch.zeros(
@@ -1606,6 +1939,8 @@ def create_dynamic_causal_vlm_class(
                     new_labels_padded[i, -cur_len:] = cur_new_labels
                     if image_block_ids_padded is not None:
                         image_block_ids_padded[i, -cur_len:] = new_image_block_ids[i]
+                    if query_block_ids_padded is not None:
+                        query_block_ids_padded[i, -cur_len:] = new_query_block_ids[i]
                     attention_mask[i, -cur_len:] = True
                     position_ids[i, -cur_len:] = torch.arange(  # pyright: ignore
                         0,
@@ -1631,6 +1966,8 @@ def create_dynamic_causal_vlm_class(
                     new_labels_padded[i, :cur_len] = cur_new_labels
                     if image_block_ids_padded is not None:
                         image_block_ids_padded[i, :cur_len] = new_image_block_ids[i]
+                    if query_block_ids_padded is not None:
+                        query_block_ids_padded[i, :cur_len] = new_query_block_ids[i]
                     attention_mask[i, :cur_len] = True
                     position_ids[i, :cur_len] = torch.arange(  # pyright: ignore
                         0,
@@ -1662,6 +1999,7 @@ def create_dynamic_causal_vlm_class(
             new_input_embeds,
             new_labels,
             image_block_ids_padded,
+            query_block_ids_padded,
         )
 
     def _set_visual_mask(self: Any, mask: Tensor | None) -> None:
@@ -1772,9 +2110,7 @@ def create_dynamic_causal_vlm_class(
         model_dtype = self.dtype
         bsz, n_patch, patch_dim = target_patches.shape
         # 1. timestep + noise + interpolation (math in fp32)
-        t = sample_timesteps(
-            bsz, float(cfg.generation_t_mu), float(cfg.generation_t_sigma), device
-        )
+        t = sample_timesteps(bsz, float(cfg.generation_t_mu), float(cfg.generation_t_sigma), device)
         x1 = target_patches.to(device=device, dtype=torch.float32)
         x_t, _ = add_noise(x1, t, float(cfg.generation_noise_scale))
         # 2. text condition embeddings
@@ -1842,16 +2178,20 @@ def create_dynamic_causal_vlm_class(
         past_warmup = (not self.training) or int(getattr(self, "_gen_fwd_count", 0)) > warmup
         if bool(getattr(cfg, "generation_perceptual_enabled", False)) and past_warmup:
             from .gen_perceptual import perceptual_loss
+
             grid = int(round(n_patch**0.5))
             psz = int(round((patch_dim // 3) ** 0.5))
             pred_img = patches_to_pixels(pred_x0, grid, grid, psz)
             gt_img = patches_to_pixels(x1, grid, grid, psz)
             pcomp = perceptual_loss(
-                pred_img, gt_img,
+                pred_img,
+                gt_img,
                 lpips_weight=float(getattr(cfg, "generation_perceptual_lpips_weight", 0.0)),
                 dino_weight=float(getattr(cfg, "generation_perceptual_dino_weight", 0.0)),
                 lpips_net=str(getattr(cfg, "generation_perceptual_lpips_net", "vgg")),
-                dino_model=str(getattr(cfg, "generation_perceptual_dino_model", "dinov2_vitb14_reg")),
+                dino_model=str(
+                    getattr(cfg, "generation_perceptual_dino_model", "dinov2_vitb14_reg")
+                ),
                 resize=int(getattr(cfg, "generation_perceptual_resize", 256)),
                 t=t,
                 t_gate=float(getattr(cfg, "generation_perceptual_t_gate", 0.0)),
@@ -1998,7 +2338,9 @@ def create_dynamic_causal_vlm_class(
             "__init__": __init__,
             "_build_visual_aux_head": _build_visual_aux_head,
             "_build_visual_distill_head": _build_visual_distill_head,
+            "_build_learnable_query": _build_learnable_query,
             "compute_distill_loss": compute_distill_loss,
+            "compute_breen_distill_loss": compute_breen_distill_loss,
             "_build_generation_modules": _build_generation_modules,
             "init_generation_modules": init_generation_modules,
             "_set_mrope_positions": _set_mrope_positions,

@@ -257,9 +257,7 @@ class _RawPatchEmbedder(nn.Module):
             # tuning re-enable requires_grad after build, so a plain
             # requires_grad=False is not enough): when set, the conv weight is
             # detached in forward so no gradient ever reaches it. Persistent bool.
-            self.register_buffer(
-                "_stem_frozen", torch.zeros((), dtype=torch.bool), persistent=True
-            )
+            self.register_buffer("_stem_frozen", torch.zeros((), dtype=torch.bool), persistent=True)
         self.patch_ln1: nn.LayerNorm = nn.LayerNorm(patch_dim)
         # patch projection: a single Linear by default (gemma4 understanding
         # path, bit-identical). When bottleneck_dim is set, factor it through a
@@ -473,8 +471,15 @@ class _VisualPrefixLayer(nn.Module):
         self.gate_proj: nn.Linear = nn.Linear(dim, intermediate, bias=False)
         self.up_proj: nn.Linear = nn.Linear(dim, intermediate, bias=False)
         self.down_proj: nn.Linear = nn.Linear(intermediate, dim, bias=False)
-        for lin in (self.q_proj, self.k_proj, self.v_proj, self.o_proj,
-                    self.gate_proj, self.up_proj, self.down_proj):
+        for lin in (
+            self.q_proj,
+            self.k_proj,
+            self.v_proj,
+            self.o_proj,
+            self.gate_proj,
+            self.up_proj,
+            self.down_proj,
+        ):
             nn.init.normal_(lin.weight, std=0.02)
 
     @override

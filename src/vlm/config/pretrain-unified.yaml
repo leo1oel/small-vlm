@@ -1,11 +1,11 @@
 defaults:
-    - cfg
-    - model: qwen3-1.7b-unified
-    - trainer: pretrain # unfreeze=connector-only: exactly the unified stage-1 recipe
-    - inference: default
-    - dataset: energon-mix
-    - override hydra/job_logging: rich
-    - _self_
+  - cfg
+  - model: qwen3-1.7b-unified
+  - trainer: pretrain # unfreeze=connector-only: exactly the unified stage-1 recipe
+  - inference: default
+  - dataset: energon-mix
+  - override hydra/job_logging: rich
+  - _self_
 
 # Stage-1 pretrain for the encoder-free unified model: freeze the Qwen3
 # backbone, train only the image/audio connectors on caption-style data.
@@ -21,25 +21,25 @@ defaults:
 # deepspeed never stalls on unused parameters.
 
 trainer:
-    # energon streaming has no epoch length — step-based stopping is required.
-    # 20k steps @ 16 per-device x 4 accum x 4 GPUs ≈ 5.1M samples.
-    max_steps: 20000
-    # Preemptible (ckpt/requeue) runs must resume the LR schedule and the
-    # energon stream state; optimizer state for the ~21M trainable connector
-    # params is tiny, so keep full trainer state in checkpoints.
-    save_only_model: false
-    # ckpt-partition jobs get preempted well within train.slurm's 4h walltime —
-    # checkpoint often enough that requeues never lose much progress.
-    save_steps: 1000
+  # energon streaming has no epoch length — step-based stopping is required.
+  # 20k steps @ 16 per-device x 4 accum x 4 GPUs ≈ 5.1M samples.
+  max_steps: 20000
+  # Preemptible (ckpt/requeue) runs must resume the LR schedule and the
+  # energon stream state; optimizer state for the ~21M trainable connector
+  # params is tiny, so keep full trainer state in checkpoints.
+  save_only_model: false
+  # ckpt-partition jobs get preempted well within train.slurm's 4h walltime —
+  # checkpoint often enough that requeues never lose much progress.
+  save_steps: 1000
 
 hydra:
-    job:
-        chdir: true
-    job_logging:
-        root:
-            level: INFO
-    run:
-        dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
-    sweep:
-        dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
-        subdir: ${hydra.job.num}
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: INFO
+  run:
+    dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

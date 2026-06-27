@@ -62,5 +62,5 @@ def test_generation_mask_batch():
     image = torch.tensor([[0, 0, 1], [0, 1, 0]], dtype=torch.bool)
     m = build_generation_mask(prefix, image)
     assert m.shape == (2, 1, 3, 3)
-    assert bool(m[1, 0, 1, 0])      # sample 1: image(1) attends prefix(0)
+    assert bool(m[1, 0, 1, 0])  # sample 1: image(1) attends prefix(0)
     assert not bool(m[1, 0, 0, 1])  # sample 1: prefix(0) !attend image(1)

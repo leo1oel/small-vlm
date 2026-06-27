@@ -112,9 +112,7 @@ def validate_cross_modal_mask_config(
     if mode == "none":
         return "none", [int(x) for x in (window or [1, 9])]
     if mode not in ("prefix_lm", "img2q_window"):
-        raise ValueError(
-            f"cross_modal_mask.mode must be none|prefix_lm|img2q_window, got {mode!r}"
-        )
+        raise ValueError(f"cross_modal_mask.mode must be none|prefix_lm|img2q_window, got {mode!r}")
     if bool(bidirectional):
         raise ValueError(
             "cross_modal_mask.bidirectional=true is not implemented in v1 "
@@ -129,9 +127,7 @@ def validate_cross_modal_mask_config(
             raise ValueError("img2q_window needs trainer.attn_implementation=sdpa_xmodal")
         lo, hi = int(win[0]), int(win[1])
         if not (1 <= lo <= hi <= num_hidden_layers):
-            raise ValueError(
-                f"cross_modal_mask.window {win} out of range 1..{num_hidden_layers}"
-            )
+            raise ValueError(f"cross_modal_mask.window {win} out of range 1..{num_hidden_layers}")
     return mode, win
 
 
@@ -189,6 +185,59 @@ def train(
     model.config.conversation_version = training_args.version
     # Training-only chunked CE switch; the model's forward reads it (0 = off).
     model.config.loss_chunk_size = training_args.loss_chunk_size
+    # Visual-distill (incl. breen) is computed ONLY on the chunked-CE path; with
+    # loss_chunk_size<=0 forward() falls through to the plain path and the distill
+    # objective is silently dropped (the learnable queries would train with no
+    # CLIP signal). The dial lands on model.config at build time (load_model), so
+    # validate it here — not in load_model, where direct callers (devtools/
+    # breen_smoke.py) set loss_chunk_size on model.config only after load returns.
+    if (
+        bool(getattr(model.config, "visual_distill", False))
+        and int(training_args.loss_chunk_size) <= 0
+    ):
+        raise ValueError(
+            "model.visual_distill.enabled requires trainer.loss_chunk_size > 0 — the "
+            "visual-distill loss (incl. breen) is implemented only in the chunked-CE "
+            "training path and would otherwise be SILENTLY DROPPED"
+        )
+    # The image-grounding margin loss lives on the same chunked-CE path; with
+    # loss_chunk_size<=0 forward() falls through to the plain path and grounding
+    # is silently dropped (mirrors the visual-distill guard above).
+    if (
+        float(getattr(model.config, "grounding_weight", 0.0) or 0.0) > 0.0
+        and int(training_args.loss_chunk_size) <= 0
+    ):
+        raise ValueError(
+            "model.grounding.enabled (grounding_weight > 0) requires "
+            "trainer.loss_chunk_size > 0 — the grounding margin loss is implemented "
+            "only in the chunked-CE training path and would otherwise be SILENTLY DROPPED"
+        )
+    # BREEN query distillation has no target without the learnable queries: the
+    # breen loss gathers the LLM hidden at query-token rows and 1-cos-matches them
+    # to CLIP. With learnable_query off there are no query rows, the loss anchors
+    # to zero every step, and the run silently trains as a plain baseline.
+    if (
+        bool(getattr(model.config, "visual_distill", False))
+        and str(getattr(model.config, "visual_distill_method", "")) == "breen"
+        and not bool(getattr(model.config, "learnable_query", False))
+    ):
+        raise ValueError(
+            "visual_distill.method='breen' requires model.learnable_query.enabled — "
+            "the breen loss matches the learnable-query rows to CLIP; without them it "
+            "has no graph-connected target and would SILENTLY train as a plain baseline"
+        )
+    # Mirror the aux-exit / visual-aux weight guards: distill enabled but weight
+    # <= 0 disables the loss, silently turning the run into a baseline duplicate.
+    if (
+        bool(getattr(model.config, "visual_distill", False))
+        and float(getattr(model.config, "visual_distill_weight", 0.0) or 0.0) <= 0.0
+    ):
+        log.warning(
+            "visual_distill.enabled but visual_distill_weight=%s: the distill loss "
+            "(incl. breen) is DISABLED (weight must be > 0) — this run is an exact "
+            "baseline duplicate",
+            getattr(model.config, "visual_distill_weight", 0.0),
+        )
     # Aux-exit deep supervision (early-fusion ablation): validated against the
     # real layer count, then copied next to loss_chunk_size for the model's
     # chunked-CE forward to read. Plain python types only (config.json-safe).

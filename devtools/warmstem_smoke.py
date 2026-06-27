@@ -38,10 +38,18 @@ def transplant(embedder):
 
 
 def main():
-    emb = _RawPatchEmbedder(
-        patch_dim=PATCH_DIM, mm_embed_dim=MM, posemb_size=POS, text_hidden_size=MM,
-        patch_stem=KIND, patch_stem_kernel=16,
-    ).float().eval()
+    emb = (
+        _RawPatchEmbedder(
+            patch_dim=PATCH_DIM,
+            mm_embed_dim=MM,
+            posemb_size=POS,
+            text_hidden_size=MM,
+            patch_stem=KIND,
+            patch_stem_kernel=16,
+        )
+        .float()
+        .eval()
+    )
     assert emb.patch_stem is not None and emb._stem_side == 48
     assert tuple(emb.patch_stem.weight.shape) == (768, 3, 16, 16), emb.patch_stem.weight.shape
     src = transplant(emb)
@@ -66,7 +74,7 @@ def main():
     ref = torch.empty(4, 768, 3, 3)
     for pr in range(2):
         for pc in range(2):
-            ref[pr * 2 + pc] = full[0, :, 3 * pr:3 * pr + 3, 3 * pc:3 * pc + 3]
+            ref[pr * 2 + pc] = full[0, :, 3 * pr : 3 * pr + 3, 3 * pc : 3 * pc + 3]
     ref = ref.flatten(1)  # (4, 6912)
     max_err = (stem_feat - ref).abs().max().item()
     print(f"TEST 1 equivalence: max|stem - siglip_full| = {max_err:.2e}")
@@ -82,14 +90,23 @@ def main():
     loss = out.float().pow(2).mean()
     loss.backward()
     g = emb.patch_stem.weight.grad
-    print(f"TEST 2/3 forward {tuple(out.shape)}, stem grad norm = "
-          f"{None if g is None else round(g.norm().item(), 4)}")
+    print(
+        f"TEST 2/3 forward {tuple(out.shape)}, stem grad norm = "
+        f"{None if g is None else round(g.norm().item(), 4)}"
+    )
     assert g is not None and g.norm().item() > 0, "stem conv received no gradient"
 
     # ---- Test 4: off path bit-identical to original single-linear ----
-    emb_off = _RawPatchEmbedder(
-        patch_dim=PATCH_DIM, mm_embed_dim=MM, posemb_size=POS, text_hidden_size=MM,
-    ).float().eval()
+    emb_off = (
+        _RawPatchEmbedder(
+            patch_dim=PATCH_DIM,
+            mm_embed_dim=MM,
+            posemb_size=POS,
+            text_hidden_size=MM,
+        )
+        .float()
+        .eval()
+    )
     assert emb_off.patch_stem is None
     print("TEST 4 off-path: patch_stem is None (bit-identical to original) OK")
 

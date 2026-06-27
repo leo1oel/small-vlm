@@ -25,18 +25,72 @@ OUT = Path(__file__).resolve().parents[1] / "neo_report"
 
 # name -> (family, mat_file, fusion_file(prefix cost), prebuf_rel or None)
 MODELS = [
-    ("NEO1.0-2B-SFT", "native", "results_mat_neo_2B-SFT.jsonl", "results_fusion_full_neo_strat.jsonl", 12 / 40),
-    ("NEO1.0-2B-MT", "native", "results_mat_neo_2B-MT.jsonl", "results_fusion_full_neo_MT.jsonl", 12 / 40),
-    ("NEO1.0-9B-SFT", "native", "results_mat_neo_9B-SFT.jsonl", "results_fusion_full_neo_NEO1_0-9B-SFT.jsonl", 6 / 42),
-    ("NEO1.0-9B-MT", "native", "results_mat_neo_9B-MT.jsonl", "results_fusion_full_neo_NEO1_0-9B-MT.jsonl", 6 / 42),
-    ("NEO1.5-2B-SFT", "native", "results_mat_neo_15-2B-SFT.jsonl", "results_fusion_full_neo_NEO1_5-2B-SFT.jsonl", 12 / 40),
-    ("NEO1.5-9B-SFT", "native", "results_mat_neo_15-9B-SFT.jsonl", "results_fusion_full_neo_NEO1_5-9B-SFT.jsonl", 6 / 42),
-    ("Gemma-4-12B", "native", "results_mat_gemma.jsonl", "results_fusion_full_gemma4_strat.jsonl", None),
+    (
+        "NEO1.0-2B-SFT",
+        "native",
+        "results_mat_neo_2B-SFT.jsonl",
+        "results_fusion_full_neo_strat.jsonl",
+        12 / 40,
+    ),
+    (
+        "NEO1.0-2B-MT",
+        "native",
+        "results_mat_neo_2B-MT.jsonl",
+        "results_fusion_full_neo_MT.jsonl",
+        12 / 40,
+    ),
+    (
+        "NEO1.0-9B-SFT",
+        "native",
+        "results_mat_neo_9B-SFT.jsonl",
+        "results_fusion_full_neo_NEO1_0-9B-SFT.jsonl",
+        6 / 42,
+    ),
+    (
+        "NEO1.0-9B-MT",
+        "native",
+        "results_mat_neo_9B-MT.jsonl",
+        "results_fusion_full_neo_NEO1_0-9B-MT.jsonl",
+        6 / 42,
+    ),
+    (
+        "NEO1.5-2B-SFT",
+        "native",
+        "results_mat_neo_15-2B-SFT.jsonl",
+        "results_fusion_full_neo_NEO1_5-2B-SFT.jsonl",
+        12 / 40,
+    ),
+    (
+        "NEO1.5-9B-SFT",
+        "native",
+        "results_mat_neo_15-9B-SFT.jsonl",
+        "results_fusion_full_neo_NEO1_5-9B-SFT.jsonl",
+        6 / 42,
+    ),
+    (
+        "Gemma-4-12B",
+        "native",
+        "results_mat_gemma.jsonl",
+        "results_fusion_full_gemma4_strat.jsonl",
+        None,
+    ),
     ("SAIL-7B", "native", "results_mat_sail.jsonl", "results_fusion_full_sail.jsonl", None),
     ("LLaVA-1.5-7B", "encoder", "results_mat_llava.jsonl", "results_fusion_full_llava.jsonl", None),
-    ("LLaVA-NeXT-7B", "encoder", "results_mat_llavanext.jsonl", "results_win_llavanext.jsonl", None),
+    (
+        "LLaVA-NeXT-7B",
+        "encoder",
+        "results_mat_llavanext.jsonl",
+        "results_win_llavanext.jsonl",
+        None,
+    ),
     ("OneVision-7B", "encoder", "results_mat_onevision.jsonl", "results_win_onevision.jsonl", None),
-    ("Qwen2.5-VL-7B", "encoder", "results_mat_qwen.jsonl", "results_fusion_full_qwenvl.jsonl", None),
+    (
+        "Qwen2.5-VL-7B",
+        "encoder",
+        "results_mat_qwen.jsonl",
+        "results_fusion_full_qwenvl.jsonl",
+        None,
+    ),
 ]
 
 
@@ -70,11 +124,14 @@ def fusion_marks(rows):
 
     def acc(g):
         return mean(g(r)["pred"] == r["gt"] for r in causal)
+
     R0 = acc(lambda r: r["intact"]) - acc(lambda r: r["swap"])
     if R0 <= 0.02:
         return None
-    rn = [(acc(lambda r, d=d: r["cost"][d]) - acc(lambda r, d=d: r["cost_null"][d])) / R0
-          for d in range(N)]
+    rn = [
+        (acc(lambda r, d=d: r["cost"][d]) - acc(lambda r, d=d: r["cost_null"][d])) / R0
+        for d in range(N)
+    ]
     marg = [max((1 if d == 0 else rn[d - 1]) - rn[d], 0) for d in range(N)]
     tot = sum(marg)
     if tot <= 0:
@@ -86,8 +143,10 @@ def fusion_marks(rows):
 
     def q(p):
         return next(((i + 1) / N for i in range(N) if cdf[i] >= p), 1.0)
-    return dict(q10=q(0.10), q25=q(0.25), q50=q(0.50), q75=q(0.75), q90=q(0.90),
-                R0=R0, nc=len(causal))
+
+    return dict(
+        q10=q(0.10), q25=q(0.25), q50=q(0.50), q75=q(0.75), q90=q(0.90), R0=R0, nc=len(causal)
+    )
 
 
 def strip(u, N, clip=2.5):
@@ -100,6 +159,7 @@ def strip(u, N, clip=2.5):
 
 def main():
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.patches import Rectangle
@@ -117,9 +177,11 @@ def main():
             continue
         rows.append((name, fam, mc, fm, pb))
         if fm:
-            print(f"{name:16} N={mc[2]:3} fusion q10/25/50/75/90 = "
-                  f"{fm['q10']:.2f}/{fm['q25']:.2f}/{fm['q50']:.2f}/{fm['q75']:.2f}/{fm['q90']:.2f} "
-                  f"R0={fm['R0']:+.2f} nc={fm['nc']}")
+            print(
+                f"{name:16} N={mc[2]:3} fusion q10/25/50/75/90 = "
+                f"{fm['q10']:.2f}/{fm['q25']:.2f}/{fm['q50']:.2f}/{fm['q75']:.2f}/{fm['q90']:.2f} "
+                f"R0={fm['R0']:+.2f} nc={fm['nc']}"
+            )
 
     H = 0.8
     fig, ax = plt.subplots(figsize=(11, 0.62 * len(rows) + 2.4))
@@ -136,10 +198,24 @@ def main():
         si = strip(ui, N)
         st = strip(ut, N)
         for j in range(N):
-            ax.add_patch(Rectangle((x[j], y), x[j + 1] - x[j], H / 2,
-                                   color=plt.cm.Reds(min(si[j] / 2.5, 1.0)), lw=0))
-            ax.add_patch(Rectangle((x[j], y - H / 2), x[j + 1] - x[j], H / 2,
-                                   color=plt.cm.Purples(min(st[j] / 2.5, 1.0)), lw=0))
+            ax.add_patch(
+                Rectangle(
+                    (x[j], y),
+                    x[j + 1] - x[j],
+                    H / 2,
+                    color=plt.cm.Reds(min(si[j] / 2.5, 1.0)),
+                    lw=0,
+                )
+            )
+            ax.add_patch(
+                Rectangle(
+                    (x[j], y - H / 2),
+                    x[j + 1] - x[j],
+                    H / 2,
+                    color=plt.cm.Purples(min(st[j] / 2.5, 1.0)),
+                    lw=0,
+                )
+            )
         if fm:
             # box-and-whisker of the fusion-depth distribution
             for e in ("q25", "q75"):
@@ -173,12 +249,27 @@ def main():
         "destroys usable image signal):\n"
         "box = middle 50% [q25,q75], yellow dot = median, whiskers = [q10,q90]; "
         "white dashed = NEO pre-Buffer boundary",
-        fontsize=9)
+        fontsize=9,
+    )
     # annotate groups
-    ax.text(1.015, mean([yticks[i] for i in range(n_nat)]), "NATIVE\n(no encoder)",
-            rotation=90, va="center", fontsize=9, fontweight="bold")
-    ax.text(1.015, mean([yticks[i] for i in range(n_nat, len(rows))]), "ENCODER",
-            rotation=90, va="center", fontsize=9, fontweight="bold")
+    ax.text(
+        1.015,
+        mean([yticks[i] for i in range(n_nat)]),
+        "NATIVE\n(no encoder)",
+        rotation=90,
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+    )
+    ax.text(
+        1.015,
+        mean([yticks[i] for i in range(n_nat, len(rows))]),
+        "ENCODER",
+        rotation=90,
+        va="center",
+        fontsize=9,
+        fontweight="bold",
+    )
     fig.tight_layout()
     fig.savefig(OUT / "fig_division_of_labor.png", dpi=140, bbox_inches="tight")
     print("wrote fig_division_of_labor.png")

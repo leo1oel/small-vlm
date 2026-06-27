@@ -39,7 +39,11 @@ def main() -> None:
             continue
         for task, mets in (data.get("results") or {}).items():
             for k, v in mets.items():
-                if isinstance(v, (int, float)) and not k.endswith("_stderr") and not k.startswith("alias"):
+                if (
+                    isinstance(v, (int, float))
+                    and not k.endswith("_stderr")
+                    and not k.startswith("alias")
+                ):
                     tab[(run, step, task)][k.split(",")[0]] = v
 
     def pct(d, k):
@@ -55,7 +59,9 @@ def main() -> None:
         "| run | step | **average** | doc | general | ocr | reason |",
         "|---|--:|--:|--:|--:|--:|--:|",
     ]
-    for run, step, _ in sorted([k for k in tab if k[2] == "vmcbench"], key=lambda x: (rk(x[0]), x[1])):
+    for run, step, _ in sorted(
+        [k for k in tab if k[2] == "vmcbench"], key=lambda x: (rk(x[0]), x[1])
+    ):
         d = tab[(run, step, "vmcbench")]
         o.append(
             f"| {run} | {step} | **{pct(d, 'average')}** | {pct(d, 'doc')} | "
@@ -65,7 +71,9 @@ def main() -> None:
     o += ["", "## MMVP (300)", "", "| run | step | accuracy | **pair_acc** |", "|---|--:|--:|--:|"]
     for run, step, _ in sorted([k for k in tab if k[2] == "mmvp"], key=lambda x: (rk(x[0]), x[1])):
         d = tab[(run, step, "mmvp")]
-        o.append(f"| {run} | {step} | {pct(d, 'mmvp_accuracy')} | **{pct(d, 'mmvp_pair_accuracy')}** |")
+        o.append(
+            f"| {run} | {step} | {pct(d, 'mmvp_accuracy')} | **{pct(d, 'mmvp_pair_accuracy')}** |"
+        )
 
     o += [
         "",

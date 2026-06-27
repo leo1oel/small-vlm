@@ -1,0 +1,44 @@
+defaults:
+    - pretrain-unified
+    - override /model: qwen3-1.7b-unified-breen
+    - override /dataset: energon-breen-caption
+    - _self_
+
+# BREEN port (arXiv:2503.12446, spec 2026-06-24) — STAGE 0: frozen-LLM caption
+# alignment. The Qwen3 backbone is FROZEN (trainer: pretrain -> unfreeze:
+# pretrain); only the visual pathway trains — the connector, the per-layer
+# visual FFN experts (mlp_visual + gates), the learnable queries, and the
+# CLIP->LLM distill head (set_trainable force-trains these even with the LM
+# frozen; the build-item-8 fix). The frozen CLIP-L/14-336 teacher distills the
+# 100 queries to its dual-pooled grid (method=breen). Placement = after_image
+# (image then queries), the plain caption template.
+#
+# Launch (from THIS worktree — devtools/breen_train.slurm, NOT train_l40s.slurm
+# which runs the main checkout without the BREEN port):
+#   CONFIG_NAME=pretrain-unified-breen sbatch devtools/breen_train.slurm
+# Preferred: let devtools/breen_orchestrate.sh wait for the streamed data, run
+# the dry-run gate, and launch with the measured max_steps.
+
+trainer:
+    # The breen distill loss runs ONLY on the chunked-CE path -> required > 0.
+    loss_chunk_size: 1024
+    visual_distill_weight: 1.0
+    # S0 budget (captain revision 2026-06-24): 4000 steps. At ~715 samples/step
+    # that is ~2.86M samples. Effective batch (tokens) = batch_token_budget(32000)
+    # x world x accum; on 8 GPU accum=2 -> 32000*8*2 = the same 512k tokens/step as
+    # the prior 4 GPU x accum=4, so eff-batch stays ~739 samples (BREEN ~1024
+    # target, modest deviation) while throughput ~doubles. save_steps=2000 ->
+    # final = checkpoint-4000, the resume point the afterok chain feeds S1.
+    gradient_accumulation_steps: 2
+    max_steps: 4000
+    save_steps: 2000
+    save_total_limit: null
+    # BREEN ptr0 LR: proj/vision side 4e-4, base 4e-5. Encoder-free -> the
+    # connector group (connector + queries + distill head) gets 4e-4; the
+    # in-stack visual experts ride the LM ("model") group at 4e-5.
+    learning_rate:
+        visual_encoder_learning_rate: 4e-4
+        connector_learning_rate: 4e-4
+        language_model_learning_rate: 4e-5
+        default_lr: 4e-5
+    run_name: breen-s0-align-frozen-lm

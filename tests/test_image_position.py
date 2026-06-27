@@ -23,13 +23,17 @@ def test_question_first_moves_image_after_text():
 
 
 def test_sandwich_repeats_question():
-    c = conv(("human", f"{TOK}\nWhat is this?"),)
+    c = conv(
+        ("human", f"{TOK}\nWhat is this?"),
+    )
     apply_image_position(c, mode="sandwich", image_token=TOK, seed=0)
     assert c[0]["value"] == f"What is this?\n{TOK}\nWhat is this?"
 
 
 def test_image_token_inside_text_is_extracted():
-    c = conv(("human", f"Look at {TOK} and answer."),)
+    c = conv(
+        ("human", f"Look at {TOK} and answer."),
+    )
     apply_image_position(c, mode="question_first", image_token=TOK, seed=0)
     # hard contract: exactly one token, moved to the end, no glued words
     assert c[0]["value"].count(TOK) == 1
@@ -37,10 +41,14 @@ def test_image_token_inside_text_is_extracted():
 
 
 def test_multiline_mcq_options_preserved():
-    c = conv(("human", f"{TOK}\nWhich animal?\nA. cat\nB. dog"),)
+    c = conv(
+        ("human", f"{TOK}\nWhich animal?\nA. cat\nB. dog"),
+    )
     apply_image_position(c, mode="question_first", image_token=TOK, seed=0)
     assert c[0]["value"] == f"Which animal?\nA. cat\nB. dog\n{TOK}"
-    c2 = conv(("human", f"{TOK}\nWhich animal?\nA. cat\nB. dog"),)
+    c2 = conv(
+        ("human", f"{TOK}\nWhich animal?\nA. cat\nB. dog"),
+    )
     apply_image_position(c2, mode="sandwich", image_token=TOK, seed=0)
     assert c2[0]["value"] == (
         f"Which animal?\nA. cat\nB. dog\n{TOK}\nWhich animal?\nA. cat\nB. dog"
@@ -62,7 +70,9 @@ def test_double_application_is_guarded_by_fresh_copies():
 
 
 def test_random_is_deterministic_per_seed():
-    base = conv(("human", f"{TOK}\nIs the red car left of the blue truck?"),)
+    base = conv(
+        ("human", f"{TOK}\nIs the red car left of the blue truck?"),
+    )
     a = [dict(t) for t in base]
     b = [dict(t) for t in base]
     apply_image_position(a, mode="random", image_token=TOK, seed=1234)
@@ -74,21 +84,27 @@ def test_random_is_deterministic_per_seed():
 def test_random_varies_across_seeds():
     vals = set()
     for seed in range(40):
-        c = conv(("human", f"{TOK}\nIs the red car left of the blue truck?"),)
+        c = conv(
+            ("human", f"{TOK}\nIs the red car left of the blue truck?"),
+        )
         apply_image_position(c, mode="random", image_token=TOK, seed=seed)
         vals.add(c[0]["value"])
     assert len(vals) >= 2  # first/middle/last all reachable over 40 seeds
 
 
 def test_image_only_turn_untouched():
-    c = conv(("human", TOK),)
+    c = conv(
+        ("human", TOK),
+    )
     apply_image_position(c, mode="sandwich", image_token=TOK, seed=0)
     assert c[0]["value"] == TOK
 
 
 def test_multi_image_turn_untouched():
     v = f"{TOK}\n{TOK}\nCompare these."
-    c = conv(("human", v),)
+    c = conv(
+        ("human", v),
+    )
     apply_image_position(c, mode="sandwich", image_token=TOK, seed=0)
     assert c[0]["value"] == v
 
@@ -102,7 +118,9 @@ def test_no_image_turn_untouched():
 def test_unknown_mode_raises():
     import pytest
 
-    c = conv(("human", f"{TOK}\nQ?"),)
+    c = conv(
+        ("human", f"{TOK}\nQ?"),
+    )
     with pytest.raises(ValueError):
         apply_image_position(c, mode="banana", image_token=TOK, seed=0)
 

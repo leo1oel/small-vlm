@@ -23,6 +23,7 @@ gen_rope = _load("gen_rope", "src/vlm/models/gen_rope.py")
 def _qwen3_rotary():
     from transformers import AutoConfig
     from transformers.models.qwen3.modeling_qwen3 import Qwen3RotaryEmbedding
+
     cfg = AutoConfig.from_pretrained("Qwen/Qwen3-1.7B")
     return Qwen3RotaryEmbedding(cfg), cfg
 
@@ -66,16 +67,18 @@ def test_axial_distinguishes_h_and_w():
 
 
 def test_build_mrope_position_ids_shape_and_values():
-    pos = gen_rope.build_mrope_position_ids(prefix_len=3, grid_h=2, grid_w=2, batch=2, device=torch.device("cpu"))
+    pos = gen_rope.build_mrope_position_ids(
+        prefix_len=3, grid_h=2, grid_w=2, batch=2, device=torch.device("cpu")
+    )
     assert pos.shape == (3, 2, 7)  # 3 prefix + 4 image
     # prefix: all axes equal arange
     assert torch.equal(pos[0, 0, :3], torch.tensor([0, 1, 2]))
     assert torch.equal(pos[1, 0, :3], torch.tensor([0, 1, 2]))
     assert torch.equal(pos[2, 0, :3], torch.tensor([0, 1, 2]))
     # image (prefix_len=3): t const=3; h=3+y; w=3+x; row-major k=0..3
-    assert torch.equal(pos[0, 0, 3:], torch.tensor([3, 3, 3, 3]))          # t
-    assert torch.equal(pos[1, 0, 3:], torch.tensor([3, 3, 4, 4]))          # h = 3 + k//2
-    assert torch.equal(pos[2, 0, 3:], torch.tensor([3, 4, 3, 4]))          # w = 3 + k%2
+    assert torch.equal(pos[0, 0, 3:], torch.tensor([3, 3, 3, 3]))  # t
+    assert torch.equal(pos[1, 0, 3:], torch.tensor([3, 3, 4, 4]))  # h = 3 + k//2
+    assert torch.equal(pos[2, 0, 3:], torch.tensor([3, 4, 3, 4]))  # w = 3 + k%2
 
 
 def test_mrope_section_sums_to_d2():

@@ -284,7 +284,7 @@ git commit -m "feat(devtools): patch-vs-knockout triangulation analysis"
     often have a different `n_vis` → `nvis_mismatch` skips. Mitigation in `main()` for kind=qwen:
     set the processor to a FIXED `max_pixels`/`min_pixels` (e.g. `AutoProcessor.from_pretrained(..., max_pixels=512*28*28, min_pixels=512*28*28)`) so every image yields the same token count. Add this
     as a kind-conditional in `__init__`. Re-run; verify `nvis_mismatch` skip rate < 10%.
-- [ ] **Step 2: Sanity** intact acc ≈ 0.76 (Qwen2.5-VL published). 
+- [ ] **Step 2: Sanity** intact acc ≈ 0.76 (Qwen2.5-VL published).
 - [ ] **Step 3: Analyze** `python devtools/patch_analysis.py neo_analysis/results_patch_qwen.jsonl qwen` → expect denoise/meanabl q50 ≈ mid-stack (knockout φ≈0.54).
 - [ ] **Step 4: Commit results.**
 

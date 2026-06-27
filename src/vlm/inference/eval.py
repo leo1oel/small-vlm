@@ -46,6 +46,7 @@ from PIL import Image
 from ..data.data_arguments import DataArguments
 from ..data.dataset import (
     apply_image_position,
+    inject_query_placeholders,
     load_audio_frames,
     tokenizer_multimodal_token,
 )
@@ -190,6 +191,13 @@ def _data_args_from_config(config: Any) -> DataArguments:
         max_audio_tokens=getattr(audio_cfg, "max_audio_tokens", 750)
         if audio_cfg is not None
         else 750,
+        # BREEN port: a query-trained checkpoint must inject "<query>" at
+        # inference too (the model expects the query block to summarize the
+        # image). Self-describing from the saved config.
+        learnable_query_enabled=bool(getattr(config, "learnable_query", False)),
+        query_token=getattr(config, "query_token", "<query>"),
+        query_token_index=getattr(config, "query_token_index", -202),
+        query_placement=str(getattr(config, "learnable_query_placement", "after_image")),
     )
 
 
@@ -402,9 +410,7 @@ def prepare_media_inputs(
             from types import SimpleNamespace
 
             if image_aspect_ratio is None:
-                image_aspect_ratio = (
-                    getattr(model.config, "image_aspect_ratio", None) or "pad"
-                )
+                image_aspect_ratio = getattr(model.config, "image_aspect_ratio", None) or "pad"
             if len(pil_images) > 1:
                 # Training forces square-padding for multi-image samples on the
                 # classic path (energon _process_images; dataset.py overwrite).
@@ -500,6 +506,12 @@ def generate_response(
         query = _turns[0]["value"]
 
     query = ensure_placeholders(query, len(images), len(audios), data_args)
+    # BREEN port: emit one "<query>" per image at the trained placement, mirroring
+    # the training data path so the splice inserts the learnable query block.
+    if data_args.learnable_query_enabled and images:
+        _turns = [{"from": "human", "value": query}]
+        inject_query_placeholders(_turns, n_images=len(images), data_args=data_args)
+        query = _turns[0]["value"]
     prompt = build_prompt(conv_mode, query, data_args)
 
     tokenizer = processor.tokenizer

@@ -64,8 +64,13 @@ def build(device, base_lm, grounding=True, from_pretrained=None):
         )
     )
     trainer_cfg = OmegaConf.structured(
-        TrainerConfig(name="smoke", bf16=bf16, fp16=False, attn_implementation="sdpa",
-                      from_pretrained=from_pretrained)
+        TrainerConfig(
+            name="smoke",
+            bf16=bf16,
+            fp16=False,
+            attn_implementation="sdpa",
+            from_pretrained=from_pretrained,
+        )
     )
     model, processor = load_model(model_cfg, trainer_cfg)
     model = model.to(device=device, dtype=torch.bfloat16 if bf16 else torch.float32)
@@ -82,8 +87,10 @@ def build(device, base_lm, grounding=True, from_pretrained=None):
 def mk_image(processor, device, dtype, seed):
     arr = (np.random.default_rng(seed).random((96, 96, 3)) * 255).astype("uint8")
     feat = processor.image_processor.preprocess([Image.fromarray(arr)])
-    return (feat["pixel_values"][0].to(device=device, dtype=dtype),
-            feat["image_position_ids"][0].to(device))
+    return (
+        feat["pixel_values"][0].to(device=device, dtype=dtype),
+        feat["image_position_ids"][0].to(device),
+    )
 
 
 def batch(model, imgs, poss, q, ans, device):
@@ -104,8 +111,9 @@ def gold_logp_gap(model, imgs, poss, q, ans, device):
     model.eval()
     input_ids, attn, labels, images, posl = batch(model, imgs, poss, q, ans, device)
     feats = model.encode_raw_patches(images, posl)
-    (_, _, _, _, embeds, new_labels, block_ids) = model.prepare_inputs_labels_for_multimodal(
-        input_ids, None, attn, None, labels, feats, None, with_image_block_ids=True)
+    (_, _, _, _, embeds, new_labels, block_ids, _) = model.prepare_inputs_labels_for_multimodal(
+        input_ids, None, attn, None, labels, feats, None, with_image_block_ids=True
+    )
     blank = embeds.detach().clone()
     blank[block_ids >= 0] = 0.0
     h_real = model.model(inputs_embeds=embeds, use_cache=False).last_hidden_state
@@ -137,21 +145,26 @@ def main():
     img0, pos0 = mk_image(processor, device, dtype, seed=0)
     img1, pos1 = mk_image(processor, device, dtype, seed=12345)
     q = [40, 41, 42]
-    a0, a1 = 100, 200            # distinct single-token gold answers
+    a0, a1 = 100, 200  # distinct single-token gold answers
     imgs, poss, ans = [img0, img1], [pos0, pos1], [a0, a1]
 
     # ---- 1. mechanics ----------------------------------------------------
     iid, attn, lab, images, posl = batch(model, imgs, poss, q, ans, device)
-    out = model(input_ids=iid, attention_mask=attn, labels=lab, images=images,
-                image_position_ids=posl)
+    out = model(
+        input_ids=iid, attention_mask=attn, labels=lab, images=images, image_position_ids=posl
+    )
     comps = getattr(model, "_last_ce_components", {})
     check("mechanics: finite loss", torch.isfinite(out.loss).item(), f"loss={out.loss.item():.4f}")
-    check("mechanics: grounding component stashed", "grounding" in comps,
-          f"keys={sorted(comps)}")
-    check("mechanics: grounding >= 0", float(comps.get("grounding", -1)) >= 0.0,
-          f"grounding={float(comps.get('grounding', -1)):.4f}")
+    check("mechanics: grounding component stashed", "grounding" in comps, f"keys={sorted(comps)}")
+    check(
+        "mechanics: grounding >= 0",
+        float(comps.get("grounding", -1)) >= 0.0,
+        f"grounding={float(comps.get('grounding', -1)):.4f}",
+    )
     out.loss.backward()
-    cg = next(p.grad for n, p in model.named_parameters() if "connector" in n and p.grad is not None)
+    cg = next(
+        p.grad for n, p in model.named_parameters() if "connector" in n and p.grad is not None
+    )
     hg = model.lm_head.weight.grad
     check("mechanics: connector has gradient", cg.abs().sum().item() > 0)
     check("mechanics: lm_head has gradient", hg is not None and hg.abs().sum().item() > 0)
@@ -164,37 +177,54 @@ def main():
     g_hist = []
     for step in range(args.steps):
         iid, attn, lab, images, posl = batch(model, imgs, poss, q, ans, device)
-        out = model(input_ids=iid, attention_mask=attn, labels=lab, images=images,
-                    image_position_ids=posl)
+        out = model(
+            input_ids=iid, attention_mask=attn, labels=lab, images=images, image_position_ids=posl
+        )
         opt.zero_grad(set_to_none=True)
         out.loss.backward()
         opt.step()
         g_hist.append(float(model._last_ce_components["grounding"]))
         if step % 40 == 0:
-            print(f"  step {step:3d}: loss={out.loss.item():.4f} "
-                  f"grounding={g_hist[-1]:.4f}", flush=True)
+            print(
+                f"  step {step:3d}: loss={out.loss.item():.4f} grounding={g_hist[-1]:.4f}",
+                flush=True,
+            )
     gap1 = gold_logp_gap(model, imgs, poss, q, ans, device)
 
     mean_gap0 = sum(r[0] - r[1] for r in gap0) / len(gap0)
     mean_gap1 = sum(r[0] - r[1] for r in gap1) / len(gap1)
-    check("overfit: grounding loss decreased", g_hist[-1] < g_start - 1e-3,
-          f"{g_start:.4f} -> {g_hist[-1]:.4f}")
-    check("overfit: logp_real-logp_blank gap grew", mean_gap1 > mean_gap0,
-          f"gap {mean_gap0:+.3f} -> {mean_gap1:+.3f}")
-    check("overfit: final gap positive (image now matters)", mean_gap1 > 0.0,
-          f"gap={mean_gap1:+.3f}")
+    check(
+        "overfit: grounding loss decreased",
+        g_hist[-1] < g_start - 1e-3,
+        f"{g_start:.4f} -> {g_hist[-1]:.4f}",
+    )
+    check(
+        "overfit: logp_real-logp_blank gap grew",
+        mean_gap1 > mean_gap0,
+        f"gap {mean_gap0:+.3f} -> {mean_gap1:+.3f}",
+    )
+    check(
+        "overfit: final gap positive (image now matters)", mean_gap1 > 0.0, f"gap={mean_gap1:+.3f}"
+    )
     preds_real_ok = all(gap1[b][2] == ans[b] for b in range(len(ans)))
-    check("overfit: prediction WITH image correct for both (toy R0->1)", preds_real_ok,
-          f"preds={[gap1[b][2] for b in range(len(ans))]} gold={ans}")
+    check(
+        "overfit: prediction WITH image correct for both (toy R0->1)",
+        preds_real_ok,
+        f"preds={[gap1[b][2] for b in range(len(ans))]} gold={ans}",
+    )
 
     # ---- 3. no-harm: grounding off -> no component -----------------------
     m0, p0 = build(device, args.base_lm, grounding=False)
     m0.train()
     iid, attn, lab, images, posl = batch(m0, imgs, poss, q, ans, device)
-    out0 = m0(input_ids=iid, attention_mask=attn, labels=lab, images=images, image_position_ids=posl)
-    check("no-harm: weight=0 builds no grounding component",
-          "grounding" not in getattr(m0, "_last_ce_components", {}),
-          f"keys={sorted(getattr(m0, '_last_ce_components', {}))}")
+    out0 = m0(
+        input_ids=iid, attention_mask=attn, labels=lab, images=images, image_position_ids=posl
+    )
+    check(
+        "no-harm: weight=0 builds no grounding component",
+        "grounding" not in getattr(m0, "_last_ce_components", {}),
+        f"keys={sorted(getattr(m0, '_last_ce_components', {}))}",
+    )
     del m0
 
     # ---- 4. text-only batch -> grounding anchored to zero ----------------
@@ -204,7 +234,9 @@ def main():
     out_t = model(input_ids=t_ids, attention_mask=torch.ones_like(t_ids), labels=t_lab)
     gt = float(getattr(model, "_last_ce_components", {}).get("grounding", -1.0))
     check("text-only: grounding anchored to exact zero", gt == 0.0, f"grounding={gt}")
-    check("text-only: finite loss", torch.isfinite(out_t.loss).item(), f"loss={out_t.loss.item():.4f}")
+    check(
+        "text-only: finite loss", torch.isfinite(out_t.loss).item(), f"loss={out_t.loss.item():.4f}"
+    )
 
     # ---- 5. save / reload: grounding_weight serializes into config.json --
     import json
@@ -215,9 +247,11 @@ def main():
         processor.save_pretrained(d)
         with open(os.path.join(d, "config.json")) as f:
             saved_cfg = json.load(f)
-        check("reload: grounding_weight serialized into config.json",
-              float(saved_cfg.get("grounding_weight", 0.0)) == 0.5,
-              f"config.json grounding_weight={saved_cfg.get('grounding_weight')}")
+        check(
+            "reload: grounding_weight serialized into config.json",
+            float(saved_cfg.get("grounding_weight", 0.0)) == 0.5,
+            f"config.json grounding_weight={saved_cfg.get('grounding_weight')}",
+        )
 
     print("\n" + ("ALL GROUNDING SMOKE CHECKS PASSED" if OK else "GROUNDING SMOKE FAILED"))
     sys.exit(0 if OK else 1)

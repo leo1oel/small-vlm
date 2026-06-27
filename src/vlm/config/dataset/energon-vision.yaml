@@ -13,8 +13,8 @@ type: energon
 
 # blob folder -> blend weight (sampling ratio, normalized automatically)
 folders:
-    LLaVA-OneVision-1.5-Instruct: 1.0
-    FineVision: 1.0
+  LLaVA-OneVision-1.5-Instruct: 1.0
+  FineVision: 1.0
 
 # PER-WORKER buffer that must FILL before the first sample is yielded
 # (energon ShuffleBufferDataset): startup cost ≈ num_workers x ranks x size

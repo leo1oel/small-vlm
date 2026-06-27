@@ -79,8 +79,9 @@ class _Perceptual(nn.Module):
         return (1.0 - cos).mean(dim=-1)  # per-sample (B,)
 
 
-def _get(device: torch.device, dtype: torch.dtype, lpips_net: str, dino_model: str,
-         dino_w: float) -> _Perceptual:
+def _get(
+    device: torch.device, dtype: torch.dtype, lpips_net: str, dino_model: str, dino_w: float
+) -> _Perceptual:
     key = (str(device), str(dtype), lpips_net, dino_model, dino_w > 0.0)
     mod = _CACHE.get(key)
     if mod is None:
@@ -121,7 +122,11 @@ def perceptual_loss(
 
     zeros_b = pred.new_zeros(bsz)
     lp = net.lpips(pred.to(dtype), gt.to(dtype)).float() if lpips_weight > 0.0 else zeros_b
-    dn = net.dino_loss(pred.to(dtype), gt.to(dtype), resize).float() if dino_weight > 0.0 else zeros_b
+    dn = (
+        net.dino_loss(pred.to(dtype), gt.to(dtype), resize).float()
+        if dino_weight > 0.0
+        else zeros_b
+    )
 
     if t is not None and t_gate > 0.0:
         mask = (t.to(device).float() > t_gate).float()  # 1 on low-noise samples
@@ -131,5 +136,9 @@ def perceptual_loss(
     lp_m = (lp * mask).sum() / denom
     dn_m = (dn * mask).sum() / denom
     weighted = lpips_weight * lp_m + dino_weight * dn_m
-    return {"lpips": lp_m.detach(), "dino": dn_m.detach(), "weighted": weighted,
-            "frac": (mask.mean()).detach()}
+    return {
+        "lpips": lp_m.detach(),
+        "dino": dn_m.detach(),
+        "weighted": weighted,
+        "frac": (mask.mean()).detach(),
+    }

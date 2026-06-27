@@ -14,6 +14,7 @@ computed from the same fusion_quants method on the same model for a side-by-side
 
 Usage: python devtools/patch_analysis.py <results_patch.jsonl> <tag> [knockout.jsonl]
 """
+
 import json
 import sys
 from statistics import mean
@@ -41,7 +42,10 @@ def quants_from_retained(ret, rising):
 
     def q(p):
         return next((d / N for d in range(1, N + 1) if cdf[d - 1] >= p), 1.0)
-    return {k: q(v) for k, v in (("q10", .1), ("q25", .25), ("q50", .5), ("q75", .75), ("q90", .9))}
+
+    return {
+        k: q(v) for k, v in (("q10", 0.1), ("q25", 0.25), ("q50", 0.5), ("q75", 0.75), ("q90", 0.9))
+    }
 
 
 def patch_quants(rows):
@@ -51,33 +55,57 @@ def patch_quants(rows):
         return out
     iacc = mean(r["intact"]["pred"] == r["gt"] for r in cz)
     sacc = mean(r["swap"]["pred"] == r["gt"] for r in cz)
-    out["intact_acc"], out["swap_acc"], out["R0"] = round(iacc, 3), round(sacc, 3), round(iacc - sacc, 3)
+    out["intact_acc"], out["swap_acc"], out["R0"] = (
+        round(iacc, 3),
+        round(sacc, 3),
+        round(iacc - sacc, 3),
+    )
     if iacc - sacc < 0.05:
         out["warn"] = "R0<0.05 — curves are noise"
     # each metric on the subset of causal rows that actually carry it (NEO/SAIL skip denoise)
     dz = [r for r in cz if "denoise" in r]
     if dz:
-        R0 = mean(r["intact"]["pred"] == r["gt"] for r in dz) - mean(r["swap"]["pred"] == r["gt"] for r in dz)
+        R0 = mean(r["intact"]["pred"] == r["gt"] for r in dz) - mean(
+            r["swap"]["pred"] == r["gt"] for r in dz
+        )
         sd = mean(r["swap"]["pred"] == r["gt"] for r in dz)
         Nd = len(dz[0]["depths"]) - 1
-        ret = [(mean(r["denoise"][d]["pred"] == r["gt"] for r in dz) - sd) / R0 for d in range(Nd + 1)]
+        ret = [
+            (mean(r["denoise"][d]["pred"] == r["gt"] for r in dz) - sd) / R0 for d in range(Nd + 1)
+        ]
         out["denoise"] = quants_from_retained(ret, rising=True)
         out["n_denoise"] = len(dz)
     mz = [r for r in cz if "meanabl" in r]
     if mz:
-        R0 = mean(r["intact"]["pred"] == r["gt"] for r in mz) - mean(r["swap"]["pred"] == r["gt"] for r in mz)
+        R0 = mean(r["intact"]["pred"] == r["gt"] for r in mz) - mean(
+            r["swap"]["pred"] == r["gt"] for r in mz
+        )
         Nd = len(mz[0]["depths"]) - 1
-        ret = [(mean(r["meanabl"][d]["pred"] == r["gt"] for r in mz)
-                - mean(r["meanabl_null"][d]["pred"] == r["gt"] for r in mz)) / R0 for d in range(Nd + 1)]
+        ret = [
+            (
+                mean(r["meanabl"][d]["pred"] == r["gt"] for r in mz)
+                - mean(r["meanabl_null"][d]["pred"] == r["gt"] for r in mz)
+            )
+            / R0
+            for d in range(Nd + 1)
+        ]
         out["meanabl"] = quants_from_retained(ret, rising=False)
         out["n_meanabl"] = len(mz)
     sm = [r for r in cz if "sufmeanabl" in r]
     if sm:
-        R0 = mean(r["intact"]["pred"] == r["gt"] for r in sm) - mean(r["swap"]["pred"] == r["gt"] for r in sm)
+        R0 = mean(r["intact"]["pred"] == r["gt"] for r in sm) - mean(
+            r["swap"]["pred"] == r["gt"] for r in sm
+        )
         Nd = len(sm[0]["depths"]) - 1
         # suffix-flatten: retained rises 0->1; marginal RISE = read-onset depth (the primary metric)
-        ret = [(mean(r["sufmeanabl"][d]["pred"] == r["gt"] for r in sm)
-                - mean(r["sufmeanabl_null"][d]["pred"] == r["gt"] for r in sm)) / R0 for d in range(Nd + 1)]
+        ret = [
+            (
+                mean(r["sufmeanabl"][d]["pred"] == r["gt"] for r in sm)
+                - mean(r["sufmeanabl_null"][d]["pred"] == r["gt"] for r in sm)
+            )
+            / R0
+            for d in range(Nd + 1)
+        ]
         out["sufmeanabl"] = quants_from_retained(ret, rising=True)
         out["n_sufmeanabl"] = len(sm)
     return out
@@ -92,9 +120,12 @@ def knockout_phi(rows):
 
         def acc(g):
             return mean(g(r)["pred"] == r["gt"] for r in causal)
+
         R0 = acc(lambda r: r["intact"]) - acc(lambda r: r["swap"])
-        rn = [(acc(lambda r, d=d: r["cost"][d]) - acc(lambda r, d=d: r["cost_null"][d])) / R0
-              for d in range(N)]
+        rn = [
+            (acc(lambda r, d=d: r["cost"][d]) - acc(lambda r, d=d: r["cost_null"][d])) / R0
+            for d in range(N)
+        ]
         res["phi"] = quants_from_retained([1.0] + rn, rising=False)
     sf = [r for r in rows if "suf" in r]
     if sf:
@@ -102,9 +133,12 @@ def knockout_phi(rows):
 
         def acc(g):
             return mean(g(r)["pred"] == r["gt"] for r in sf)
+
         R0 = acc(lambda r: r["intact"]) - acc(lambda r: r["swap"])
-        rs = [(acc(lambda r, d=d: r["suf"][d]) - acc(lambda r, d=d: r["suf_null"][d])) / R0
-              for d in range(N)]
+        rs = [
+            (acc(lambda r, d=d: r["suf"][d]) - acc(lambda r, d=d: r["suf_null"][d])) / R0
+            for d in range(N)
+        ]
         res["onset"] = quants_from_retained(rs + [1.0], rising=True)
     return res
 
@@ -116,12 +150,20 @@ def fmt(q):
 def main():
     path, tag = sys.argv[1], sys.argv[2]
     pq = patch_quants(load(path))
-    print(f"== {tag} ==  n_causal={pq.get('n_causal')}  intact={pq.get('intact_acc')} "
-          f"swap={pq.get('swap_acc')} R0={pq.get('R0')} {pq.get('warn','')}")
-    print(f"  ** sufmeanabl (PRIMARY: suffix-flatten read-onset) [n={pq.get('n_sufmeanabl','-')}]: {fmt(pq.get('sufmeanabl'))}")
-    print(f"  meanabl  (prefix-flatten; NON-discriminative)     [n={pq.get('n_meanabl','-')}]: {fmt(pq.get('meanabl'))}")
-    print(f"  denoise  (prefix-inject; NON-discriminative)      [n={pq.get('n_denoise','-')}]: {fmt(pq.get('denoise'))}")
-    print(f"  [report reference prefix-phi q50 for {tag}: {REF_PHI.get(tag,'?')}]")
+    print(
+        f"== {tag} ==  n_causal={pq.get('n_causal')}  intact={pq.get('intact_acc')} "
+        f"swap={pq.get('swap_acc')} R0={pq.get('R0')} {pq.get('warn', '')}"
+    )
+    print(
+        f"  ** sufmeanabl (PRIMARY: suffix-flatten read-onset) [n={pq.get('n_sufmeanabl', '-')}]: {fmt(pq.get('sufmeanabl'))}"
+    )
+    print(
+        f"  meanabl  (prefix-flatten; NON-discriminative)     [n={pq.get('n_meanabl', '-')}]: {fmt(pq.get('meanabl'))}"
+    )
+    print(
+        f"  denoise  (prefix-inject; NON-discriminative)      [n={pq.get('n_denoise', '-')}]: {fmt(pq.get('denoise'))}"
+    )
+    print(f"  [report reference prefix-phi q50 for {tag}: {REF_PHI.get(tag, '?')}]")
     if len(sys.argv) > 3:
         ko = knockout_phi(load(sys.argv[3]))
         print(f"  knockout prefix-phi: {fmt(ko.get('phi'))}   suffix-onset: {fmt(ko.get('onset'))}")

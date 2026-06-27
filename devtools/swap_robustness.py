@@ -17,7 +17,7 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from aux_fusion_full import FullProbe, doc_to_prompt, load_vmcbench  # noqa: E402
+from aux_fusion_full import FullProbe, load_vmcbench  # noqa: E402
 
 DEV = "cuda"
 OFFSETS = [37, 113, 251, 499, 661]  # distinct co-prime-ish donor offsets
@@ -52,8 +52,7 @@ def main():
                 pr.vm = svm
                 pr._mc.clear()
                 swaps.append(pr._score(pr._logits_last(se, sa), gt, ["A", "B", "C", "D"]))
-            rows.append(dict(i=i, gt=gt, intact=intact["pred"],
-                             swaps=[s["pred"] for s in swaps]))
+            rows.append(dict(i=i, gt=gt, intact=intact["pred"], swaps=[s["pred"] for s in swaps]))
         except Exception as e:  # noqa: BLE001
             rows.append(dict(i=i, skip=f"{type(e).__name__}: {e}"))
         if (i + 1) % 50 == 0:
@@ -68,12 +67,16 @@ def main():
         swap_accs.append(a)
         print(f"  swap offset +{off:>3}: acc={a:.3f}  R0={acc_intact - a:+.3f}", flush=True)
     import statistics as st
-    print(f"  swap acc mean={st.mean(swap_accs):.3f} sd={st.pstdev(swap_accs):.4f}  "
-          f"-> R0 range [{acc_intact - max(swap_accs):+.3f}, {acc_intact - min(swap_accs):+.3f}]",
-          flush=True)
+
+    print(
+        f"  swap acc mean={st.mean(swap_accs):.3f} sd={st.pstdev(swap_accs):.4f}  "
+        f"-> R0 range [{acc_intact - max(swap_accs):+.3f}, {acc_intact - min(swap_accs):+.3f}]",
+        flush=True,
+    )
     out = json.loads(out_path.read_text()) if out_path.exists() else {}
     out[Path(ckpt).parent.name + "/" + Path(ckpt).name] = dict(
-        intact=acc_intact, swap_accs=swap_accs, offsets=offs, n=len(ok))
+        intact=acc_intact, swap_accs=swap_accs, offsets=offs, n=len(ok)
+    )
     out_path.write_text(json.dumps(out, indent=1))
     print(f"[swaprob] saved -> {out_path}", flush=True)
 

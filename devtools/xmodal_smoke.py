@@ -123,7 +123,7 @@ def splice(model, processor, device, dtype, questions, ans_ids=(10, 11, 12), pad
 def merged(model, input_ids, attn, labels, images, poss):
     """Run prepare_inputs_labels_for_multimodal to get spliced embeds + block ids."""
     feats = model.encode_raw_patches(images, poss)
-    (_, _, attn4_or_2, _, embeds, new_labels, block_ids) = (
+    (_, _, attn4_or_2, _, embeds, new_labels, block_ids, _) = (
         model.prepare_inputs_labels_for_multimodal(
             input_ids, None, attn, None, labels, feats, None, with_image_block_ids=True
         )
@@ -199,12 +199,16 @@ def main() -> int:
             mfa.config.cross_modal_mask_mode = "none"
             with torch.no_grad():
                 e2, m2, ml2, _ = merged(mfa, ids, attn, labels, imgs, poss)
-                hfa = mfa.model(
-                    inputs_embeds=e2,
-                    attention_mask=m2,
-                    output_hidden_states=True,
-                    use_cache=False,
-                ).hidden_states[-1].float()
+                hfa = (
+                    mfa.model(
+                        inputs_embeds=e2,
+                        attention_mask=m2,
+                        output_hidden_states=True,
+                        use_cache=False,
+                    )
+                    .hidden_states[-1]
+                    .float()
+                )
             dfa = (h_2d - hfa).abs().max().item()
             record("1b.sdpa_vs_fa2_info", True, f"max|Δ|={dfa:.2e} (info only, kernels differ)")
             del mfa
@@ -313,7 +317,6 @@ def main() -> int:
 
     # === Assertion 5: generate() per mode ===
     gen_ids = torch.tensor([[model.config.image_token_index] + QA], device=device)
-    ref_cont = None
     for mode in ("none", "prefix_lm", "img2q_window"):
         model.config.cross_modal_mask_mode = mode
         impl = "sdpa_xmodal" if mode == "img2q_window" else "sdpa"
@@ -331,9 +334,9 @@ def main() -> int:
             consumed = getattr(model, "_xmodal_gen_mask", None) is None
             finite = bool(out.isfinite().all()) if out.dtype.is_floating_point else True
             cont = out[0, gen_ids.shape[1] :].tolist()
-            if mode == "none":
-                ref_cont = cont
-            record(f"5.generate[{mode}]", consumed and finite, f"stash_cleared={consumed} cont={cont}")
+            record(
+                f"5.generate[{mode}]", consumed and finite, f"stash_cleared={consumed} cont={cont}"
+            )
         except Exception as e:  # noqa: BLE001
             import traceback
 
@@ -406,16 +409,26 @@ def throughput_probe(processor, device, dtype, base_lm):
             ids, attn, lab, imgs, poss, ntok = big_batch(m)
             for _ in range(3):
                 m.zero_grad(set_to_none=True)
-                out = m(input_ids=ids, attention_mask=attn, labels=lab, images=imgs,
-                        image_position_ids=poss)
+                out = m(
+                    input_ids=ids,
+                    attention_mask=attn,
+                    labels=lab,
+                    images=imgs,
+                    image_position_ids=poss,
+                )
                 out.loss.backward()
             torch.cuda.synchronize()
             t0 = time.time()
             steps = 15
             for _ in range(steps):
                 m.zero_grad(set_to_none=True)
-                out = m(input_ids=ids, attention_mask=attn, labels=lab, images=imgs,
-                        image_position_ids=poss)
+                out = m(
+                    input_ids=ids,
+                    attention_mask=attn,
+                    labels=lab,
+                    images=imgs,
+                    image_position_ids=poss,
+                )
                 out.loss.backward()
             torch.cuda.synchronize()
             dt = time.time() - t0

@@ -38,8 +38,10 @@ def curves(rows):
 
     intact = acc(causal, lambda r: r["intact"])
     swap = acc(causal, lambda r: r["swap"])
-    retained = [acc(causal, lambda r, d=d: r["cost"][d]) -
-                acc(causal, lambda r, d=d: r["cost_null"][d]) for d in range(N)]
+    retained = [
+        acc(causal, lambda r, d=d: r["cost"][d]) - acc(causal, lambda r, d=d: r["cost_null"][d])
+        for d in range(N)
+    ]
     R0 = intact - swap
     rho = []
     for l in range(N):
@@ -50,12 +52,23 @@ def curves(rows):
     marg = [max((R0 if d == 0 else retained[d - 1]) - retained[d], 0.0) for d in range(N)]
     tot = sum(marg) or 1e-9
     com = sum((d + 1) * marg[d] for d in range(N)) / tot
-    return dict(N=N, R0=R0, intact=intact, swap=swap, retained=retained, rho=rho,
-                com=com, com_rel=com / N, n=len(rows), nc=len(causal))
+    return dict(
+        N=N,
+        R0=R0,
+        intact=intact,
+        swap=swap,
+        retained=retained,
+        rho=rho,
+        com=com,
+        com_rel=com / N,
+        n=len(rows),
+        nc=len(causal),
+    )
 
 
 def main():
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -67,9 +80,11 @@ def main():
             continue
         c = curves(rows)
         data.append((name, color, prebuf, c))
-        print(f"{name}: n={c['n']} causal={c['nc']} intact={c['intact']:.3f} "
-              f"swap={c['swap']:.3f} R0={c['R0']:+.3f} funcCoM=L{c['com']:.1f} "
-              f"(rel {c['com_rel']:.2f}) rho@L1={c['rho'][0]:.3f} rho_floor={min(c['rho']):.3f}")
+        print(
+            f"{name}: n={c['n']} causal={c['nc']} intact={c['intact']:.3f} "
+            f"swap={c['swap']:.3f} R0={c['R0']:+.3f} funcCoM=L{c['com']:.1f} "
+            f"(rel {c['com_rel']:.2f}) rho@L1={c['rho'][0]:.3f} rho_floor={min(c['rho']):.3f}"
+        )
 
     fig, ax = plt.subplots(1, 2, figsize=(13, 5))
     for name, color, prebuf, c in data:
@@ -79,21 +94,26 @@ def main():
         ax[0].plot(x, rn, "-o", ms=3, color=color, label=f"{name} (CoM rel {c['com_rel']:.2f})")
         ax[1].plot(x, c["rho"], "-o", ms=3, color=color, label=name)
         if prebuf:
-            ax[0].axvline(prebuf, color=color, ls=":", alpha=.4)
-            ax[1].axvline(prebuf, color=color, ls=":", alpha=.4)
-    ax[0].axhline(0.5, color="k", lw=.6, ls="--", alpha=.4)
-    ax[0].axhspan(0.35, 0.6, color="gray", alpha=.10)
-    ax[0].set_title("retained(d)/R0: usable image signal surviving block [0..d)\n"
-                    "(gray = relative depth 0.35-0.60)")
-    ax[0].set_xlabel("relative blocked depth  d / N"); ax[0].set_ylabel("fraction of image signal")
+            ax[0].axvline(prebuf, color=color, ls=":", alpha=0.4)
+            ax[1].axvline(prebuf, color=color, ls=":", alpha=0.4)
+    ax[0].axhline(0.5, color="k", lw=0.6, ls="--", alpha=0.4)
+    ax[0].axhspan(0.35, 0.6, color="gray", alpha=0.10)
+    ax[0].set_title(
+        "retained(d)/R0: usable image signal surviving block [0..d)\n"
+        "(gray = relative depth 0.35-0.60)"
+    )
+    ax[0].set_xlabel("relative blocked depth  d / N")
+    ax[0].set_ylabel("fraction of image signal")
     ax[0].legend(fontsize=8)
-    ax[1].axhspan(0.35, 0.6, color="gray", alpha=.0)
+    ax[1].axhspan(0.35, 0.6, color="gray", alpha=0.0)
     ax[1].set_title("rho(l): representational content-fusion rate")
     ax[1].set_xlabel("relative depth  l / N")
     ax[1].set_ylabel(r"$\|h(I)-h(I')\| / \|h(I)-h(\varnothing)\|$")
     ax[1].legend(fontsize=8)
-    fig.suptitle("Where does functional fusion live? — cross-model, VMCBench dev (dotted = NEO pre-Buffer boundary)",
-                 y=1.02)
+    fig.suptitle(
+        "Where does functional fusion live? — cross-model, VMCBench dev (dotted = NEO pre-Buffer boundary)",
+        y=1.02,
+    )
     fig.tight_layout()
     fig.savefig(sys.argv[1], dpi=130, bbox_inches="tight")
     print(f"saved -> {sys.argv[1]}")

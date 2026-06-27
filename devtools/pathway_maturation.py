@@ -36,6 +36,7 @@ POST = "Answer with the option's letter from the given choices directly.\n"
 
 def load_vmcbench():
     import datasets
+
     return datasets.load_dataset("suyc21/VMCBench", split="dev")
 
 
@@ -47,43 +48,54 @@ def doc_to_prompt(doc):
 class MatProbe:
     def __init__(self, model_id, kind):
         from transformers import AutoProcessor
+
         self.kind = kind
         self.proc = AutoProcessor.from_pretrained(model_id)
         if kind == "llava":
             from transformers import LlavaForConditionalGeneration as M
+
             self.model = M.from_pretrained(model_id, dtype=torch.bfloat16).to(DEV).eval()
         elif kind == "qwen":
             from transformers import Qwen2_5_VLForConditionalGeneration as M
+
             self.model = M.from_pretrained(model_id, dtype=torch.bfloat16).to(DEV).eval()
         elif kind == "gemma":
             from transformers import Gemma4UnifiedForConditionalGeneration as M
+
             self.model = M.from_pretrained(model_id, dtype=torch.bfloat16).to(DEV).eval()
         elif kind == "onevision":
             from transformers import LlavaOnevisionForConditionalGeneration as M
+
             self.model = M.from_pretrained(model_id, dtype=torch.bfloat16).to(DEV).eval()
         elif kind == "llavanext":
             from transformers import LlavaNextForConditionalGeneration as M
+
             self.model = M.from_pretrained(model_id, dtype=torch.bfloat16).to(DEV).eval()
         else:
             raise ValueError(kind)
-        self.img_id = (getattr(self.model.config, "image_token_index", None) or
-                       getattr(self.model.config, "image_token_id", None))
+        self.img_id = getattr(self.model.config, "image_token_index", None) or getattr(
+            self.model.config, "image_token_id", None
+        )
 
     def _build(self, image, question):
         if self.kind == "gemma":
-            content = [{"type": "image", "image": image},
-                       {"type": "text", "text": question}]
+            content = [{"type": "image", "image": image}, {"type": "text", "text": question}]
             msg = [{"role": "user", "content": content}]
-            b = self.proc.apply_chat_template(msg, add_generation_prompt=True,
-                                              tokenize=True, return_dict=True,
-                                              return_tensors="pt")
+            b = self.proc.apply_chat_template(
+                msg,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
             b = {k: (v.to(DEV) if isinstance(v, torch.Tensor) else v) for k, v in b.items()}
         else:
-            msg = [{"role": "user", "content": [{"type": "image"},
-                    {"type": "text", "text": question}]}]
+            msg = [
+                {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}
+            ]
             prompt = self.proc.apply_chat_template(msg, add_generation_prompt=True)
             b = self.proc(images=[image], text=[prompt], return_tensors="pt").to(DEV)
-        vm = (b["input_ids"][0] == self.img_id)
+        vm = b["input_ids"][0] == self.img_id
         return b, vm
 
     @torch.no_grad()
@@ -111,10 +123,18 @@ class MatProbe:
             u_last.append(rel[-1].item())
             n_img.append(c[vm].norm(dim=-1).mean().item())
             n_txt.append(c[txt].norm(dim=-1).mean().item())
-        return dict(gt=gt, category=doc.get("category"), N=N,
-                    n_vis=int(vm.sum()), seq_len=int(b["input_ids"].shape[1]),
-                    u_img=u_img, u_txt=u_txt, u_last=u_last,
-                    norm_img=n_img, norm_txt=n_txt)
+        return dict(
+            gt=gt,
+            category=doc.get("category"),
+            N=N,
+            n_vis=int(vm.sum()),
+            seq_len=int(b["input_ids"].shape[1]),
+            u_img=u_img,
+            u_txt=u_txt,
+            u_last=u_last,
+            norm_img=n_img,
+            norm_txt=n_txt,
+        )
 
 
 @torch.no_grad()
@@ -129,14 +149,17 @@ def main():
     f = open(out_path, "a")
     for i in range(done, n):
         try:
-            rec = pr.run(ds[i]); rec["i"] = i
+            rec = pr.run(ds[i])
+            rec["i"] = i
         except torch.cuda.OutOfMemoryError:
-            torch.cuda.empty_cache(); rec = dict(i=i, skip="oom")
+            torch.cuda.empty_cache()
+            rec = dict(i=i, skip="oom")
         except Exception as e:  # noqa: BLE001
             rec = dict(i=i, skip=f"{type(e).__name__}: {e}")
         f.write(json.dumps(rec) + "\n")
         if (i + 1) % 25 == 0:
-            f.flush(); torch.cuda.empty_cache()
+            f.flush()
+            torch.cuda.empty_cache()
             print(f"[mat] {i + 1}/{n}", flush=True)
     f.close()
     print("[mat] done", flush=True)

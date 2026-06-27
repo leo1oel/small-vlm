@@ -65,6 +65,7 @@ from .dataset import (
     apply_image_position,
     check_audio_template_supported,
     inject_missing_media_tokens,
+    inject_query_placeholders,
     load_audio_frames,
     make_dummy_audio_frames,
     make_dummy_image_entry,
@@ -730,6 +731,9 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
             # Stable per-sample seed: deterministic across epochs/resumes.
             seed=zlib.crc32(str(sample.__key__).encode()),
         )
+        # BREEN port: emit one "<query>" per image at the configured placement
+        # (after the image-position rewrite, so it follows the final image spot).
+        inject_query_placeholders(conversations, n_images=len(images), data_args=self.data_args)
 
         has_media = bool(images) or bool(audios)
         out = preprocess([conversations], self.tokenizer, self.data_args, has_image=has_media)
@@ -934,7 +938,9 @@ class VLMGenTaskEncoder(VLMChatTaskEncoder):  # pyright: ignore[reportUntypedBas
     ):
         super().__init__(processor, data_args)
         if not isinstance(self.image_processor, RawImageProcessor):
-            raise ValueError("dataset.task='generation' requires the encoder-free RawImageProcessor")
+            raise ValueError(
+                "dataset.task='generation' requires the encoder-free RawImageProcessor"
+            )
         # patch_size None -> reuse the connector's 48px model patch (legacy). When
         # the model runs an independent gen embedder (e.g. 16px), the dataset must
         # patchify at that SAME size, else target dim (psz^2*3) mismatches the
@@ -1119,4 +1125,15 @@ def build_energon_train_loader(
         worker_config=wc,
         task_encoder=task_encoder,
     )
+    # PicklingError mitigation (2026-06-24): energon's rolling in-memory checkpoint
+    # (default checkpoint_every_sec=60) snapshots+pickles each worker's state about
+    # every other step. A worker mid-Azure-read holds a live ssl.SSLSocket, which
+    # is not picklable, so every snapshot logs a (caught, non-fatal) PicklingError —
+    # harmless to data flow (samples_seen stays smooth) but it balloons the logs
+    # over a multi-day stream. Durable resume does NOT use this rolling buffer: the
+    # HF checkpoint saves energon_state_rank*.pt via a SEPARATE coordinated
+    # get_checkpoint (verified present + correct). So lengthening the rolling
+    # interval just cuts the noise without touching resume. setdefault keeps it
+    # overridable.
+    savable_loader_kwargs.setdefault("checkpoint_every_sec", 900)
     return get_savable_loader(dataset, **savable_loader_kwargs)

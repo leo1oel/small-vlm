@@ -10,8 +10,6 @@ un-installed baseline mlp is byte-identical.
 Run:  .venv/bin/python devtools/test_visual_expert.py
 """
 
-import copy
-
 import torch
 from transformers.models.qwen3.modeling_qwen3 import Qwen3Config, Qwen3Model
 

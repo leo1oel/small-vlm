@@ -57,11 +57,15 @@ class GradProbeCallback(TrainerCallback):
 
         def rms(k):
             return math.sqrt(sq[k] / ne[k]) if ne[k] else float("nan")
-        c, v, l = rms("connector"), rms("vexpert"), rms("language")
-        cr = c / l if l > 0 else float("nan")
-        vr = v / l if l > 0 else float("nan")
+
+        c, v, lang = rms("connector"), rms("vexpert"), rms("language")
+        cr = c / lang if lang > 0 else float("nan")
+        vr = v / lang if lang > 0 else float("nan")
         if not self._header:
-            print("[gradprobe] columns: step connector_rms vexpert_rms language_rms "
-                  "conn/lang vexp/lang  (RMS = per-param grad magnitude)", flush=True)
+            print(
+                "[gradprobe] columns: step connector_rms vexpert_rms language_rms "
+                "conn/lang vexp/lang  (RMS = per-param grad magnitude)",
+                flush=True,
+            )
             self._header = True
-        print(f"[gradprobe] {step} {c:.4e} {v:.4e} {l:.4e} {cr:.4e} {vr:.4e}", flush=True)
+        print(f"[gradprobe] {step} {c:.4e} {v:.4e} {lang:.4e} {cr:.4e} {vr:.4e}", flush=True)

@@ -23,10 +23,14 @@ from PIL import Image
 
 from vlm.inference.eval import generate_response, load_model
 
-CKPTS = sys.argv[1].split(",") if len(sys.argv) > 1 else [
-    "/gscratch/scrubbed/leoym/small-vlm-outputs/sft-unified-bee-mix/checkpoint-5000",
-    "/gscratch/scrubbed/leoym/small-vlm-outputs/sft-unified-bee-mix-aimpixel/checkpoint-5000",
-]
+CKPTS = (
+    sys.argv[1].split(",")
+    if len(sys.argv) > 1
+    else [
+        "/gscratch/scrubbed/leoym/small-vlm-outputs/sft-unified-bee-mix/checkpoint-5000",
+        "/gscratch/scrubbed/leoym/small-vlm-outputs/sft-unified-bee-mix-aimpixel/checkpoint-5000",
+    ]
+)
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 200
 VPOST = "Answer with the option's letter from the given choices directly.\n"
 PPOST = "Answer the question using a single word or phrase.\n"
@@ -34,6 +38,7 @@ PPOST = "Answer the question using a single word or phrase.\n"
 
 def vmc_samples(n):
     import datasets
+
     ds = datasets.load_dataset("suyc21/VMCBench", split="dev")
     out = []
     for i in range(min(n, len(ds))):
@@ -48,6 +53,7 @@ def pope_samples(n):
     """Best-effort POPE load; returns [] if not cacheable offline."""
     try:
         import datasets
+
         ds = datasets.load_dataset("lmms-lab/POPE", split="test")
         out = []
         for i in range(min(n, len(ds))):
@@ -79,14 +85,20 @@ def run_bench(model, processor, samples, norm, max_new):
     blank_yes = 0  # for POPE: how often blank-image answers 'yes'
     for img, q, gold in samples:
         blank = Image.new("RGB", img.size, 0)
-        ar = norm(generate_response(model, processor, query=q, images=img,
-                                    temperature=0.0, max_new_tokens=max_new))
-        ab = norm(generate_response(model, processor, query=q, images=blank,
-                                    temperature=0.0, max_new_tokens=max_new))
-        real_ok += (ar == gold)
-        blank_ok += (ab == gold)
-        flip += (ar != ab)
-        blank_yes += (ab == "yes")
+        ar = norm(
+            generate_response(
+                model, processor, query=q, images=img, temperature=0.0, max_new_tokens=max_new
+            )
+        )
+        ab = norm(
+            generate_response(
+                model, processor, query=q, images=blank, temperature=0.0, max_new_tokens=max_new
+            )
+        )
+        real_ok += ar == gold
+        blank_ok += ab == gold
+        flip += ar != ab
+        blank_yes += ab == "yes"
     n = len(samples)
     return real_ok / n, blank_ok / n, flip / n, blank_yes / n, n
 
@@ -94,23 +106,31 @@ def run_bench(model, processor, samples, norm, max_new):
 def main():
     rows = []
     for CKPT in CKPTS:
-        tag = CKPT.rstrip("/").split("/")[-2].replace("sft-unified-bee-mix", "base") \
-            + "/" + CKPT.rstrip("/").split("/")[-1]
+        tag = (
+            CKPT.rstrip("/").split("/")[-2].replace("sft-unified-bee-mix", "base")
+            + "/"
+            + CKPT.rstrip("/").split("/")[-1]
+        )
         print(f"\n===== loading {tag} =====", flush=True)
         model, processor, _ = load_model(CKPT, bf16=True)
         model.eval()
 
         vmc = vmc_samples(N)
         vr, vb, vf, _, vn = run_bench(model, processor, vmc, vmc_letter, 8)
-        print(f"[{tag}] VMC  real={vr:.3f} blank={vb:.3f} GAIN={vr-vb:+.3f} "
-              f"flip={vf:.3f} n={vn}", flush=True)
+        print(
+            f"[{tag}] VMC  real={vr:.3f} blank={vb:.3f} GAIN={vr - vb:+.3f} flip={vf:.3f} n={vn}",
+            flush=True,
+        )
         rows.append((tag, "VMC", vr, vb, vr - vb, vf))
 
         pope = pope_samples(N)
         if pope:
             pr, pb, pf, pby, pn = run_bench(model, processor, pope, pope_yn, 8)
-            print(f"[{tag}] POPE real={pr:.3f} blank={pb:.3f} GAIN={pr-pb:+.3f} "
-                  f"flip={pf:.3f} blank_yes={pby:.3f} n={pn}", flush=True)
+            print(
+                f"[{tag}] POPE real={pr:.3f} blank={pb:.3f} GAIN={pr - pb:+.3f} "
+                f"flip={pf:.3f} blank_yes={pby:.3f} n={pn}",
+                flush=True,
+            )
             rows.append((tag, "POPE", pr, pb, pr - pb, pf))
 
         del model

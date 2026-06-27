@@ -15,7 +15,7 @@ This is the distillation pivot the user chose after the analysis phase. Priority
 order (user, verbatim): **(1) generalization, (2) simple/reasonable/practical —
 practicality FIRST, (3) novelty is a bonus.**
 
-## Mechanism (one config, six methods)
+## Mechanism (one config, seven methods)
 
 `model.visual_distill.method`:
 
@@ -27,10 +27,16 @@ practicality FIRST, (3) novelty is a bonus.**
 | `softdepth` | **learned softmax over a layer pool selects the depth** | MLP on mixed hidden | neg-cosine | OURS |
 | `relational` | token-token Gram matrix → CLIP Gram | none | MSE | OURS |
 | `vae` | one layer → frozen VAE latent grid | MLP | smooth-L1 | low-level control |
+| `breen` | learnable-query positions → dual-granularity avg-pooled CLIP grid (8×8 fine + 6×6 coarse) | LayerNorm+Linear (CLIP→LLM) | neg-cosine | BREEN 2503.12446 (later encoder-free port) |
 
 `repa`/`eve` are published baselines; `vora` is the published block-wise method
 (our scheme 3 single-layer is a simplification of it); `softdepth`/`relational`
 are the novel contributions; `vae` is the semantic-vs-reconstructive control.
+`breen` is a later port (spec 2026-06-24, see `AGENTS.md`) that distills the
+BREEN learnable queries instead of image patches — it requires
+`teacher_out_size=336` with `clip-vit-large-patch14-336` and is NOT one of the
+six baseline-mix arms in the experiment matrix below (it ships its own staged
+S0→S1→S2 `*-breen` configs).
 
 **Why softdepth is the headline.** VoRA hard-codes "the first N blocks ARE the
 ViT, in lockstep." Softdepth instead lets the model *self-select* which depth
