@@ -1678,7 +1678,15 @@ def create_dynamic_causal_vlm_class(
         LongTensor | None,
         LongTensor | None,
     ]:
-        if (image_features is None and audio_features is None) or input_ids.shape[1] == 1:  # pyright: ignore
+        # The `past_key_values is not None` guard is load-bearing: a bare-<image>
+        # prefill is [[-200]] (shape[1]==1) with past_key_values None, so without
+        # the guard this branch fires at prefill too and drops the image, making
+        # generate() run blind. Only genuine cached decode steps (shape[1]==1 AND
+        # past_key_values present) should skip the re-splice — do NOT simplify
+        # back to `or input_ids.shape[1] == 1`.
+        if (image_features is None and audio_features is None) or (
+            input_ids.shape[1] == 1 and past_key_values is not None
+        ):  # pyright: ignore
             return (
                 input_ids,
                 position_ids,
