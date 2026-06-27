@@ -202,4 +202,16 @@ CLAUDE.md
 
 # openai
 AGENTS.md
+
+# scratch notes
 scratch.md
+
+# generated research-analysis dirs (multi-GB probe outputs / extracted features;
+# regenerated on demand, kept only in the primary checkout — never committed)
+neo_analysis/
+sail_analysis/
+mono_analysis/
+logs/
+
+# vendored upstream repo (self-contained git checkout, not part of this tree)
+NEO/
