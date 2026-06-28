@@ -1,7 +1,7 @@
 defaults:
-    - sft-unified
-    - override /dataset: energon-gpic-gen
-    - _self_
+  - sft-unified
+  - override /dataset: energon-gpic-gen
+  - _self_
 
 # Milestone 2: large-scale GENERATION-ONLY training on GPIC (text->image flow
 # matching), launched only AFTER the single-sample overfit validates the
@@ -10,42 +10,42 @@ defaults:
 #   CONFIG_NAME=gen-gpic sbatch devtools/gen_train.slurm
 
 model:
-    generation:
-        enabled: true
-        resolution: 384       # 8x8 = 64 image tokens (must match dataset.gen_resolution)
-        patch_size: 48
-        noise_scale: 2.0
-        t_mu: -0.8
-        t_sigma: 0.8
-        sample_steps: 100
-        cfg_scale: 6.0        # inference guidance (minit2i finetune uses 6.0)
-        label_drop: 0.1       # CFG training: drop the text condition 10% of steps
-    visual_expert:
-        enabled: false        # first large run: isolate the generation pathway
-    audio:
-        enabled: false
+  generation:
+    enabled: true
+    resolution: 384 # 8x8 = 64 image tokens (must match dataset.gen_resolution)
+    patch_size: 48
+    noise_scale: 2.0
+    t_mu: -0.8
+    t_sigma: 0.8
+    sample_steps: 100
+    cfg_scale: 6.0 # inference guidance (minit2i finetune uses 6.0)
+    label_drop: 0.1 # CFG training: drop the text condition 10% of steps
+  visual_expert:
+    enabled: false # first large run: isolate the generation pathway
+  audio:
+    enabled: false
 
 trainer:
-    run_name: gen-gpic-b16-r384
-    attn_implementation: sdpa
-    deepspeed: zero2.json
-    from_pretrained: null
-    # Fixed-N generation: plain per-device batch (no token-budget bucketing).
-    per_device_train_batch_size: 16
-    gradient_accumulation_steps: 1
-    # Short sequences (~64 image + <=128 caption) -> activations are tiny; skip
-    # gradient checkpointing (and its embed-only requires_grad hook).
-    gradient_checkpointing: false
-    # gen loss lives in forward_generation (no chunked text CE).
-    loss_chunk_size: 0
-    include_num_input_tokens_seen: 'no'
-    max_steps: 50000
-    save_steps: 2000
-    save_total_limit: 12
-    warmup_steps: 0.02
-    learning_rate:
-        language_model_learning_rate: 1.0e-4
-        connector_learning_rate: 1.0e-4
-        visual_encoder_learning_rate: 1.0e-4
-        default_lr: 1.0e-4
-    report_to: wandb
+  run_name: gen-gpic-b16-r384
+  attn_implementation: sdpa
+  deepspeed: zero2.json
+  from_pretrained: null
+  # Fixed-N generation: plain per-device batch (no token-budget bucketing).
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 1
+  # Short sequences (~64 image + <=128 caption) -> activations are tiny; skip
+  # gradient checkpointing (and its embed-only requires_grad hook).
+  gradient_checkpointing: false
+  # gen loss lives in forward_generation (no chunked text CE).
+  loss_chunk_size: 0
+  include_num_input_tokens_seen: "no"
+  max_steps: 50000
+  save_steps: 2000
+  save_total_limit: 12
+  warmup_steps: 0.02
+  learning_rate:
+    language_model_learning_rate: 1.0e-4
+    connector_learning_rate: 1.0e-4
+    visual_encoder_learning_rate: 1.0e-4
+    default_lr: 1.0e-4
+  report_to: wandb

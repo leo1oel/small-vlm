@@ -9,7 +9,7 @@ type: energon
 task: generation
 
 folders:
-    gpic/test: 1.0
+  gpic/test: 1.0
 jsonl_name: test.jsonl
 
 # Fixed generation canvas: 384 / 48 (connector model patch) = 8x8 = 64 tokens.

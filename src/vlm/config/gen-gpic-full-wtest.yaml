@@ -1,10 +1,10 @@
 defaults:
-    - gen-gpic-full
-    - _self_
+  - gen-gpic-full
+  - _self_
 # Verify the perceptual warmup+guard fix: perceptual turns ON at step 20; the
 # run must stay finite afterwards (no bf16 overflow stall).
 model:
-    generation:
-        perceptual_warmup_steps: 20
+  generation:
+    perceptual_warmup_steps: 20
 trainer:
-    run_name: gen-gpic-full-wtest
+  run_name: gen-gpic-full-wtest

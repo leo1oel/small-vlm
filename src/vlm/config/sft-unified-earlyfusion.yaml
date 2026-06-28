@@ -1,6 +1,6 @@
 defaults:
-    - sft-unified
-    - _self_
+  - sft-unified
+  - _self_
 
 # Early-fusion ablation arm (spec:
 # docs/superpowers/specs/2026-06-05-aux-exit-loss-design.md): identical to
@@ -17,6 +17,6 @@ defaults:
 # Cluster launch: CONFIG_NAME=sft-unified-earlyfusion sbatch train_h200.slurm
 
 trainer:
-    aux_exit_layers: [6]
-    aux_exit_weight: 0.25
-    aux_exit_detach: false
+  aux_exit_layers: [6]
+  aux_exit_weight: 0.25
+  aux_exit_detach: false

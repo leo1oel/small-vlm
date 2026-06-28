@@ -10,7 +10,7 @@ type: energon
 task: understanding
 
 folders:
-    yiming/Honey-Data-1M: 1.0
+  yiming/Honey-Data-1M: 1.0
 jsonl_name: train.jsonl
 
 shuffle_buffer_size: 1000

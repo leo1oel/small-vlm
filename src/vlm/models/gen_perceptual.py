@@ -52,7 +52,7 @@ class _DinoEncoder(nn.Module):
 class _Perceptual(nn.Module):
     def __init__(self, lpips_net: str, dino_model: str, dino_w: float) -> None:
         super().__init__()
-        import lpips  # local import: optional dependency
+        import lpips  # pyright: ignore[reportMissingImports]  # optional dependency
 
         self.lpips_fn = lpips.LPIPS(net=lpips_net).eval()
         for p in self.lpips_fn.parameters():

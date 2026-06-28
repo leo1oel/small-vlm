@@ -430,7 +430,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
                 tcfg = getattr(tcfg, "vision_config", tcfg)
                 config.visual_distill_teacher_dim = int(tcfg.hidden_size)
             else:  # vae
-                from diffusers import AutoencoderKL
+                from diffusers import AutoencoderKL  # pyright: ignore[reportMissingImports]
 
                 config.visual_distill_teacher_dim = int(
                     AutoencoderKL.load_config(model_cfg.visual_distill.teacher_name)[

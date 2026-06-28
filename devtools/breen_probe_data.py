@@ -27,8 +27,9 @@ import sys
 # deriving AZURE_BLOB_ENDPOINT / AZURE_STORAGE_CONNECTION_STRING / MSC_CONFIG
 # from AZURE_SAS_TOKEN — the same credential path the trainer uses.
 try:
-    import vlm.data.energon_dataset  # noqa: F401  (import side effect: bootstrap)
     import multistorageclient as msc
+
+    import vlm.data.energon_dataset  # noqa: F401  (import side effect: bootstrap)
 except Exception as e:  # pragma: no cover - env/setup failure
     print(f"ERROR import {e}")
     sys.exit(2)
@@ -36,9 +37,7 @@ except Exception as e:  # pragma: no cover - env/setup failure
 
 def main() -> int:
     url = (
-        sys.argv[1]
-        if len(sys.argv) > 1
-        else "msc://azure/data/yiming/bee_stage2/train/train.jsonl"
+        sys.argv[1] if len(sys.argv) > 1 else "msc://azure/data/yiming/bee_stage2/train/train.jsonl"
     )
     try:
         client, path = msc.resolve_storage_client(url)

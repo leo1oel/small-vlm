@@ -1,6 +1,6 @@
 defaults:
-    - sft-unified-bee-mix-visualffn
-    - _self_
+  - sft-unified-bee-mix-visualffn
+  - _self_
 
 # capacity + from-data supervision (spec 2026-06-14, B sub-study). The
 # visual-FFN expert (dedicated capacity) PLUS the NEPA next-patch-embedding aux
@@ -19,11 +19,11 @@ defaults:
 #   CONFIG_NAME=sft-unified-bee-mix-visualffn-nepa sbatch train_l40s.slurm
 
 model:
-    visual_aux:
-        objective: nepa
+  visual_aux:
+    objective: nepa
 
 trainer:
-    # Match sft-unified-bee-mix-nepa so the {nepa-only} vs {capacity+nepa} arm
-    # is a clean +capacity comparison.
-    visual_aux_weight: 0.5
-    run_name: visualffn-nepa-beemix-2b
+  # Match sft-unified-bee-mix-nepa so the {nepa-only} vs {capacity+nepa} arm
+  # is a clean +capacity comparison.
+  visual_aux_weight: 0.5
+  run_name: visualffn-nepa-beemix-2b

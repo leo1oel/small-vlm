@@ -1,6 +1,6 @@
 defaults:
-    - gen-overfit-16
-    - _self_
+  - gen-overfit-16
+  - _self_
 
 # 16px overfit + the two pixel-space sharpness levers from PRX / HiDream-O1:
 #   (1) BottleneckPatchEmbed in the gen embedder (768 -> 512 -> 2048), and
@@ -11,14 +11,14 @@ defaults:
 # with -cn gen-overfit-16pp.
 
 model:
-    generation:
-        embed_bottleneck_dim: 512     # hidden // 4 (HiDream-O1 geometry)
-        perceptual_enabled: true
-        perceptual_lpips_weight: 0.1
-        perceptual_dino_weight: 0.01
-        perceptual_lpips_net: vgg
-        perceptual_dino_model: dinov2_vitb14_reg
-        perceptual_resize: 224
+  generation:
+    embed_bottleneck_dim: 512 # hidden // 4 (HiDream-O1 geometry)
+    perceptual_enabled: true
+    perceptual_lpips_weight: 0.1
+    perceptual_dino_weight: 0.01
+    perceptual_lpips_net: vgg
+    perceptual_dino_model: dinov2_vitb14_reg
+    perceptual_resize: 224
 
 trainer:
-    run_name: gen-overfit-16pp
+  run_name: gen-overfit-16pp

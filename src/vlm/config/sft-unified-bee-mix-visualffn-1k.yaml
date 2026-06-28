@@ -1,6 +1,6 @@
 defaults:
-    - sft-unified-bee-mix
-    - _self_
+  - sft-unified-bee-mix
+  - _self_
 
 # 1000-step catch-up matrix (2026-06-22) — BREEN/Mono-InternVL done right:
 # per-layer visual-FFN experts init-copied from the text FFN (pretrained
@@ -16,12 +16,12 @@ defaults:
 #     --mem=320G --time=8:00:00 train_l40s.slurm
 
 model:
-    visual_expert:
-        enabled: true
-        layers: null
-        init_from_text: true
+  visual_expert:
+    enabled: true
+    layers: null
+    init_from_text: true
 
 trainer:
-    max_steps: 1500
-    save_steps: 250
-    run_name: visualffn-delta-1k
+  max_steps: 1500
+  save_steps: 250
+  run_name: visualffn-delta-1k

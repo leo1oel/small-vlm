@@ -1,6 +1,6 @@
 defaults:
-    - pretrain-unified-bee
-    - _self_
+  - pretrain-unified-bee
+  - _self_
 
 # 48G matrix — Arm 3 stage-1: the Bee connector-only pretrain at the 48G
 # token budget (64000, probe-derived — see dataset/energon-vision-bee.yaml).
@@ -17,10 +17,10 @@ defaults:
 #   CONFIG_NAME=pretrain-unified-bee-48g sbatch train_l40s.slurm
 
 trainer:
-    max_steps: 1900
-    save_steps: 200
-    # 32k budget x acc2: same ~525 samples/step as the 64k/acc1 plan, 48G-safe.
-    gradient_accumulation_steps: 2
+  max_steps: 1900
+  save_steps: 200
+  # 32k budget x acc2: same ~525 samples/step as the 64k/acc1 plan, 48G-safe.
+  gradient_accumulation_steps: 2
 
 dataset:
-    batch_token_budget: 32000
+  batch_token_budget: 32000

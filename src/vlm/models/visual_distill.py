@@ -167,7 +167,7 @@ class VisualDistillTeacher(nn.Module):
             self.num_blocks = int(self.model.config.num_hidden_layers)
             mean, std = (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
         elif kind == "vae":
-            from diffusers import AutoencoderKL
+            from diffusers import AutoencoderKL  # pyright: ignore[reportMissingImports]
 
             self.model = AutoencoderKL.from_pretrained(name)
             self.feature_dim = int(self.model.config.latent_channels)

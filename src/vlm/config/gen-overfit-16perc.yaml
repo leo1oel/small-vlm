@@ -1,12 +1,12 @@
 defaults:
-    - gen-overfit-16
-    - _self_
+  - gen-overfit-16
+  - _self_
 model:
-    generation:
-        embed_bottleneck_dim: 0
-        perceptual_enabled: true
-        perceptual_lpips_weight: 0.1
-        perceptual_dino_weight: 0.01
-        perceptual_resize: 224
+  generation:
+    embed_bottleneck_dim: 0
+    perceptual_enabled: true
+    perceptual_lpips_weight: 0.1
+    perceptual_dino_weight: 0.01
+    perceptual_resize: 224
 trainer:
-    run_name: gen-overfit-16perc
+  run_name: gen-overfit-16perc

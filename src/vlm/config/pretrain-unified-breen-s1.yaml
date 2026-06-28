@@ -1,6 +1,6 @@
 defaults:
-    - pretrain-unified-breen
-    - _self_
+  - pretrain-unified-breen
+  - _self_
 
 # BREEN port (spec 2026-06-24) — STAGE 1: full-unfreeze caption alignment,
 # continuing from the S0 frozen-LM checkpoint. The LM trunk now trains jointly
@@ -14,22 +14,22 @@ defaults:
 #     CONFIG_NAME=pretrain-unified-breen-s1 sbatch devtools/breen_train.slurm
 
 trainer:
-    # Full unfreeze: LM + connector (encoder-free has no separate vision tower).
-    # The visual experts / queries / distill head stay trainable regardless.
-    unfreeze:
-        train_language_model: true
-        train_connector: true
-        train_vision_model: false
-    from_pretrained: ${oc.env:VLM_BREEN_S0_CKPT}
-    # S1 budget (captain revision 2026-06-24): 4000 steps (was 10000/14000 —
-    # budget cut from ~10M to ~4M). At the measured ~715 samples/step (accum=4)
-    # that is ~2.86M samples. save_steps=2000 -> final = checkpoint-4000, the
-    # resume point the afterok chain feeds S2.
-    max_steps: 4000
-    save_steps: 2000
-    learning_rate:
-        visual_encoder_learning_rate: 4e-5
-        connector_learning_rate: 4e-5
-        language_model_learning_rate: 4e-5
-        default_lr: 4e-5
-    run_name: breen-s1-align-unfreeze
+  # Full unfreeze: LM + connector (encoder-free has no separate vision tower).
+  # The visual experts / queries / distill head stay trainable regardless.
+  unfreeze:
+    train_language_model: true
+    train_connector: true
+    train_vision_model: false
+  from_pretrained: ${oc.env:VLM_BREEN_S0_CKPT}
+  # S1 budget (captain revision 2026-06-24): 4000 steps (was 10000/14000 —
+  # budget cut from ~10M to ~4M). At the measured ~715 samples/step (accum=4)
+  # that is ~2.86M samples. save_steps=2000 -> final = checkpoint-4000, the
+  # resume point the afterok chain feeds S2.
+  max_steps: 4000
+  save_steps: 2000
+  learning_rate:
+    visual_encoder_learning_rate: 4e-5
+    connector_learning_rate: 4e-5
+    language_model_learning_rate: 4e-5
+    default_lr: 4e-5
+  run_name: breen-s1-align-unfreeze

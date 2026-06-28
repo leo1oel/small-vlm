@@ -19,7 +19,11 @@ def main():
     errcount += run(["codespell", "--write-changes", *SRC_PATHS, *DOC_PATHS])
     errcount += run(["ruff", "check", "--fix", *SRC_PATHS])
     errcount += run(["ruff", "format", *SRC_PATHS])
-    errcount += run(["basedpyright", "--stats", *SRC_PATHS])
+    # `--level error`: basedpyright exits non-zero on warnings by default, but this
+    # project intentionally tolerates a large body of warning-level findings (missing
+    # parameter/attribute annotations, implicit overrides, ... across research and model
+    # code). The lint gate fails only on errors; warnings stay informational.
+    errcount += run(["basedpyright", "--level", "error", "--stats", *SRC_PATHS])
 
     rprint()
 
