@@ -40,10 +40,10 @@ default bit-identical off.
   inference) — answer keys are never exposed non-causally.
   The boundary search excludes chat-delimiter ids the conversation
   preprocessor unmasks into the labels (`cross_modal_prefix_skip_ids`, computed
-  at load for `qwen*` templates) so a leading `<|im_start|>` cannot collapse the
-  prefix to empty; `img2q_window` additionally drops BREEN learnable-query rows
-  (`query_block_ids`) from the question-text key set. See AGENTS.md →
-  *Cross-modal 4D mask correctness* for the full invariants.
+  at load for the `qwen` and `llama_v3` templates) so a leading delimiter cannot
+  collapse the prefix to empty; `img2q_window` additionally drops BREEN
+  learnable-query rows (`query_block_ids`) from the question-text key set. See
+  AGENTS.md → *Cross-modal 4D mask correctness* for the full invariants.
 - Self-describing checkpoints: `image_position`, `cross_modal_mask_mode`,
   `cross_modal_mask_window`, `cross_modal_prefix_skip_ids` serialize into
   `config.json`; `load_model` auto-upgrades `sdpa → sdpa_xmodal` when the
