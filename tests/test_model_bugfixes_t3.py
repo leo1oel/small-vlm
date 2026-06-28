@@ -394,22 +394,27 @@ def _make_ckpt(root, step, resumable):
 
 def test_auto_resume_prefers_newest_older_resumable(tmp_path):
     """Mixed history: latest is weights-only, older ones are full -> resume the
-    newest OLDER resumable checkpoint (optimizer state preserved)."""
+    newest OLDER resumable checkpoint (optimizer state preserved). Unchanged for
+    every backend, so it holds even where weights-only resume is unsupported."""
     from vlm.train.train import _resolve_auto_resume_checkpoint
 
     _make_ckpt(tmp_path, 100, resumable=True)
     _make_ckpt(tmp_path, 150, resumable=True)
     latest = _make_ckpt(tmp_path, 200, resumable=False)
-    chosen = _resolve_auto_resume_checkpoint(str(tmp_path))
-    assert chosen.endswith("checkpoint-150")
-    assert chosen != latest
+    for supported in (True, False):
+        chosen = _resolve_auto_resume_checkpoint(
+            str(tmp_path), weights_only_resume_supported=supported
+        )
+        assert chosen.endswith("checkpoint-150")
+        assert chosen != latest
 
 
 def test_auto_resume_weights_only_falls_back_to_latest(tmp_path, caplog):
     """All-weights-only history (e.g. config/trainer/pretrain.yaml
-    save_only_model=True): no resumable checkpoint exists, so resume WEIGHTS ONLY
-    from the latest snapshot (loud warning) instead of silently restarting from
-    base and discarding all prior training."""
+    save_only_model=True) on a backend that CAN load a weights-only snapshot
+    (plain DDP/single process): no resumable checkpoint exists, so resume WEIGHTS
+    ONLY from the latest snapshot (loud warning) instead of silently restarting
+    from base and discarding all prior training."""
     import logging
 
     from vlm.train.train import _resolve_auto_resume_checkpoint
@@ -417,18 +422,41 @@ def test_auto_resume_weights_only_falls_back_to_latest(tmp_path, caplog):
     _make_ckpt(tmp_path, 100, resumable=False)
     latest = _make_ckpt(tmp_path, 200, resumable=False)
     with caplog.at_level(logging.WARNING):
-        chosen = _resolve_auto_resume_checkpoint(str(tmp_path))
+        chosen = _resolve_auto_resume_checkpoint(str(tmp_path), weights_only_resume_supported=True)
     assert chosen == latest
     assert "WEIGHTS ONLY" in caplog.text
 
 
+def test_auto_resume_weights_only_safe_skips_on_deepspeed_fsdp(tmp_path, caplog):
+    """All-weights-only history on DeepSpeed/FSDP (weights-only resume
+    unsupported): feeding the snapshot to trainer.train(resume_from_checkpoint=...)
+    would crash deepspeed_load_checkpoint with 'Can't find a valid checkpoint', so
+    SAFE-SKIP (None, train from the loaded base) with a loud warning — never a
+    crash loop."""
+    import logging
+
+    from vlm.train.train import _resolve_auto_resume_checkpoint
+
+    _make_ckpt(tmp_path, 100, resumable=False)
+    _make_ckpt(tmp_path, 200, resumable=False)
+    with caplog.at_level(logging.WARNING):
+        chosen = _resolve_auto_resume_checkpoint(str(tmp_path), weights_only_resume_supported=False)
+    assert chosen is None
+    assert "SKIPPING auto-resume" in caplog.text
+
+
 def test_auto_resume_latest_already_resumable(tmp_path):
-    """Latest checkpoint already carries optimizer state -> resume it directly."""
+    """Latest checkpoint already carries optimizer state -> resume it directly,
+    regardless of backend."""
     from vlm.train.train import _resolve_auto_resume_checkpoint
 
     _make_ckpt(tmp_path, 100, resumable=True)
     latest = _make_ckpt(tmp_path, 200, resumable=True)
-    assert _resolve_auto_resume_checkpoint(str(tmp_path)) == latest
+    for supported in (True, False):
+        assert (
+            _resolve_auto_resume_checkpoint(str(tmp_path), weights_only_resume_supported=supported)
+            == latest
+        )
 
 
 def test_auto_resume_no_checkpoints_is_scratch(tmp_path):
@@ -437,5 +465,12 @@ def test_auto_resume_no_checkpoints_is_scratch(tmp_path):
 
     from vlm.train.train import _resolve_auto_resume_checkpoint
 
-    assert _resolve_auto_resume_checkpoint(str(tmp_path)) is None
-    assert _resolve_auto_resume_checkpoint(os.path.join(str(tmp_path), "missing")) is None
+    assert (
+        _resolve_auto_resume_checkpoint(str(tmp_path), weights_only_resume_supported=True) is None
+    )
+    assert (
+        _resolve_auto_resume_checkpoint(
+            os.path.join(str(tmp_path), "missing"), weights_only_resume_supported=True
+        )
+        is None
+    )

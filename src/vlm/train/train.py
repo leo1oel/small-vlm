@@ -204,7 +204,9 @@ def _get_last_resumable_checkpoint(output_dir: str) -> str | None:
     return None
 
 
-def _resolve_auto_resume_checkpoint(output_dir: str) -> str | None:
+def _resolve_auto_resume_checkpoint(
+    output_dir: str, weights_only_resume_supported: bool
+) -> str | None:
     """Pick the checkpoint to auto-resume from on a (re)queued job, or None to
     train from scratch.
 
@@ -212,11 +214,21 @@ def _resolve_auto_resume_checkpoint(output_dir: str) -> str | None:
     config/trainer/pretrain.yaml) carry no optimizer/scheduler/RNG state.
     Auto-resuming from one restarts the optimizer while advancing the step
     counter (LR-schedule jump, lost momentum). So:
-      * mixed history -> prefer the newest OLDER full (resumable) checkpoint;
-      * all-weights-only history -> there is no resumable checkpoint, so resume
-        WEIGHTS ONLY from the latest snapshot (loud warning) rather than silently
-        restarting from the base model and discarding all prior training;
-      * latest already resumable -> resume normally.
+      * mixed history -> prefer the newest OLDER full (resumable) checkpoint
+        (unchanged for every backend);
+      * latest already resumable -> resume normally;
+      * all-weights-only history -> there is no resumable checkpoint, so the
+        action depends on whether the backend can load a weights-only snapshot
+        through trainer.train(resume_from_checkpoint=...):
+          - weights_only_resume_supported (plain DDP / single process): resume
+            WEIGHTS ONLY from the latest snapshot (loud warning) rather than
+            silently restarting from base and discarding all prior training;
+          - not supported (DeepSpeed / FSDP / sharded): their resume path
+            (deepspeed_load_checkpoint / FSDP sharded load) needs an engine/
+            optimizer state dir (global_step*/ or optimizer_*/) that a
+            save_only_model snapshot lacks and would raise "Can't find a valid
+            checkpoint" — so SAFE-SKIP (None, train from the loaded base) with a
+            loud warning instead of crash-looping the requeue.
     """
     import os
 
@@ -233,7 +245,7 @@ def _resolve_auto_resume_checkpoint(output_dir: str) -> str | None:
                 "(save_only_model) — falling back to older resumable "
                 f"checkpoint {resume_ckpt}."
             )
-        else:
+        elif weights_only_resume_supported:
             resume_ckpt = last_ckpt
             log.warning(
                 f"Latest checkpoint {last_ckpt} has no optimizer state "
@@ -242,6 +254,18 @@ def _resolve_auto_resume_checkpoint(output_dir: str) -> str | None:
                 "will be RESET (LR-schedule jump, lost momentum), but model-weight "
                 "progress is preserved. Pass trainer.resume_from_checkpoint or set "
                 "save_only_model=False to keep full optimizer state across requeues."
+            )
+        else:
+            log.warning(
+                f"Latest checkpoint {last_ckpt} has no optimizer state "
+                "(save_only_model) and there is NO older resumable checkpoint. "
+                "The DeepSpeed/FSDP resume path needs an engine/optimizer state "
+                "dir (global_step*/ or optimizer_*/) that this weights-only "
+                "snapshot lacks, so loading it would crash with 'Can't find a "
+                "valid checkpoint' — SKIPPING auto-resume and training from the "
+                "loaded base instead. To resume across requeues, pass "
+                "trainer.resume_from_checkpoint with a full checkpoint or set "
+                "save_only_model=False so full checkpoints are written."
             )
     return resume_ckpt
 
@@ -442,7 +466,17 @@ def train(
         resume_ckpt = training_args.resume_from_checkpoint
         log.info(f"Resuming from checkpoint: {resume_ckpt}")
     else:
-        resume_ckpt = _resolve_auto_resume_checkpoint(training_args.output_dir)
+        # A weights-only (save_only_model) snapshot can be resumed via
+        # trainer.train(resume_from_checkpoint=...) only on plain DDP/single
+        # process. DeepSpeed and FSDP/sharded need an engine/optimizer state dir
+        # (global_step*/ or optimizer_*/) that the snapshot lacks, so feeding
+        # them a weights-only checkpoint hard-crashes the resume path.
+        is_deepspeed = training_args.deepspeed is not None
+        is_sharded = bool(getattr(training_args, "fsdp", None))
+        weights_only_resume_supported = not (is_deepspeed or is_sharded)
+        resume_ckpt = _resolve_auto_resume_checkpoint(
+            training_args.output_dir, weights_only_resume_supported
+        )
         if resume_ckpt is not None:
             log.info(f"Auto-resuming from last checkpoint: {resume_ckpt} (requeued job?)")
         else:
