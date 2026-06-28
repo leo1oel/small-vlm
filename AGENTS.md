@@ -164,8 +164,9 @@ would therefore freeze the very modules S0 must train. Two coupled fixes
     `component_to_config` map** — so `learnable_query` and `visual_distill_head`
     are mapped there (→ `connector` lr/wd: BREEN's higher "proj" LR in S0;
     identical to the LM lr in the single-LR SFT configs, so no eve/repa
-    regression). `mlp_visual`/gates stay in the `language_model→model` bucket
-    (LM lr). Forgetting either fix = the module is trainable but never stepped.
+    regression). The visual experts (`mlp_visual`/`norm_visual`/`proj_visual`)
+    and gates stay in the `language_model→model` bucket (LM lr). Forgetting either
+    fix = the module is trainable but never stepped.
 
 ### Configs (S0 → S1 → S2 chain)
 
@@ -217,8 +218,8 @@ stay frozen.
     repa arms is bf16-stable, so the shared `compute_distill_loss` path is left
     bf16.)
 1. **`init_visual_experts_from_text` must exclude `expert_gate*` keys** when
-    copying the text FFN into `mlp_visual` (the gateless expert has no such keys
-    → load_state_dict raises on unexpected keys).
+    copying the text weights into the sibling (the gateless sibling has no such
+    keys → load_state_dict raises on unexpected keys).
 
 ## Energon train-loader layouts (`build_energon_train_loader`)
 
