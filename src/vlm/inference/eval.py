@@ -520,6 +520,10 @@ def generate_response(
             mode=image_position,
             image_token=image_token,
             seed=position_seed,
+            # Mirror the training call sites (#8): protect the audio placeholder so
+            # sandwich/random does not duplicate <audio> when image+audio are given
+            # together, which would break its 1:1 feature count at splice time.
+            protected_tokens=(data_args.audio_token,),
         )
         query = _turns[0]["value"]
     # BREEN port: emit one "<query>" per image at the trained placement, mirroring

@@ -7,6 +7,7 @@ collator's two entry layouts:
   - classic CLIP 3-tuples (pixel_values, size, modality)  [regression]
 """
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ try:
         inject_missing_media_tokens,
         load_audio_frames,
         make_supervised_data_module,
+        preprocess_qwen,
         tokenizer_image_token,
         tokenizer_multimodal_token,
     )
@@ -260,6 +262,52 @@ def test_qwen_dataset_and_collator(media_dir: Path):
 
     batch = DataCollatorForSupervisedDataset(tokenizer=_TOKENIZER)(items)
     assert len(batch["audios"]) == len(items)
+
+
+# ---------------------------------------------------------------------------
+# #6 preprocess_qwen must accept the OpenAI role/content schema for the first
+# non-system turn. The dual-schema try/except inside the per-turn loop made the
+# first-turn role probe look safe, but `roles.get(source[0]["from"], ...)` was an
+# UNCONDITIONAL subscript that KeyError'd before the loop on any role/content
+# sample (no "from" key) — crashing the worker on local-JSON + Qwen data.
+# ---------------------------------------------------------------------------
+
+
+def test_preprocess_qwen_accepts_role_content_first_turn():
+    """A role/content-schema sample (first non-system turn uses role/content)
+    preprocesses without raising KeyError, and its assistant turn is supervised."""
+    data_args = DataArguments(audio_enabled=True)
+    sources = [
+        [
+            {"role": "user", "content": "<image>\nWhat is this?"},
+            {"role": "assistant", "content": "A cat."},
+        ]
+    ]
+    out = preprocess_qwen(copy.deepcopy(sources), _TOKENIZER, data_args, has_image=True)
+    # user turn kept (role probe resolved "user" == roles["human"]), assistant
+    # content supervised (some labels != ignore_index).
+    assert int((out["labels"][0] != data_args.ignore_index).sum()) > 0
+
+
+def test_preprocess_qwen_role_content_with_leading_system_turn():
+    """The first-turn role probe is re-read AFTER a leading system turn is
+    stripped: a role/content sample led by a system turn must strip it (and use
+    it as the sample system) without KeyError, then keep the following user turn."""
+    data_args = DataArguments(audio_enabled=True)
+    sources = [
+        [
+            {"role": "system", "content": "You are a pirate."},
+            {"role": "user", "content": "ahoy?"},
+            {"role": "assistant", "content": "Arrr."},
+        ]
+    ]
+    # text-only (has_image=False) keeps input_ids free of media sentinels so the
+    # decode below is clean; the system-strip + role re-read path is the same.
+    out = preprocess_qwen(copy.deepcopy(sources), _TOKENIZER, data_args, has_image=False)
+    assert int((out["labels"][0] != data_args.ignore_index).sum()) > 0
+    # the sample's own system message (not the default) reached the rendered prompt
+    rendered = _TOKENIZER.decode(out["input_ids"][0])
+    assert "You are a pirate." in rendered
 
 
 def test_v1_template_with_audio_rejected(media_dir: Path):
