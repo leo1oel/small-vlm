@@ -589,6 +589,55 @@ def test_image_position_applied_after_placeholder_insertion(
     assert captured["query"] == "describe\n<image>"
 
 
+class _StopAfterPrompt(Exception):
+    """Short-circuit generate_response right after the prompt is assembled, so
+    the audio-protection assertion runs on the repositioned query without also
+    driving the model forward (whose splice would itself crash on a duplicated
+    <audio> — we want to pin the placeholder count directly, not the crash)."""
+
+
+@pytest.mark.parametrize("image_position", ["sandwich", "random"])
+def test_inference_protects_audio_under_image_reposition(
+    tiny_model: Any,
+    tiny_processor: Any,
+    wav_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    image_position: str,
+):
+    """#8: with image + audio at inference, the eval call site must pass
+    protected_tokens=(audio,) into apply_image_position so the <audio>
+    placeholder keeps its 1:1 feature count, mirroring the training data paths.
+    The sharp case is `sandwich`, which repeats the question text — without the
+    fix the repeated copy carries <audio> twice and the splice misaligns; the
+    `random` case pins that repositioning still emits exactly one <audio>."""
+    import vlm.inference.eval as eval_mod
+
+    captured: dict[str, str] = {}
+
+    def spy(conv_mode: str, query: str, data_args: Any) -> str:
+        captured["query"] = query
+        raise _StopAfterPrompt
+
+    monkeypatch.setattr(eval_mod, "build_prompt", spy)
+    monkeypatch.setattr(tiny_model.config, "image_position", image_position, raising=False)
+    image = PIL_Image.new("RGB", (20, 10), (4, 5, 6))
+    with pytest.raises(_StopAfterPrompt):
+        generate_response(
+            tiny_model,
+            tiny_processor,
+            query="What do you see and hear?",
+            images=image,
+            audios=str(wav_path),
+            max_new_tokens=1,
+        )
+    # exactly one <image> and one <audio> survive the reposition
+    assert captured["query"].count("<audio>") == 1
+    assert captured["query"].count("<image>") == 1
+    if image_position == "sandwich":
+        # the image question is repeated around the image, the audio is not
+        assert captured["query"].count("What do you see and hear?") == 2
+
+
 # ---------------------------------------------------------------------------
 # generation-kwargs threading (#23) and one-shot forwarding (#30)
 # ---------------------------------------------------------------------------
