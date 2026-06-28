@@ -5,7 +5,7 @@ from vlm.data.dataset import apply_image_position
 TOK = "<image>"
 
 
-def conv(*turns):
+def conv(*turns: tuple[str, str]):
     return [{"from": f, "value": v} for f, v in turns]
 
 
@@ -137,3 +137,49 @@ def test_dataset_config_has_image_position_default_keep():
 
     assert DatasetConfig().image_position == "keep"
     assert DataArguments(image_position="sandwich").image_position == "sandwich"
+
+
+# ---------------------------------------------------------------------------
+# non-image placeholder protection (#13): sandwich/random repeat the question
+# text, so a mixed "<image>\n<audio>\nQ" turn would otherwise emit two <audio>
+# sentinels for a single audio feature and desync the splice.
+# ---------------------------------------------------------------------------
+
+AUDIO = "<audio>"
+
+
+def test_sandwich_protects_audio_placeholder():
+    c = conv(("human", f"{TOK}\n{AUDIO}\nWhat do you see and hear?"))
+    apply_image_position(c, mode="sandwich", image_token=TOK, seed=0, protected_tokens=(AUDIO,))
+    # protect-in-place: the audio sentinel is pulled out and reinserted exactly
+    # once (leading line) while the question is repositioned (sandwich) around
+    # the image, so the image/audio counts stay 1:1 and the splice never desyncs.
+    q = "What do you see and hear?"
+    assert c[0]["value"] == f"{AUDIO}\n{q}\n{TOK}\n{q}"
+    assert c[0]["value"].count(AUDIO) == 1
+    assert c[0]["value"].count(TOK) == 1
+
+
+def test_random_protects_audio_placeholder():
+    for seed in range(20):
+        c = conv(("human", f"{TOK}\n{AUDIO}\nDescribe the scene."))
+        apply_image_position(
+            c, mode="random", image_token=TOK, seed=seed, protected_tokens=(AUDIO,)
+        )
+        assert c[0]["value"].count(AUDIO) == 1, seed
+        assert c[0]["value"].count(TOK) == 1, seed
+
+
+def test_protection_leaves_image_only_turn_repositioned():
+    # an image-only turn (no protected token) is still repositioned normally
+    c = conv(("human", f"{TOK}\nWhat is this?"))
+    apply_image_position(c, mode="sandwich", image_token=TOK, seed=0, protected_tokens=(AUDIO,))
+    assert c[0]["value"] == f"What is this?\n{TOK}\nWhat is this?"
+
+
+def test_unprotected_sandwich_duplicates_audio():
+    # documents the bug the protection guards against: without protected_tokens
+    # the repeated question text carries the audio placeholder twice.
+    c = conv(("human", f"{TOK}\n{AUDIO}\nWhat?"))
+    apply_image_position(c, mode="sandwich", image_token=TOK, seed=0)
+    assert c[0]["value"].count(AUDIO) == 2  # the desync this fix prevents

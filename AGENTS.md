@@ -14,6 +14,37 @@ After ANY change to `modeling_vlm.py`, regenerate with `uv run python -m vlm.uti
 `tests/test_inference.py::test_export_template_in_sync_with_live_model` pins the committed template to a fresh generation, so a missed regenerate fails CI instead of silently shipping a broken hub artifact; companion tests assert state_dict + numerical parity per arm.
 `push_to_hub._copy_from_models` must ship every sibling module the rendered file imports (`xmodal_mask`, `gen_diffusion`, `gen_image`, `gen_rope`, `visual_distill`, `gen_perceptual`); add to that list whenever the model grows a new import.
 
+## Local-JSON data path: media-sentinel ↔ feature invariant (DO NOT regress)
+
+The splice (`prepare_inputs_labels_for_multimodal`, `models/modeling_vlm.py`)
+consumes media features from a **global, per-modality cursor** that advances one
+step per sentinel across the whole batch (a row with zero sentinels of a modality
+consumes one zero-width dummy). So the hard invariant is: **per sample, the number
+of `<image>`/`<audio>`/`<query>` sentinels in the tokenized text must equal the
+number of features that sample queued for that modality.** Any mismatch doesn't
+just drop the local image — it desyncs the cursor and leaks features into the
+*next* sample (silent cross-sample corruption). The local-JSON and energon paths
+now feed the collator the same media contract:
+
+- `preprocess_multimodal` hoists a lone `<image>` to the front of its turn but
+    must **preserve every placeholder for interleaved multi-image turns** (never
+    collapse N→1). Local-JSON path only — the energon path normalizes separately.
+- `apply_image_position` ("sandwich"/"random" repeat the question text) takes
+    `protected_tokens` and **protects non-image media placeholders in place** —
+    it pulls them out before building the question and reinserts each exactly once,
+    so it can never duplicate `<audio>`/`<query>`. Passed at the local call site
+    (and the energon call site).
+- `DataCollatorForSupervisedDataset` takes `media_token_ids` +
+    `media_feature_token_ids` and, when `model_max_length` truncation would drop a
+    sentinel whose feature is still queued, **neutralizes** — it realigns that
+    sample's per-modality feature lists to the surviving sentinels (with a `WARN`)
+    rather than raising, because a raise crash-loops energon's buffer-restore on
+    resume. Wired at both `make_supervised_data_module` (local) and the energon
+    collator.
+- Direct local dataset files load via `_load_local_records` (`.json` array or
+    `.jsonl` one-object-per-line; other extensions rejected). JSONL is not just a
+    YAML-mixture feature — a bare `dataset.path=foo.jsonl` is supported.
+
 ## BREEN port (encoder-free CLIP-distilled learnable queries; arXiv:2503.12446)
 
 Spec: the `breen-plan-q9` report (code-grounded port plan). BREEN = learnable
