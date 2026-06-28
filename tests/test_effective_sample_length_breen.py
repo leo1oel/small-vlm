@@ -43,7 +43,9 @@ def _args(**kw):
 def test_query_expansion_counted_when_enabled():
     # ids: 3 text + 1 image sentinel + 1 query sentinel = 5 tokens
     dd = _data_dict([1, 2, IMG, QRY, 3], images=[_img_entry(10)])
-    da = _args(learnable_query_enabled=True, learnable_query_num_fine=64, learnable_query_num_coarse=36)
+    da = _args(
+        learnable_query_enabled=True, learnable_query_num_fine=64, learnable_query_num_coarse=36
+    )
     # 5 - 1(img sentinel) - 1(query sentinel) + 10(img rows) + 100(query rows) = 113
     assert effective_sample_length(dd, da) == 113
 
@@ -60,14 +62,18 @@ def test_undercount_without_the_fix_is_avoided():
 def test_multi_image_multi_query():
     # 2 images + 2 query blocks
     dd = _data_dict([1, IMG, QRY, 2, IMG, QRY], images=[_img_entry(8), _img_entry(12)])
-    da = _args(learnable_query_enabled=True, learnable_query_num_fine=64, learnable_query_num_coarse=36)
+    da = _args(
+        learnable_query_enabled=True, learnable_query_num_fine=64, learnable_query_num_coarse=36
+    )
     # 6 - 2(img) - 2(query) + (8+12) + 2*100 = 6 - 4 + 20 + 200 = 222
     assert effective_sample_length(dd, da) == 222
 
 
 def test_custom_query_row_counts():
     dd = _data_dict([1, IMG, QRY], images=[_img_entry(5)])
-    da = _args(learnable_query_enabled=True, learnable_query_num_fine=8, learnable_query_num_coarse=4)
+    da = _args(
+        learnable_query_enabled=True, learnable_query_num_fine=8, learnable_query_num_coarse=4
+    )
     # 3 - 1 - 1 + 5 + (8+4) = 18
     assert effective_sample_length(dd, da) == 18
 

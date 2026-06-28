@@ -17,9 +17,9 @@ import pytest
 try:
     from vlm.data.data_arguments import DataArguments
     from vlm.data.dataset import (
+        _MARK_TMP,
         MEDIA_PLACEHOLDER_MARK_L,
         MEDIA_PLACEHOLDER_MARK_R,
-        _MARK_TMP,
         inject_missing_media_tokens,
     )
     from vlm.data.energon_dataset import messages_to_conversations

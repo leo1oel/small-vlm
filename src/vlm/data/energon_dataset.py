@@ -854,9 +854,7 @@ def effective_sample_length(data_dict: dict, data_args: DataArguments) -> int:
             getattr(data_args, "learnable_query_num_coarse", 0)
         )
         query_rows = n_query * per_query
-    return (
-        int(input_ids.shape[0]) - n_sentinels - n_query + image_rows + audio_rows + query_rows
-    )
+    return int(input_ids.shape[0]) - n_sentinels - n_query + image_rows + audio_rows + query_rows
 
 
 class VLMBucketedChatTaskEncoder(VLMChatTaskEncoder):

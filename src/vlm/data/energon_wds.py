@@ -75,9 +75,7 @@ def cook_mm_chat_wds(sample: dict) -> MMChatRawSample:
 
     # In-tar media fields (everything energon decoded as raw image bytes), in a
     # deterministic order so multi-image positional fallback is stable.
-    media_fields = sorted(
-        k for k in sample if isinstance(k, str) and k.lower().endswith(_IMG_EXTS)
-    )
+    media_fields = sorted(k for k in sample if isinstance(k, str) and k.lower().endswith(_IMG_EXTS))
     media_set = set(media_fields)
 
     # Collect image items in placeholder order; fail loud on audio. A prepared
@@ -168,9 +166,7 @@ def resolve_wds_path(wds_path: str) -> str:
     return remote_url(p)
 
 
-def select_wds_task_encoder(
-    dataset_config: Any, processor: Any, data_args: DataArguments
-) -> Any:
+def select_wds_task_encoder(dataset_config: Any, processor: Any, data_args: DataArguments) -> Any:
     """Pick the WDS task encoder mirroring the jsonl branch: generation ->
     bucketed -> plain."""
     if str(getattr(dataset_config, "task", "understanding")) == "generation":
@@ -223,9 +219,7 @@ def build_wds_train_loader(
     # would silently overlap / drop). The path fully identifies the source.
     _check_distributed_consistency(("wds", path))
 
-    wc = worker_config or WorkerConfig.default_worker_config(
-        num_workers=dataset_config.num_workers
-    )
+    wc = worker_config or WorkerConfig.default_worker_config(num_workers=dataset_config.num_workers)
     if task_encoder is None:
         task_encoder = select_wds_task_encoder(dataset_config, processor, data_args)
     # Token-budget bucketing sizes every batch itself; energon then requires the

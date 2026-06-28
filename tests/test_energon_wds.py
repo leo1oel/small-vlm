@@ -103,7 +103,9 @@ def test_cooker_positional_fallback_for_mismatched_field_names():
 
 
 def test_cooker_text_only_no_images():
-    rec = {"messages": [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]}
+    rec = {
+        "messages": [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
+    }
     out = cook_mm_chat_wds(_crude_sample(rec, {}))
     assert out.image_bytes == []
 
