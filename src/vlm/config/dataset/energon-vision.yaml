@@ -11,6 +11,11 @@
 name: energon-vision
 type: energon
 
+# Multi-turn instruct data: declared instruct so validate_dataset_config REJECTS
+# the 2-turn plain caption template (trainer.version=plain) — pair with a chat
+# template (trainer.version=qwen_2_5), as the header note above requires (#5).
+conversation_kind: instruct
+
 # blob folder -> blend weight (sampling ratio, normalized automatically)
 folders:
   LLaVA-OneVision-1.5-Instruct: 1.0

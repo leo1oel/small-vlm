@@ -174,6 +174,20 @@ def tokenizer_multimodal_token(
     return input_ids
 
 
+# Private-use sentinels wrapping placeholders that the energon typed-content
+# bridge GENERATED for real media items (see
+# energon_dataset.messages_to_conversations). They let
+# inject_missing_media_tokens tell a real, structurally-placed media position
+# apart from a literal "<image>"/"<audio>" QUOTED inside user text (#11): the
+# "neutralize surplus from the end" rule below could otherwise neutralize the
+# REAL trailing placeholder and leave the quoted literal as the model sentinel.
+# PUA code points never occur in natural captions/prompts or the tokenizer
+# vocab, and are always unwrapped back to a plain token before tokenization.
+MEDIA_PLACEHOLDER_MARK_L = "\ue000"
+MEDIA_PLACEHOLDER_MARK_R = "\ue001"
+_MARK_TMP = "\ue002"  # transient protect-token while neutralizing quoted literals
+
+
 def inject_missing_media_tokens(
     conversations: list[dict],
     n_images: int,
@@ -183,10 +197,15 @@ def inject_missing_media_tokens(
     """Reconcile media placeholders with the media a sample actually carries
     (per modality, in place). Datasets like ASR transcripts or bare caption
     pairs don't ship '<image>'/'<audio>' markers:
+      - generated placeholders are MARKED (energon typed-content path) -> the
+        marked positions are authoritative; neutralize any unmarked literal
+        (quoted text), then unwrap the marks to a plain token (#11);
       - media present, no placeholder anywhere -> prepend to the first
         human/user turn (deterministic order: images then audios);
       - placeholder count matches -> leave the text as-is;
-      - any other mismatch -> raise (ambiguous sample; surface, don't guess).
+      - surplus literals (found > n, no marks) -> neutralize from the end (a
+        raise here would crash-loop energon's buffer-restore path);
+      - too few placeholders (found < n) -> raise (ambiguous; surface it).
     """
 
     def text_key(turn: dict) -> str:
@@ -194,6 +213,23 @@ def inject_missing_media_tokens(
 
     prefix = ""
     for token, n in ((data_args.image_token, n_images), (data_args.audio_token, n_audios)):
+        # Marked path (#11): when the typed-content bridge generated marked
+        # placeholders for the real media items, those marks ARE the media
+        # positions. Neutralize every UNMARKED literal occurrence (a quoted
+        # "<image>"/"<audio>" in user text) and unwrap the marks back to a plain
+        # token — so a quoted literal can never steal a real media position.
+        marked = MEDIA_PLACEHOLDER_MARK_L + token + MEDIA_PLACEHOLDER_MARK_R
+        if any(marked in str(turn[text_key(turn)]) for turn in conversations):
+            neutral = "[" + token.strip("<>") + "]"
+            for turn in conversations:
+                text = str(turn[text_key(turn)])
+                if token not in text:
+                    continue
+                text = text.replace(marked, _MARK_TMP)  # protect real positions
+                text = text.replace(token, neutral)  # neutralize quoted literals
+                text = text.replace(_MARK_TMP, token)  # restore real as plain token
+                turn[text_key(turn)] = text
+            continue
         found = sum(str(turn[text_key(turn)]).count(token) for turn in conversations)
         if found == n:
             continue
@@ -359,6 +395,7 @@ def apply_image_position(
     mode: str,
     image_token: str,
     seed: int | None = None,
+    protected_tokens: Sequence[str] | None = None,
 ) -> None:
     """Reposition the image placeholder inside human turns, in place (plan
     docs/superpowers/plans/2026-06-10-early-fusion-access-arms.md).
@@ -377,11 +414,21 @@ def apply_image_position(
     intact ("<image>\\nQ?\\nA. cat\\nB. dog" -> "Q?\\nA. cat\\nB. dog"). A
     token embedded mid-line ("Look at <image> and answer.") collapses to a
     single separating space ("Look at and answer.") rather than gluing words.
+
+    protected_tokens (#13): other media placeholders living in the same turn
+    (e.g. the audio token). The question text is what gets repositioned, and in
+    `sandwich` mode it is DUPLICATED — so an audio placeholder embedded in it
+    would be duplicated too, breaking its 1:1 feature count (and
+    placeholder-count validation has already run before this rewrite). Protected
+    tokens are pulled out of the turn before the question is built and reinserted
+    exactly once (on their own leading line), preserving their per-modality count
+    across every mode.
     """
     if mode == "keep":
         return
     if mode not in ("question_first", "sandwich", "random"):
         raise ValueError(f"unknown image_position mode: {mode!r}")
+    protected = [t for t in (protected_tokens or ()) if t and t != image_token]
     rng = random.Random(seed)
     for turn in conversations:
         if (turn.get("from") or turn.get("role")) not in ("human", "user"):
@@ -390,6 +437,16 @@ def apply_image_position(
         text = str(turn[key])
         if text.count(image_token) != 1:
             continue
+        # Pull protected media placeholders out so they are never duplicated by
+        # sandwich nor swept into the question text (#13). Counted now,
+        # reinserted exactly once below; on `continue` paths the turn keeps its
+        # ORIGINAL text (these edits are on the local `text` copy only).
+        carried: list[str] = []
+        for ptok in protected:
+            cnt = text.count(ptok)
+            if cnt:
+                carried.extend([ptok] * cnt)
+                text = text.replace(ptok, "")
         # Remove the token plus its own-line newline (token-on-its-own-line
         # case), else replace token + adjacent horizontal whitespace with a
         # single space. Collapse stray horizontal-space runs but keep internal
@@ -417,6 +474,8 @@ def apply_image_position(
                 mid = len(words) // 2
                 head, tail = " ".join(words[:mid]), " ".join(words[mid:])
                 new = f"{head}\n{image_token}\n{tail}"
+        if carried:
+            new = "\n".join([*carried, new])  # protected placeholders, once
         turn[key] = new
 
 
@@ -1520,6 +1579,37 @@ class DataCollatorForSupervisedDataset:
 
     tokenizer: transformers.PreTrainedTokenizer
     ignore_index: int = -100
+    # Media sentinel ids (image/audio/query) for the truncation guard (#12).
+    # When set, the collator refuses to silently drop a media sentinel past
+    # model_max_length — its feature would otherwise stay in the batch and be
+    # spliced into the wrong rows. None (default) disables the guard.
+    media_token_ids: Sequence[int] | None = None
+
+    def _check_truncation_keeps_media(self, instances: Sequence[dict]) -> None:
+        """Fail loud if right-truncation to model_max_length would drop a media
+        sentinel from any sample (#12). The model splice consumes one feature
+        per sentinel in order, so a dropped sentinel (with its image/audio/query
+        feature still in the batch) silently mis-splices every downstream row."""
+        media_ids = self.media_token_ids
+        if not media_ids:
+            return
+        max_len = self.tokenizer.model_max_length
+        for inst in instances:
+            ids = inst["input_ids"]
+            if ids.shape[0] <= max_len:
+                continue
+            probe = torch.as_tensor(list(media_ids), dtype=ids.dtype)
+            full = int(torch.isin(ids, probe).sum())
+            kept = int(torch.isin(ids[:max_len], probe).sum())
+            if kept != full:
+                raise ValueError(
+                    f"collator truncation to model_max_length={max_len} would "
+                    f"drop {full - kept} media sentinel(s) from sample "
+                    f"{inst.get('id')!r} (length {int(ids.shape[0])}); the "
+                    "image/audio/query features would then splice into the wrong "
+                    "rows. Raise trainer.model_max_length / dataset length buckets "
+                    "so media placeholders survive truncation."
+                )
 
     def pad_sequence(
         self, input_ids: torch.Tensor | list[torch.Tensor], batch_first: bool, padding_value: int
@@ -1534,6 +1624,7 @@ class DataCollatorForSupervisedDataset:
         return input_ids
 
     def __call__(self, instances: Sequence[dict]) -> dict[str, torch.Tensor]:
+        self._check_truncation_keeps_media(instances)  # (#12)
         input_ids, labels = tuple(
             [instance[key] for instance in instances] for key in ("input_ids", "labels")
         )
