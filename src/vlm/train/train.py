@@ -181,6 +181,29 @@ def _checkpoint_is_resumable(checkpoint_dir: str) -> bool:
     )
 
 
+def _get_last_resumable_checkpoint(output_dir: str) -> str | None:
+    """Return the newest checkpoint that has optimizer/scheduler resume state."""
+    import os
+    import re
+
+    from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+
+    checkpoint_re = re.compile(rf"^{PREFIX_CHECKPOINT_DIR}-(\d+)$")
+    checkpoints: list[tuple[int, str]] = []
+    for name in os.listdir(output_dir):
+        path = os.path.join(output_dir, name)
+        if not os.path.isdir(path):
+            continue
+        match = checkpoint_re.match(name)
+        if match is not None:
+            checkpoints.append((int(match.group(1)), path))
+
+    for _, checkpoint_dir in sorted(checkpoints, reverse=True):
+        if _checkpoint_is_resumable(checkpoint_dir):
+            return checkpoint_dir
+    return None
+
+
 def train(
     model: Any,
     training_args: TrainingArguments,
@@ -380,26 +403,33 @@ def train(
         log.info(f"Resuming from checkpoint: {resume_ckpt}")
     else:
         resume_ckpt = None
+        last_ckpt = None
         if os.path.isdir(training_args.output_dir):
-            resume_ckpt = get_last_checkpoint(training_args.output_dir)
-        if resume_ckpt is not None and not _checkpoint_is_resumable(resume_ckpt):
+            last_ckpt = get_last_checkpoint(training_args.output_dir)
+            resume_ckpt = _get_last_resumable_checkpoint(training_args.output_dir)
+        if last_ckpt is not None and resume_ckpt != last_ckpt:
             # Model-only checkpoints (save_only_model=True, e.g. legacy pretrain
             # configs) carry no optimizer/scheduler/RNG state. Auto-resuming from
             # one would restart the optimizer while advancing the step counter
-            # (LR-schedule jump, lost momentum). Refuse to auto-select it; the
-            # user can still pass trainer.resume_from_checkpoint explicitly to opt
-            # in to a weights-only resume.
-            log.warning(
-                f"Latest checkpoint {resume_ckpt} has no optimizer state "
-                "(save_only_model) — SKIPPING auto-resume to avoid a corrupt "
-                "optimizer/scheduler restart. Pass trainer.resume_from_checkpoint "
-                "explicitly to force a weights-only resume."
-            )
-            resume_ckpt = None
+            # (LR-schedule jump, lost momentum). Skip weights-only snapshots and
+            # fall back to the newest older full checkpoint if one exists.
+            if resume_ckpt is not None:
+                log.warning(
+                    f"Latest checkpoint {last_ckpt} has no optimizer state "
+                    "(save_only_model) — falling back to older resumable "
+                    f"checkpoint {resume_ckpt}."
+                )
+            else:
+                log.warning(
+                    f"Latest checkpoint {last_ckpt} has no optimizer state "
+                    "(save_only_model) — SKIPPING auto-resume to avoid a corrupt "
+                    "optimizer/scheduler restart. Pass trainer.resume_from_checkpoint "
+                    "explicitly to force a weights-only resume."
+                )
         if resume_ckpt is not None:
             log.info(f"Auto-resuming from last checkpoint: {resume_ckpt} (requeued job?)")
         else:
-            log.info("Training from scratch (no checkpoint in output_dir)")
+            log.info("Training from scratch (no resumable checkpoint in output_dir)")
 
     if energon_loader is not None and resume_ckpt:
         # One-shot escape hatch for checkpoints whose LOADER state is
