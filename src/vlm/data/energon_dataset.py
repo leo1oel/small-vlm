@@ -57,10 +57,13 @@ import numpy as np
 import torch
 from PIL import Image
 
+from ..config import validate_dataset_config
 from ..models.gen_image import make_position_ids, pixels_to_patches
 from ..models.image_processing_raw import RawImageProcessor
 from .data_arguments import DataArguments
 from .dataset import (
+    MEDIA_PLACEHOLDER_MARK_L,
+    MEDIA_PLACEHOLDER_MARK_R,
     DataCollatorForSupervisedDataset,
     apply_image_position,
     check_audio_template_supported,
@@ -640,11 +643,23 @@ _ROLE_MAP = {"user": "human", "human": "human", "assistant": "gpt", "gpt": "gpt"
 _EMPTY_THINK_RE = re.compile(r"^<think>\s*</think>\s*")
 
 
+def _marked_media_placeholder(token: str) -> str:
+    """Wrap a GENERATED media placeholder in the private-use sentinels so
+    inject_missing_media_tokens can tell it apart from a literal token quoted in
+    user text (#11)."""
+    return MEDIA_PLACEHOLDER_MARK_L + token + MEDIA_PLACEHOLDER_MARK_R
+
+
 def messages_to_conversations(messages: list[dict], data_args: DataArguments) -> list[dict]:
     """Convert messages-style records (typed content items) to the LLaVA
     conversations format the preprocess functions consume. Media items become
     placeholders at their exact content position, so injection is reduced to a
-    consistency check."""
+    consistency check.
+
+    Generated placeholders are MARKED with private-use sentinels (#11) so that a
+    literal '<image>'/'<audio>' QUOTED inside user text cannot be mistaken for a
+    real media position; inject_missing_media_tokens unwraps the marks back to a
+    plain token (and neutralizes the quoted literals)."""
     conversations = []
     for msg in messages:
         role = msg.get("role") or msg.get("from")
@@ -659,9 +674,9 @@ def messages_to_conversations(messages: list[dict], data_args: DataArguments) ->
                 if item.get("type") == "text":
                     parts.append(item["text"])
                 elif item.get("type") == "image":
-                    parts.append(data_args.image_token)
+                    parts.append(_marked_media_placeholder(data_args.image_token))
                 elif item.get("type") == "audio":
-                    parts.append(data_args.audio_token)
+                    parts.append(_marked_media_placeholder(data_args.audio_token))
                 else:
                     raise ValueError(f"unknown content item type: {item.get('type')!r}")
             text = "\n".join(parts)
@@ -672,6 +687,32 @@ def messages_to_conversations(messages: list[dict], data_args: DataArguments) ->
             text = _EMPTY_THINK_RE.sub("", text)
         conversations.append({"from": mapped_role, "value": text})
     return conversations
+
+
+def _media_token_ids(data_args: DataArguments) -> list[int]:
+    """Sentinel ids whose features the model splices 1:1 — the collator's
+    truncation guard (#12) refuses to drop any of these. Image always (the
+    encoder-free path is multimodal); audio / BREEN query only when enabled, so
+    their sentinels never appear otherwise."""
+    ids = [data_args.image_token_index]
+    if getattr(data_args, "audio_enabled", False):
+        ids.append(data_args.audio_token_index)
+    if getattr(data_args, "learnable_query_enabled", False):
+        ids.append(data_args.query_token_index)
+    return ids
+
+
+def _media_feature_token_ids(data_args: DataArguments) -> dict[str, int]:
+    """Map each collated media feature-list key to its sentinel id, for the
+    modalities the model splices 1:1 from a per-sample feature list (image
+    always; audio when enabled). The collator's truncation guard (#12) uses this
+    to realign a truncated sample's feature lists with the sentinels that
+    survive. BREEN <query> is omitted: it is a broadcast Parameter sized from
+    the post-truncation ids, so it carries no per-sample feature list to trim."""
+    tokens = {"image": data_args.image_token_index}
+    if getattr(data_args, "audio_enabled", False):
+        tokens["audio"] = data_args.audio_token_index
+    return tokens
 
 
 class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass]
@@ -690,7 +731,12 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
         self.image_processor: Any = processor.image_processor
         self.data_args: DataArguments = data_args
         self.collator: Any = DataCollatorForSupervisedDataset(
-            tokenizer=self.tokenizer, ignore_index=data_args.ignore_index
+            tokenizer=self.tokenizer,
+            ignore_index=data_args.ignore_index,
+            # Media-aware truncation guard (#12): a sentinel dropped past
+            # model_max_length would leave its feature to mis-splice later rows.
+            media_token_ids=_media_token_ids(data_args),
+            media_feature_token_ids=_media_feature_token_ids(data_args),
         )
 
     def _process_images(self, image_bytes: list[bytes]) -> list[tuple]:
@@ -730,6 +776,9 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
             image_token=self.data_args.image_token,
             # Stable per-sample seed: deterministic across epochs/resumes.
             seed=zlib.crc32(str(sample.__key__).encode()),
+            # Protect the audio placeholder from sandwich duplication (#13); the
+            # query placeholder isn't injected until after this call.
+            protected_tokens=(self.data_args.audio_token,),
         )
         # BREEN port: emit one "<query>" per image at the configured placement
         # (after the image-position rewrite, so it follows the final image spot).
@@ -767,11 +816,18 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
 
 def effective_sample_length(data_dict: dict, data_args: DataArguments) -> int:
     """Post-splice sequence length the GPU will see for one encoded sample:
-    input_ids minus media sentinels, plus each real image's patch rows and
-    each audio's frame rows (modeling_vlm replaces every sentinel token by
-    its feature block). Dummy entries (modality "text" / one zero frame)
-    splice zero-width; the audio dummy's +1 here is irrelevant for
-    bucketing."""
+    input_ids minus media/query sentinels, plus each real image's patch rows,
+    each audio's frame rows, and each BREEN query block's learnable-query rows
+    (modeling_vlm replaces every sentinel token by its feature block). Dummy
+    entries (modality "text" / one zero frame) splice zero-width; the audio
+    dummy's +1 here is irrelevant for bucketing.
+
+    BREEN (#4): each "<query>" sentinel is one input_ids token that the model
+    splice expands into learnable_query_num_fine + learnable_query_num_coarse
+    rows (one block per image). Counting it as a single token would undercount
+    real GPU tokens by ~(num_fine + num_coarse - 1) per query block, so
+    token-budget microbatches overshoot the budget and land in wrong buckets.
+    """
     input_ids = data_dict["input_ids"]
     n_sentinels = int(
         (input_ids == data_args.image_token_index).sum()
@@ -787,7 +843,18 @@ def effective_sample_length(data_dict: dict, data_args: DataArguments) -> int:
             # classic 3-tuple (CLIP/SigLIP/DINO): fixed splice width per image
             image_rows += int(data_args.image_soft_tokens or 0)
     audio_rows = sum(int(frames.shape[0]) for frames in data_dict.get("audio", []))
-    return int(input_ids.shape[0]) - n_sentinels + image_rows + audio_rows
+    # BREEN learnable-query expansion (#4): subtract the 1-token query sentinels
+    # and add the rows each expands to. Gated on learnable_query_enabled — when
+    # off, no "<query>" sentinel is ever emitted, so this is a no-op.
+    query_rows = 0
+    n_query = 0
+    if getattr(data_args, "learnable_query_enabled", False):
+        n_query = int((input_ids == data_args.query_token_index).sum())
+        per_query = int(getattr(data_args, "learnable_query_num_fine", 0)) + int(
+            getattr(data_args, "learnable_query_num_coarse", 0)
+        )
+        query_rows = n_query * per_query
+    return int(input_ids.shape[0]) - n_sentinels - n_query + image_rows + audio_rows + query_rows
 
 
 class VLMBucketedChatTaskEncoder(VLMChatTaskEncoder):
@@ -1033,10 +1100,17 @@ def build_energon_train_loader(
     """dataset.folders ({blob folder: blend weight}) -> streaming train loader
     yielding trainer-ready batch dicts.
 
-    Fully automatic by default: on first use each jsonl is downloaded to the
-    local data dir with its index built in the same pass (resumable;
-    LOCAL_RANK==0 downloads per node, others wait at the barrier). Media
-    (images/audio) always streams lazily from blob through the MSC cache.
+    Two layouts, selected by config:
+      * dataset.folders (this function) — loose-file jsonl-crude: one train.jsonl
+        per folder + loose media; one Azure GET per image.
+      * dataset.wds_path (delegated to vlm.data.energon_wds.build_wds_train_loader)
+        — a prepared CrudeWebdataset (tar shards with in-tar images + .nv-meta);
+        one sequential GET per ~10k samples. Mutually exclusive with folders.
+
+    Fully automatic by default (folders path): on first use each jsonl is
+    downloaded to the local data dir with its index built in the same pass
+    (resumable; LOCAL_RANK==0 downloads per node, others wait at the barrier).
+    Media (images/audio) always streams lazily from blob through the MSC cache.
 
     `dataset_config.use_local_jsonl`: None (default) = local hybrid mode,
     auto-downloading if needed; True = require the local copy; False = always
@@ -1054,6 +1128,47 @@ def build_energon_train_loader(
             "megatron-energon (with the [azure-storage-blob] extra) and "
             f"multi-storage-client. Original error: {_streaming_import_error}"
         ) from _streaming_import_error
+    # Dataset-only config validation (#27 etc.) — guards direct callers/tests,
+    # in addition to the fail-fast validate_config(cfg) at the CLI entry.
+    validate_dataset_config(dataset_config)
+    # The cold Azure shuffle-buffer fill (~90 s loose-file / ~111 s WDS) exceeds
+    # energon's 60 s watchdog default on EVERY startup, producing a spurious
+    # all-thread stack dump that has been repeatedly misread as a PicklingError
+    # (it is not — fork never pickles; data/datapipe-rootcause-m6). Raise the
+    # INITIAL timeout to cover the cold fill while keeping the 60 s steady-state
+    # watchdog that catches genuine per-sample hangs. Applies to both branches.
+    # (Separate from the checkpoint_every_sec setdefault below, which silences
+    # the rolling-checkpoint SSL-socket pickling noise.)
+    savable_loader_kwargs.setdefault("watchdog_initial_timeout_seconds", 600)
+    # Prepared-WebDataset branch (dataset.wds_path): image bytes are bundled IN
+    # the tar shards, read by the WDS cooker (vlm.data.energon_wds) directly off
+    # the .nv-meta dir — no jsonl download / index / metadataset generation. The
+    # lazy import keeps the energon_dataset <-> energon_wds dependency acyclic.
+    wds_path = getattr(dataset_config, "wds_path", None)
+    if wds_path:
+        if dataset_config.folders:
+            raise ValueError(
+                "dataset.wds_path and dataset.folders are mutually exclusive — "
+                "wds_path streams a prepared CrudeWebdataset (in-tar images) and "
+                "folders streams the loose-file jsonl layout. Set exactly one."
+            )
+        from .energon_wds import build_wds_train_loader
+
+        return build_wds_train_loader(
+            dataset_config,
+            processor,
+            data_args,
+            batch_size,
+            task_encoder=task_encoder,
+            worker_config=worker_config,
+            **savable_loader_kwargs,
+        )
+    if not dataset_config.folders:
+        raise ValueError(
+            "No dataset source configured for dataset.type='energon' — set "
+            "exactly one of dataset.wds_path (a prepared CrudeWebdataset with "
+            "in-tar images) or dataset.folders (the loose-file jsonl layout)."
+        )
     _require_credentials()
     use_local_jsonl = dataset_config.use_local_jsonl
     specs = normalize_folder_specs(dataset_config.folders, dataset_config.jsonl_name)

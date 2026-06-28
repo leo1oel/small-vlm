@@ -1,0 +1,57 @@
+# Bee Stage-2 caption pairs as a PREPARED energon CrudeWebdataset (in-tar
+# images), streamed from Azure — the headline WDS path (vlm.data.energon_wds).
+# ~12.6M single-image records (user: image -> assistant: long multi-paragraph
+# description) across 1261 tar shards + a .nv-meta/ dir, at
+# msc://azure/data/yiming/bee_stage2/train-wds. Every record is exactly 2 turns,
+# so this pairs with the plain caption template (trainer.version=plain, the
+# trainer: pretrain default), NOT the multi-turn qwen_2_5 chat template.
+#
+# vs. energon-bee-caption (loose-file jsonl, Stage-1, ~998k): the prepared WDS
+# bundles image bytes IN the tar, so one sequential GET streams ~10k samples
+# instead of one GET per image — far fewer fat-tail stragglers and no spurious
+# watchdog "PicklingError" dumps (data/datapipe-rootcause-m6). Stream with
+# workers>0: the cold shuffle-buffer fill (~111s) trips energon's 60s watchdog
+# default, so the loader raises the watchdog INITIAL timeout to cover it.
+#
+# Credentials: AZURE_SAS_TOKEN (env or .env). Nothing is downloaded — energon
+# reads the .nv-meta dir and streams shards lazily through the MSC range cache.
+# REQUIRED with this dataset type: trainer.max_steps > 0.
+
+name: energon-bee-stage2-wds
+type: energon
+
+# Prepared CrudeWebdataset dir (tar shards + .nv-meta). A container-relative
+# path resolves through the MSC default profile/container ("azure"/"data") ->
+# msc://azure/data/yiming/bee_stage2/train-wds. A full msc://... URL also works.
+# Mutually exclusive with `folders`.
+wds_path: yiming/bee_stage2/train-wds
+
+# 2-turn caption data: declared so validate_dataset_config allows the plain
+# template (and would reject an accidental instruct pairing). Stage-2 records
+# carry NO empty "<think>" prefix (unlike Stage-1), so strip_empty_think stays
+# off (a no-op here regardless).
+conversation_kind: caption
+strip_empty_think: false
+
+# Per-worker shuffle buffer mixed before the first yield. A prepared WDS reads
+# whole shards sequentially (max_samples_per_sequence runs), so this trades
+# startup latency for cross-shard mixing.
+shuffle_buffer_size: 2000
+# Bucket edges over the post-splice effective length (caption tokens +
+# ~256-280/image + sep). Stage-2 captions are long multi-paragraph
+# descriptions, so the distribution sits higher than Stage-1's; these edges are
+# a conservative starting estimate — probe + retune on the real stream.
+# Samples past the last edge land in an overflow bucket and are clipped to
+# model.max_seq_length at the splice (modeling_vlm), not dropped.
+length_buckets: [512, 768, 1024, 1536, 2304, 4096]
+# ~constant effective tokens per micro-batch (bucket bs = budget // edge); the
+# SFT-proven 32000 (48G A40/L40S; recover the effective batch with
+# trainer.gradient_accumulation_steps) is the safe start — probe before raising.
+batch_token_budget: 32000
+max_samples_per_sequence: 100 # randomness vs. sequential-read efficiency
+# Azure fetch latency is fat-tailed; a high worker count amortizes stragglers.
+# The "PicklingError" is a phantom (data/datapipe-rootcause-m6: an energon
+# watchdog stack dump on the cold fill, not a real pickle error — fork never
+# pickles) — workers>0 is correct and required for compute/data overlap; do NOT
+# set num_workers=0 (it ~halves throughput).
+num_workers: 12

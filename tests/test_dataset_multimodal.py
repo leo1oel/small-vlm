@@ -154,9 +154,14 @@ def test_injection_rules():
     before = [dict(t) for t in convs]
     inject_missing_media_tokens(convs, n_images=2, n_audios=1, data_args=data_args)
     assert convs == before
-    # mismatch: loud failure
+    # surplus literals (found > n): neutralized from the END, NOT raised — a
+    # raise in energon's buffer-restore path would be a deterministic resume
+    # crash-loop (the last <image> is kept aligned with the one real image).
+    inject_missing_media_tokens(convs, n_images=1, n_audios=1, data_args=data_args)
+    assert convs[0]["value"] == "<image>\n[image]\n<audio>\nhi"
+    # too few placeholders (found < n): loud failure (ambiguous; surface it).
     with pytest.raises(ValueError, match="placeholder"):
-        inject_missing_media_tokens(convs, n_images=1, n_audios=1, data_args=data_args)
+        inject_missing_media_tokens(convs, n_images=3, n_audios=1, data_args=data_args)
 
 
 def test_load_audio_frames(media_dir: Path):

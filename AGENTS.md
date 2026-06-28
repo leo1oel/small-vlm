@@ -147,3 +147,55 @@ stay frozen.
 1. **`init_visual_experts_from_text` must exclude `expert_gate*` keys** when
     copying the text FFN into `mlp_visual` (the gateless expert has no such keys
     → load_state_dict raises on unexpected keys).
+
+## Energon train-loader layouts (`build_energon_train_loader`)
+
+Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
+`dataset.wds_path` / `dataset.folders`):
+
+- **jsonl-loose** (`dataset.folders`): one `train.jsonl` per blob folder + loose
+    media files; `cook_mm_chat` fetches each image with one Azure GET via
+    `media_root.get(path)`. First use auto-downloads each jsonl + builds its index
+    locally; media always streams lazily.
+- **prepared CrudeWebdataset** (`dataset.wds_path`, `vlm/data/energon_wds.py`):
+    the output of `energon prepare` — `{00000..NNNNN}.tar` shards with image bytes
+    bundled IN the tar + a `.nv-meta/` dir. `cook_mm_chat_wds` reads image bytes
+    from the in-tar sample fields (match by json-path basename, else positional
+    two-pass fallback over sorted image-ext fields; it fails loud on an in-tar
+    audio item — prepared-WDS audio is unsupported), and `get_train_dataset` reads
+    the `.nv-meta` dir directly — no jsonl download / index / metadataset. One
+    sequential GET streams ~10k samples, so no per-image round-trip and far fewer
+    fat-tail stragglers (the cold shuffle-buffer fill itself remains — see sharp
+    edge 1). Example config:
+    `config/dataset/energon-bee-stage2-wds.yaml` →
+    `msc://azure/data/yiming/bee_stage2/train-wds`. The WDS task encoders subclass
+    the jsonl ones and override ONLY `cookers`, so
+    encode/collate/bucketing/BREEN-query/savable-resume are shared verbatim.
+
+### Sharp edges (keep these)
+
+1. **The "PicklingError" is a PHANTOM — never re-add a `num_workers=0` guard.** It
+    is an energon watchdog all-thread stack dump fired when the cold Azure
+    shuffle-buffer fill exceeds the 60 s watchdog default; fork never pickles, so
+    there is no real pickle error (`data/datapipe-rootcause-m6`). The loader raises
+    `watchdog_initial_timeout_seconds=600` to cover the cold fill (measured ~111 s
+    for bee_stage2/train-wds) while keeping the 60 s steady-state watchdog.
+    `num_workers=0` ~halves throughput (~44 %/step data-wait); use `num_workers`
+    8–12.
+1. **`dataset.num_workers` (energon's) owns loading + rank sharding;**
+    `trainer.dataloader_num_workers` MUST stay 0 for `type='energon'`.
+1. **`conversation_kind` gates template/data validation
+    (`validate_dataset_config`).** Mark multi-turn datasets `instruct` so the
+    2-turn `plain` caption template is rejected (it drops all human text except
+    media placeholders); 2-turn caption data is `caption`; `auto` (default) skips
+    the check.
+1. **The collator truncation guard is crash-loop-safe.** When right-truncation at
+    `model_max_length` would drop a media sentinel, the collator drops that
+    instance's orphaned trailing image/audio feature(s) and warns (keeping
+    sentinel↔feature counts aligned) rather than raising inside energon's savable
+    pipeline — a raise there can deterministically crash-loop on resume.
+1. **Local GPU smoke needs `module load cuda/<ver>`** even with
+    `trainer.deepspeed=null`: accelerate's `extract_model_from_parallel`
+    unconditionally `from deepspeed import DeepSpeedEngine`, whose op-builder
+    probes `nvcc` at import → `FileNotFoundError: .../bin/nvcc` at trainer
+    construction without it.

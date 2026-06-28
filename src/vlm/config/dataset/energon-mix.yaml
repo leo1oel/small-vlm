@@ -26,6 +26,13 @@
 name: energon-mix
 type: energon
 
+# Multi-turn instruct data (LLaVA-OneVision-1.5-Instruct). Declared instruct so
+# validate_dataset_config REJECTS pairing it with the 2-turn plain caption
+# template (trainer.version=plain) — the plain preprocessor would drop all human
+# text except media placeholders (#5). Pair instruct data with a chat template
+# (e.g. trainer.version=qwen_2_5), or use a caption-only dataset with plain.
+conversation_kind: instruct
+
 # blob folder -> blend weight (sampling ratio, normalized automatically)
 folders:
   LLaVA-OneVision-1.5-Instruct: 2.0

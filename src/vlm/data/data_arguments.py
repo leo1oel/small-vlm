@@ -34,6 +34,12 @@ class DataArguments:
     query_token: str = "<query>"
     query_token_index: int = -202
     query_placement: str = "after_image"
+    # Rows each "<query>" sentinel expands to at the model splice (num_fine +
+    # num_coarse). Used by length bucketing's effective_sample_length to count
+    # the BREEN query block correctly (#4) — a query sentinel is 1 input_ids
+    # token but expands to this many GPU rows.
+    learnable_query_num_fine: int = 64
+    learnable_query_num_coarse: int = 36
     # Soft tokens each image splices into (encoder path only: a fixed
     # (image_size/patch_size)^2 per tower; None on the encoder-free path,
     # where the per-image patch count is variable and read off the entry).
@@ -87,6 +93,8 @@ def get_data_args(data_config: DatasetConfig, trainer_config: ModelConfig) -> Da
         query_token=trainer_config.language_model.query_token,
         query_token_index=trainer_config.language_model.query_token_index,
         query_placement=str(trainer_config.learnable_query.placement),
+        learnable_query_num_fine=int(trainer_config.learnable_query.num_fine),
+        learnable_query_num_coarse=int(trainer_config.learnable_query.num_coarse),
         audio_token=trainer_config.language_model.audio_token,
         audio_token_index=trainer_config.language_model.audio_token_index,
         audio_folder=data_config.audio_folder,

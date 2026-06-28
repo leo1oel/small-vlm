@@ -7,6 +7,7 @@ from .config_schema import (
     TrainerConfig,
     VisualEncoderConfig,
     register_configs,
+    validate_dataset_config,
 )
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "ModelConfig",
     "TrainerConfig",
     "register_configs",
+    "validate_dataset_config",
     "DatasetConfig",
     "ConnectorConfig",
     "LanguageModelConfig",

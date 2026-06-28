@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING  # pyright: ignore
@@ -365,8 +366,28 @@ class DatasetConfig:
     # --- streaming dials (type: "energon" only) ---
     # blob folder -> blend weight; a single entry means no blending. Each folder
     # must contain a prepared <jsonl_name> (auto-prepared on first use).
+    # Mutually exclusive with `wds_path` (the prepared-WebDataset layout below).
     folders: dict[str, float] | None = None
     jsonl_name: str = "train.jsonl"
+    # Prepared-WebDataset layout (type "energon" only; mutually exclusive with
+    # `folders`). Point this at an `energon prepare` output directory — tar
+    # shards (`{00000..NNNNN}.tar`) + a `.nv-meta/` dir holding a
+    # `CrudeWebdataset` dataset.yaml — to stream samples whose image bytes are
+    # bundled IN the tar (one sequential GET per ~10k samples) instead of the
+    # loose-file jsonl layout (one Azure GET per image). Selects the WDS cooker
+    # + loader branch (vlm.data.energon_wds). Accepts a full
+    # `msc://<profile>/<container>/...` URL or a container-relative path
+    # (resolved through the same MSC profile/container as `folders`). The in-tar
+    # `.json` carries the SAME {id, source, messages} schema as the jsonl path.
+    wds_path: str | None = None
+    # Conversation structure of this dataset's samples, used to validate the
+    # trainer template choice (#5). "instruct" = multi-turn chat data, which
+    # needs a chat template (e.g. trainer.version=qwen_2_5); pairing it with the
+    # 2-turn `plain` caption template silently drops all human text except media
+    # placeholders. "caption" = 2-turn caption data, compatible with `plain`.
+    # "auto" (default) skips the check (back-compat for json datasets and
+    # unclassified mixtures).
+    conversation_kind: str = "auto"
     shuffle_buffer_size: int = 10000
     max_samples_per_sequence: int | None = 100
     # energon owns DataLoader workers AND rank sharding; the HF trainer's
@@ -374,7 +395,8 @@ class DatasetConfig:
     num_workers: int = 4
     # Length-grouped batching (type "energon" only): upper edges of the
     # effective-length buckets (post-splice tokens: text + per-image patches
-    # + per-audio frames). Samples batch only within their bucket, so padding
+    # + per-audio frames + per-query BREEN rows when learnable_query is on).
+    # Samples batch only within their bucket, so padding
     # is bounded by bucket width. None = no bucketing. Buckets are
     # worker-local — keep them few and wide so each fills promptly.
     length_buckets: list[int] | None = None
@@ -555,6 +577,79 @@ class AppConfig:
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
+
+
+def validate_dataset_config(
+    dataset: Any,
+    model: Any = None,
+    trainer: Any = None,
+) -> None:
+    """Fail loud on dataset/model/trainer config combinations that are otherwise
+    silently mis-trained. Pure attribute reads (works on both the dataclasses
+    here and the OmegaConf structured config), so it is callable from
+    validate_config (full cfg, fails fast in main()) and from
+    build_energon_train_loader (dataset only, guards direct callers/tests).
+
+    Checks:
+      * #27 — `batch_token_budget` set without `length_buckets`: the loader only
+        builds the bucketed (token-budget) encoder when `length_buckets` is set,
+        so the budget would be silently ignored.
+      * #14 — generation patch-size mismatch: when the model runs an INDEPENDENT
+        generation embedder (`model.generation.independent_embed`), the dataset
+        must patchify targets at the embedder's `embed_patch_size`, else the
+        per-patch target dim (psz**2*3) mismatches the gen embedder / x-head.
+      * #5  — `plain` (2-turn caption) template composed with `instruct`
+        (multi-turn) data: `preprocess_plain` keeps only media placeholders + the
+        final answer and drops all other human text, silently corrupting samples.
+    """
+    # --- #27: batch_token_budget needs length_buckets -----------------------
+    batch_token_budget = getattr(dataset, "batch_token_budget", None)
+    length_buckets = getattr(dataset, "length_buckets", None)
+    if batch_token_budget is not None and not length_buckets:
+        raise ValueError(
+            "dataset.batch_token_budget is set but dataset.length_buckets is empty "
+            "— token-budget batching only takes effect together with length "
+            "buckets (the loader builds the bucketed encoder only when "
+            "length_buckets is set). Set dataset.length_buckets, or clear "
+            "dataset.batch_token_budget."
+        )
+
+    # --- #14: generation data/model patch-size must match -------------------
+    if model is not None:
+        gen = getattr(model, "generation", None)
+        if (
+            gen is not None
+            and bool(getattr(gen, "enabled", False))
+            and bool(getattr(gen, "independent_embed", False))
+            and str(getattr(dataset, "task", "understanding")) == "generation"
+        ):
+            embed_patch_size = int(getattr(gen, "embed_patch_size", 16))
+            gen_patch_size = getattr(dataset, "gen_patch_size", None)
+            if gen_patch_size is None or int(gen_patch_size) != embed_patch_size:
+                raise ValueError(
+                    "dataset.gen_patch_size must equal model.generation."
+                    f"embed_patch_size ({embed_patch_size}) when model.generation."
+                    "independent_embed is enabled — the dataloader patchifies "
+                    "generation targets at dataset.gen_patch_size while the model's "
+                    "independent gen embedder / x-head expect embed_patch_size, so "
+                    "a mismatch makes the per-patch target dim (psz**2*3) wrong "
+                    f"(got dataset.gen_patch_size={gen_patch_size!r})."
+                )
+
+    # --- #5: plain template requires caption (2-turn) data -----------------
+    if trainer is not None:
+        version = str(getattr(trainer, "version", "v0"))
+        kind = str(getattr(dataset, "conversation_kind", "auto"))
+        if version in {"plain", "v0_plain"} and kind == "instruct":
+            raise ValueError(
+                f"trainer template version={version!r} (2-turn caption preprocessing) "
+                "is composed with an instruct (multi-turn) dataset "
+                f"(dataset.conversation_kind='instruct', dataset.name="
+                f"{getattr(dataset, 'name', '?')!r}). The plain preprocessor keeps "
+                "only media placeholders + the final answer and drops all other "
+                "human text. Use a caption-only dataset, or select a chat template "
+                "(e.g. trainer.version=qwen_2_5)."
+            )
 
 
 def register_configs() -> None:

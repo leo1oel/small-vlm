@@ -10,7 +10,13 @@ from transformers import AutoConfig, AutoTokenizer, PreTrainedTokenizer, set_see
 
 from vlm.config.config_schema import LanguageModelConfig
 
-from .config import AppConfig, ModelConfig, TrainerConfig, register_configs
+from .config import (
+    AppConfig,
+    ModelConfig,
+    TrainerConfig,
+    register_configs,
+    validate_dataset_config,
+)
 from .data import get_data_args, make_supervised_data_module
 from .models import VLMProcessor, get_dynamic_vlm
 from .models.image_processing_raw import RawImageProcessor
@@ -602,6 +608,12 @@ def vlm(cfg: AppConfig) -> None:
 
 def validate_config(cfg: AppConfig) -> None:
     OmegaConf.to_container(cfg, throw_on_missing=True)
+    # Cross-section config invariants that are otherwise silently mis-trained:
+    #   #27 batch_token_budget without length_buckets,
+    #   #14 generation data/model patch-size mismatch,
+    #   #5  plain (2-turn caption) template composed with instruct data.
+    # Fails fast here in main() (seconds), before the slow model load.
+    validate_dataset_config(cfg.dataset, cfg.model, cfg.trainer)
 
 
 @hydra.main(version_base=None, config_path=str(CONFIG_PATH), config_name="config")  # pyright: ignore
