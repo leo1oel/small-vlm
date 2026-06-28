@@ -67,11 +67,13 @@ def main():
     bar = data.get("sft-clip-bee-mix", {})
 
     def barvmc(step):
-        # nearest bar checkpoint <= step (the bar at the same budget)
-        cand = [s for s in bar if "vmc" in bar[s]]
+        # nearest bar checkpoint <= step (the bar at the same-or-earlier budget):
+        # a future checkpoint isn't a fair same-budget comparison, so filter to
+        # s <= step before picking the closest.
+        cand = [s for s in bar if "vmc" in bar[s] and s <= step]
         if not cand:
             return None
-        near = min(cand, key=lambda s: abs(s - step))
+        near = min(cand, key=lambda s: step - s)
         return bar[near].get("vmc"), near
 
     print(f"\n{'arm':32s} {'step':>5} {'vmc':>5} {'pope':>5} {'mmvp':>5} {'gap→bar':>8}")

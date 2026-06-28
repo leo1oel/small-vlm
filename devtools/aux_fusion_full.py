@@ -36,7 +36,10 @@ from pathlib import Path
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from vlm.data.dataset import tokenizer_multimodal_token  # noqa: E402
+from vlm.data.dataset import (  # noqa: E402
+    inject_query_placeholders,
+    tokenizer_multimodal_token,
+)
 from vlm.inference.eval import (  # noqa: E402
     _data_args_from_config,
     build_prompt,
@@ -138,7 +141,16 @@ class FullProbe:
 
     # ---- input builders --------------------------------------------------
     def _embed_with_image(self, doc, image):
-        prompt = build_prompt(self.conv, self.da.image_token + "\n" + doc_to_prompt(doc), self.da)
+        text = self.da.image_token + "\n" + doc_to_prompt(doc)
+        # BREEN: inject one <query> per image at the trained placement, mirroring
+        # generate_response, so the probe matches the trained/live input contract
+        # (the splice expands <query> into the learnable query block). No-op for
+        # non-BREEN checkpoints.
+        if self.da.learnable_query_enabled:
+            _turns = [{"from": "human", "value": text}]
+            inject_query_placeholders(_turns, n_images=1, data_args=self.da)
+            text = _turns[0]["value"]
+        prompt = build_prompt(self.conv, text, self.da)
         ids = (
             tokenizer_multimodal_token(prompt, self.tok, self.da, return_tensors="pt")
             .unsqueeze(0)

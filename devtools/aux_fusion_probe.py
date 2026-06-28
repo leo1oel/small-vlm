@@ -127,10 +127,18 @@ class ProbeRunner:
 
     # -- input construction (mirrors generate_response, minus generation) --
     def build(self, doc, image):
-        prompt = build_prompt(
-            self.conv_mode, self.data_args.image_token + "\n" + doc_to_prompt(doc), self.data_args
-        )
-        from vlm.data.dataset import tokenizer_multimodal_token
+        from vlm.data.dataset import inject_query_placeholders, tokenizer_multimodal_token
+
+        text = self.data_args.image_token + "\n" + doc_to_prompt(doc)
+        # BREEN: inject one <query> per image at the trained placement, mirroring
+        # generate_response, so the probe matches the trained/live input contract
+        # (the splice expands <query> into the learnable query block). No-op for
+        # non-BREEN checkpoints.
+        if self.data_args.learnable_query_enabled:
+            _turns = [{"from": "human", "value": text}]
+            inject_query_placeholders(_turns, n_images=1, data_args=self.data_args)
+            text = _turns[0]["value"]
+        prompt = build_prompt(self.conv_mode, text, self.data_args)
 
         input_ids = (
             tokenizer_multimodal_token(prompt, self.tok, self.data_args, return_tensors="pt")
