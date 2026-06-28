@@ -340,15 +340,20 @@ def build_prompt(conv_mode: str, query: str, data_args: DataArguments) -> str:
         )
 
     # Legacy templates (v1 / llama / mpt / gemma ...): the local-json training
-    # path runs preprocess_multimodal first — replicate it on the user turn.
-    if data_args.image_token in query:
+    # path runs preprocess_multimodal first — replicate it on the user turn,
+    # including its n_image == 1 guard (dataset.py:385). Single-image LLaVA
+    # convention hoists the lone "<image>" to the front; for an interleaved
+    # multi-image turn (n_image > 1) every placeholder MUST stay in place.
+    # Stripping all and prepending one would leave a single sentinel for N
+    # images, and the splice (one feature per sentinel) would consume image 1
+    # and silently drop images 2..N (the encoder still passes all N).
+    n_image = query.count(data_args.image_token)
+    if n_image == 1:
         query = query.replace(data_args.image_token, "").strip()
         query = data_args.image_token + "\n" + query
         query = query.strip()
-        if "mmtag" in conv.version:
-            query = query.replace(
-                data_args.image_token, "<Image>" + data_args.image_token + "</Image>"
-            )
+    if n_image >= 1 and "mmtag" in conv.version:
+        query = query.replace(data_args.image_token, "<Image>" + data_args.image_token + "</Image>")
     if data_args.use_start_end_tokens:
         query = query.replace(
             data_args.image_token,
@@ -537,6 +542,17 @@ def generate_response(
     tokenizer = processor.tokenizer
     input_ids = tokenizer_multimodal_token(prompt, tokenizer, data_args, return_tensors="pt")
     input_ids = input_ids.unsqueeze(0).to(model.device)
+    # Defense-in-depth: the splice inserts one image feature per <image> sentinel,
+    # so a sentinel/image-count mismatch silently drops (or misaligns) images.
+    # build_prompt + ensure_placeholders keep these equal; assert it so any future
+    # regression fails loud instead of quietly answering on a subset of the images.
+    n_sentinels = int((input_ids == data_args.image_token_index).sum().item())
+    if n_sentinels != len(images):
+        raise ValueError(
+            f"prompt has {n_sentinels} {data_args.image_token!r} sentinel(s) but "
+            f"{len(images)} image(s) were passed; the model splices one feature per "
+            "sentinel, so a mismatch would silently drop/misalign images"
+        )
     attention_mask = torch.ones_like(input_ids)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id

@@ -136,6 +136,22 @@ def test_legacy_v1_prompt_moves_image_token_to_front():
     assert prompt.index("<image>") < prompt.index("What is this?")
 
 
+def test_legacy_multi_image_prompt_keeps_all_sentinels():
+    """A multi-image legacy prompt must keep one <image> per image — mirror of
+    preprocess_multimodal's n_image == 1 guard (dataset.py:385). The old build
+    deleted ALL <image> and prepended ONE, leaving a single sentinel for N
+    images; the splice inserts one feature per sentinel, so images 2..N were
+    silently dropped while the encoder still passed them in."""
+    data_args = _data_args()
+    # two interleaved images -> both sentinels survive, in place (no hoist)
+    prompt = build_prompt("v1", "<image><image>compare these", data_args)
+    assert prompt.count("<image>") == 2
+    # single-image control: the lone token is still hoisted to the front
+    one = build_prompt("v1", "describe <image>", data_args)
+    assert one.count("<image>") == 1
+    assert one.index("<image>") < one.index("describe")
+
+
 # ---------------------------------------------------------------------------
 # conv-mode resolution + placeholder injection
 # ---------------------------------------------------------------------------
@@ -297,6 +313,57 @@ def test_generate_response_missing_position_ids_error(tiny_model: Any):
     # the model-level guard for hand-rolled callers
     with pytest.raises(ValueError, match="image_position_ids"):
         tiny_model.encode_raw_patches([torch.zeros(4, PATCH_DIM)], None)
+
+
+def test_multi_image_splice_consumes_every_feature(tiny_model: Any):
+    """End of the multi-image fix: with the legacy prompt keeping N sentinels,
+    the splice must insert EVERY image-feature block (one per sentinel), not
+    just the first. Pins the silent-drop bug — pre-fix the prompt carried one
+    sentinel for N images, so feature blocks 2..N were never consumed."""
+    data_args = _data_args()
+    prompt = build_prompt("v1", "<image><image>compare", data_args)
+    ids = tokenizer_multimodal_token(prompt, _TOKENIZER, data_args, return_tensors="pt").unsqueeze(
+        0
+    )
+    assert int((ids == data_args.image_token_index).sum()) == 2
+    n_text = int((ids != data_args.image_token_index).sum())
+
+    hidden = tiny_model.config.hidden_size
+    # two feature blocks of DISTINCT lengths so both landings are visible
+    feats = [torch.zeros(3, hidden), torch.zeros(5, hidden)]
+    with torch.inference_mode():
+        out = tiny_model.prepare_inputs_labels_for_multimodal(
+            input_ids=ids, image_features=feats, with_image_block_ids=True
+        )
+    new_input_embeds = out[4]
+    image_block_ids = out[6]
+    # both blocks (3 + 5 rows) spliced in alongside the text tokens
+    assert new_input_embeds.shape[1] == n_text + 3 + 5
+    # block-id tags prove BOTH images landed (feature_index 0 AND 1), so neither
+    # was dropped: 3 positions tagged image 0, 5 positions tagged image 1.
+    tags = image_block_ids[image_block_ids >= 0]
+    assert int((tags == 0).sum()) == 3
+    assert int((tags == 1).sum()) == 5
+
+
+def test_generate_response_sentinel_image_count_mismatch_raises(
+    tiny_model: Any, tiny_processor: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """Defense-in-depth guard: if a prompt ever ends up with fewer <image>
+    sentinels than images passed (the pre-fix collapse), generate_response must
+    fail loud instead of silently answering on a subset. Simulate the old bug by
+    forcing build_prompt to collapse two images to one sentinel."""
+    import vlm.inference.eval as eval_mod
+
+    monkeypatch.setattr(eval_mod, "build_prompt", lambda conv_mode, query, da: "<image>\ncompare")
+    images = [
+        PIL_Image.new("RGB", (20, 10), (255, 0, 0)),
+        PIL_Image.new("RGB", (20, 10), (0, 0, 255)),
+    ]
+    with pytest.raises(ValueError, match="sentinel"):
+        generate_response(
+            tiny_model, tiny_processor, query="compare", images=images, max_new_tokens=1
+        )
 
 
 def test_generate_response_audio_without_pathway(tiny_processor: Any, wav_path: Path):
