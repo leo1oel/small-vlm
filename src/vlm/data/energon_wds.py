@@ -156,12 +156,14 @@ class WDSGenTaskEncoder(VLMGenTaskEncoder):  # pyright: ignore[reportUntypedBase
 
 
 def resolve_wds_path(wds_path: str) -> str:
-    """A full ``msc://…`` / ``s3://…`` / local-fs URL is used verbatim; a bare
+    """A full ``msc://…`` / ``s3://…`` URL or an ABSOLUTE local path (``/...``,
+    e.g. a pre-staged copy on ``/gscratch`` or ``/scr``) is used verbatim; a bare
     container-relative path is resolved through the same MSC profile/container as
     ``dataset.folders`` (so ``yiming/bee_stage2/train-wds`` ->
-    ``msc://azure/data/yiming/bee_stage2/train-wds``)."""
+    ``msc://azure/data/yiming/bee_stage2/train-wds``). Note energon's EPath wants a
+    bare absolute path for the local filesystem, NOT a ``file://`` URL."""
     p = str(wds_path).strip()
-    if "://" in p:
+    if "://" in p or p.startswith("/"):
         return p
     return remote_url(p)
 
