@@ -640,9 +640,9 @@ def validate_dataset_config(
     if trainer is not None:
         version = str(getattr(trainer, "version", "v0"))
         kind = str(getattr(dataset, "conversation_kind", "auto"))
-        if version == "plain" and kind == "instruct":
+        if version in {"plain", "v0_plain"} and kind == "instruct":
             raise ValueError(
-                "trainer template version='plain' (2-turn caption preprocessing) "
+                f"trainer template version={version!r} (2-turn caption preprocessing) "
                 "is composed with an instruct (multi-turn) dataset "
                 f"(dataset.conversation_kind='instruct', dataset.name="
                 f"{getattr(dataset, 'name', '?')!r}). The plain preprocessor keeps "

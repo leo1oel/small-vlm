@@ -107,6 +107,12 @@ def test_plain_with_instruct_rejected():
         validate_dataset_config(ds, None, TrainerConfig(version="plain"))
 
 
+def test_v0_plain_with_instruct_rejected():
+    ds = DatasetConfig(type="energon", conversation_kind="instruct")
+    with pytest.raises(ValueError, match="v0_plain"):
+        validate_dataset_config(ds, None, TrainerConfig(version="v0_plain"))
+
+
 def test_plain_with_caption_ok():
     ds = DatasetConfig(type="energon", conversation_kind="caption")
     validate_dataset_config(ds, None, TrainerConfig(version="plain"))
