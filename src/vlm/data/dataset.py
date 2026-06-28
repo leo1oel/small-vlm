@@ -6,7 +6,7 @@ import os
 import random
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, override
 
@@ -1580,36 +1580,68 @@ class DataCollatorForSupervisedDataset:
     tokenizer: transformers.PreTrainedTokenizer
     ignore_index: int = -100
     # Media sentinel ids (image/audio/query) for the truncation guard (#12).
-    # When set, the collator refuses to silently drop a media sentinel past
-    # model_max_length — its feature would otherwise stay in the batch and be
-    # spliced into the wrong rows. None (default) disables the guard.
+    # When set, the collator refuses to let right-truncation past
+    # model_max_length silently drop a media sentinel — its feature would
+    # otherwise stay in the batch and splice into the wrong rows. None (default)
+    # disables the guard.
     media_token_ids: Sequence[int] | None = None
+    # Per-modality map (instance feature-list key -> its sentinel id) for the
+    # modalities the model splices 1:1 from a per-sample feature list (image,
+    # audio). Lets the guard realign a truncated sample's feature lists with the
+    # surviving sentinels. BREEN <query> is a broadcast Parameter (no per-sample
+    # feature list), so it is not listed here. None -> no realignment.
+    media_feature_token_ids: Mapping[str, int] | None = None
 
-    def _check_truncation_keeps_media(self, instances: Sequence[dict]) -> None:
-        """Fail loud if right-truncation to model_max_length would drop a media
-        sentinel from any sample (#12). The model splice consumes one feature
-        per sentinel in order, so a dropped sentinel (with its image/audio/query
-        feature still in the batch) silently mis-splices every downstream row."""
+    def _neutralize_truncated_media(self, instances: Sequence[dict]) -> None:
+        """Crash-loop-safe (#12): when right-truncation to model_max_length would
+        drop a media sentinel, realign that sample's per-modality feature lists
+        with the sentinels that survive, instead of raising. The splice consumes
+        one feature per surviving sentinel in flat batch order (and one
+        zero-width dummy for a modality a row no longer carries), so an unpruned
+        orphan feature would mis-splice every downstream row. Raising here is not
+        an option: it propagates through energon's buffer-restore path (which has
+        no skip handler) and deterministically crash-loops on resume — the same
+        reason inject_missing_media_tokens neutralizes rather than raises."""
         media_ids = self.media_token_ids
         if not media_ids:
             return
         max_len = self.tokenizer.model_max_length
+        feature_tokens = self.media_feature_token_ids or {}
+        probe = None
         for inst in instances:
             ids = inst["input_ids"]
             if ids.shape[0] <= max_len:
                 continue
-            probe = torch.as_tensor(list(media_ids), dtype=ids.dtype)
+            if probe is None:
+                probe = torch.as_tensor(list(media_ids), dtype=ids.dtype)
             full = int(torch.isin(ids, probe).sum())
             kept = int(torch.isin(ids[:max_len], probe).sum())
-            if kept != full:
-                raise ValueError(
-                    f"collator truncation to model_max_length={max_len} would "
-                    f"drop {full - kept} media sentinel(s) from sample "
-                    f"{inst.get('id')!r} (length {int(ids.shape[0])}); the "
-                    "image/audio/query features would then splice into the wrong "
-                    "rows. Raise trainer.model_max_length / dataset length buckets "
-                    "so media placeholders survive truncation."
-                )
+            if kept == full:
+                continue
+            for key, tid in feature_tokens.items():
+                feats = inst.get(key)
+                if not feats:
+                    continue
+                # Prefix truncation keeps the LEADING sentinels, and feature
+                # lists are placeholder-ordered, so the first `surviving` entries
+                # are the ones still spliced. A modality whose sentinels are all
+                # truncated still contributes one entry (consumed zero-width), so
+                # keep at least one.
+                surviving = int((ids[:max_len] == tid).sum())
+                keep = max(surviving, 1)
+                if keep < len(feats):
+                    inst[key] = list(feats[:keep])
+            log.warning(
+                "collator: right-truncation to model_max_length=%d drops %d media "
+                "sentinel(s) from sample %r (length %d); realigned its media "
+                "features to the surviving sentinels to avoid a mis-splice. Raise "
+                "trainer.model_max_length / shrink dataset length buckets so media "
+                "placeholders survive truncation.",
+                max_len,
+                full - kept,
+                inst.get("id"),
+                int(ids.shape[0]),
+            )
 
     def pad_sequence(
         self, input_ids: torch.Tensor | list[torch.Tensor], batch_first: bool, padding_value: int
@@ -1624,7 +1656,7 @@ class DataCollatorForSupervisedDataset:
         return input_ids
 
     def __call__(self, instances: Sequence[dict]) -> dict[str, torch.Tensor]:
-        self._check_truncation_keeps_media(instances)  # (#12)
+        self._neutralize_truncated_media(instances)  # (#12)
         input_ids, labels = tuple(
             [instance[key] for instance in instances] for key in ("input_ids", "labels")
         )

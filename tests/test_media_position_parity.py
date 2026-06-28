@@ -86,7 +86,11 @@ def test_no_protected_tokens_matches_legacy_behavior():
 
 
 # ---------------------------------------------------------------------------
-# #12 collator: truncation past model_max_length must not drop a media sentinel.
+# #12 collator: truncation past model_max_length must not silently drop a media
+# sentinel. The guard is crash-loop-safe — it realigns the truncated sample's
+# media feature lists with the surviving sentinels rather than RAISING (a raise
+# inside energon's buffer-restore path, which has no skip handler, would
+# deterministically crash-loop on resume).
 # ---------------------------------------------------------------------------
 
 
@@ -107,14 +111,59 @@ def _instance(input_ids: list[int], idx: str = "s0") -> dict:
     return {"input_ids": t, "labels": t.clone(), "id": idx}
 
 
-def test_collator_raises_when_truncation_drops_sentinel():
-    # image sentinel sits at position 5, model_max_length=4 -> it is dropped.
+def _img_entry(size_tag: int) -> tuple:
+    """Minimal 3-tuple image feature entry (pixel_values, size, modality); the
+    size carries an identifier so a test can see which features survived."""
+    return (torch.zeros(1, 3, 2, 2), size_tag, "image")
+
+
+def test_collator_neutralizes_truncated_media_instead_of_raising():
+    # Two image sentinels; model_max_length=4 keeps only the first. The sample's
+    # second image feature is an orphan that would mis-splice -> the guard trims
+    # the feature list to the surviving sentinel and does NOT raise.
     collator = DataCollatorForSupervisedDataset(
-        tokenizer=_Tok(4), media_token_ids=[IMG_ID, AUD_ID]
+        tokenizer=_Tok(4),
+        media_token_ids=[IMG_ID, AUD_ID],
+        media_feature_token_ids={"image": IMG_ID, "audio": AUD_ID},
+    )
+    inst = _instance([1, IMG_ID, 2, 3, 4, IMG_ID, 5])
+    inst["image"] = [_img_entry(10), _img_entry(11)]
+    batch = collator([inst])  # no raise
+    assert batch["input_ids"].shape[1] == 4
+    assert batch["image_sizes"] == [10]  # orphaned 2nd image feature pruned
+
+
+def test_collator_keeps_one_dummy_when_all_sentinels_truncated():
+    # The single image sentinel sits past the cutoff -> 0 survive. The sample's
+    # one image feature is kept (consumed zero-width by the splice), not dropped.
+    collator = DataCollatorForSupervisedDataset(
+        tokenizer=_Tok(4),
+        media_token_ids=[IMG_ID],
+        media_feature_token_ids={"image": IMG_ID},
     )
     inst = _instance([1, 2, 3, 4, 5, IMG_ID, 6])
-    with pytest.raises(ValueError, match="media sentinel"):
-        collator([inst])
+    inst["image"] = [_img_entry(10)]
+    batch = collator([inst])  # no raise
+    assert batch["input_ids"].shape[1] == 4
+    assert batch["image_sizes"] == [10]  # the lone zero-width dummy survives
+
+
+def test_collator_realign_preserves_cross_sample_alignment():
+    # Sample A has two image sentinels, the second truncated away, so it must
+    # contribute exactly one image feature; sample B is untouched. Without the
+    # realignment A's orphaned 2nd feature would be spliced into B's sentinel.
+    collator = DataCollatorForSupervisedDataset(
+        tokenizer=_Tok(4),
+        media_token_ids=[IMG_ID],
+        media_feature_token_ids={"image": IMG_ID},
+    )
+    a = _instance([IMG_ID, 1, 2, 3, IMG_ID], idx="a")
+    a["image"] = [_img_entry(10), _img_entry(11)]
+    b = _instance([IMG_ID, 9], idx="b")
+    b["image"] = [_img_entry(20)]
+    batch = collator([a, b])
+    # A trimmed to its one surviving sentinel (size 10); B intact (size 20).
+    assert batch["image_sizes"] == [10, 20]
 
 
 def test_collator_ok_when_sentinel_survives_truncation():

@@ -702,6 +702,19 @@ def _media_token_ids(data_args: DataArguments) -> list[int]:
     return ids
 
 
+def _media_feature_token_ids(data_args: DataArguments) -> dict[str, int]:
+    """Map each collated media feature-list key to its sentinel id, for the
+    modalities the model splices 1:1 from a per-sample feature list (image
+    always; audio when enabled). The collator's truncation guard (#12) uses this
+    to realign a truncated sample's feature lists with the sentinels that
+    survive. BREEN <query> is omitted: it is a broadcast Parameter sized from
+    the post-truncation ids, so it carries no per-sample feature list to trim."""
+    tokens = {"image": data_args.image_token_index}
+    if getattr(data_args, "audio_enabled", False):
+        tokens["audio"] = data_args.audio_token_index
+    return tokens
+
+
 class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass]
     """Runs the full per-sample preprocessing in the DataLoader workers and
     collates with the SAME collator as the local-json path, so the loader
@@ -723,6 +736,7 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
             # Media-aware truncation guard (#12): a sentinel dropped past
             # model_max_length would leave its feature to mis-splice later rows.
             media_token_ids=_media_token_ids(data_args),
+            media_feature_token_ids=_media_feature_token_ids(data_args),
         )
 
     def _process_images(self, image_bytes: list[bytes]) -> list[tuple]:
@@ -1150,6 +1164,12 @@ def build_energon_train_loader(
             task_encoder=task_encoder,
             worker_config=worker_config,
             **savable_loader_kwargs,
+        )
+    if not dataset_config.folders:
+        raise ValueError(
+            "No dataset source configured for dataset.type='energon' — set "
+            "exactly one of dataset.wds_path (a prepared CrudeWebdataset with "
+            "in-tar images) or dataset.folders (the loose-file jsonl layout)."
         )
     _require_credentials()
     use_local_jsonl = dataset_config.use_local_jsonl

@@ -108,11 +108,61 @@ def test_cooker_text_only_no_images():
     assert out.image_bytes == []
 
 
+def test_cooker_two_pass_avoids_duplicate_byte_assignment():
+    # Mixed naming: item2 names field "a.jpg" by basename; item1's path matches
+    # no field. A single positional pass would hand "a.jpg" to item1 (fallback)
+    # AND to item2 (basename) -> [a, a], silently dropping b.jpg. Two-pass binds
+    # item2's explicit match first, so item1 falls back to the still-unused b.jpg.
+    img_a = _jpeg_bytes(color=(10, 10, 200))
+    img_b = _jpeg_bytes(color=(10, 200, 10))
+    rec = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "path": "unknown.jpg"},
+                    {"type": "image", "path": "a.jpg"},
+                ],
+            }
+        ]
+    }
+    sample = _crude_sample(rec, {"a.jpg": img_a, "b.jpg": img_b})
+    out = cook_mm_chat_wds(sample)
+    assert out.image_bytes == [img_b, img_a]  # item1->b.jpg, item2->a.jpg
+    assert len(set(out.image_bytes)) == 2  # each in-tar image used exactly once
+
+
+def test_cooker_fails_loud_on_audio_item():
+    # Prepared WDS carries no in-tar audio; an audio content item would emit an
+    # <audio> placeholder with no backing feature -> mis-splice. Fail loud.
+    rec = {
+        "messages": [
+            {"role": "user", "content": [{"type": "audio", "path": "a.wav"}]},
+            {"role": "assistant", "content": "ok"},
+        ]
+    }
+    with pytest.raises(ValueError, match="audio"):
+        cook_mm_chat_wds(_crude_sample(rec, {}))
+
+
 def test_resolve_wds_path():
     assert resolve_wds_path("msc://azure/data/x/y") == "msc://azure/data/x/y"
     # container-relative -> resolved through the MSC default profile/container
     assert resolve_wds_path("yiming/bee_stage2/train-wds").startswith("msc://")
     assert resolve_wds_path("yiming/bee_stage2/train-wds").endswith("yiming/bee_stage2/train-wds")
+
+
+def test_build_loader_errors_when_no_source_configured():
+    # type=energon but NEITHER dataset.wds_path NOR dataset.folders set -> a clear
+    # config error, not the opaque `for f in None` TypeError from the jsonl path.
+    from vlm.config import DatasetConfig
+    from vlm.data.energon_dataset import _streaming_import_error, build_energon_train_loader
+
+    if _streaming_import_error is not None:  # pragma: no cover - slim env
+        pytest.skip(f"streaming deps unavailable: {_streaming_import_error}")
+    ds = DatasetConfig(type="energon")  # neither wds_path nor folders
+    with pytest.raises(ValueError, match="No dataset source"):
+        build_energon_train_loader(ds, None, None, None)
 
 
 # ---------------------------------------------------------------------------

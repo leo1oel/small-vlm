@@ -65,7 +65,7 @@ def cook_mm_chat_wds(sample: dict) -> MMChatRawSample:
     instead of ``media_root.get(path)`` (which a prepared WDS has no metadataset
     aux for). Stateless (energon asserts cookers are stateless)."""
     rec = sample["json"]
-    if isinstance(rec, (bytes, bytearray)):
+    if isinstance(rec, bytes | bytearray):
         rec = json.loads(bytes(rec))
     elif isinstance(rec, str):
         rec = json.loads(rec)
@@ -75,38 +75,59 @@ def cook_mm_chat_wds(sample: dict) -> MMChatRawSample:
     media_fields = sorted(
         k for k in sample if isinstance(k, str) and k.lower().endswith(_IMG_EXTS)
     )
+    media_set = set(media_fields)
 
-    image_bytes: list[bytes] = []
-    used: set[str] = set()
-    fallback_i = 0
+    # Collect image items in placeholder order; fail loud on audio. A prepared
+    # WDS sample carries NO in-tar audio bytes, so an audio content item would
+    # still emit an <audio> placeholder downstream with no backing feature and
+    # silently mis-splice the batch — surface it instead of dropping it.
+    image_bases: list[str] = []
     for msg in rec.get("messages", ()):
         content = msg.get("content")
         if not isinstance(content, list):
             continue  # plain-string content => text-only message
         for item in content:
-            if not isinstance(item, dict) or item.get("type") != "image":
+            if not isinstance(item, dict):
                 continue
-            base = str(item.get("path", "")).split("/")[-1]
-            if base in sample:  # tar field == path basename (the common case)
-                image_bytes.append(sample[base])
-                used.add(base)
-                continue
-            # Positional fallback: assign the next unused in-tar image field, in
-            # order of appearance — robust to field-naming that doesn't match the
-            # json path basename (and to multi-image samples).
-            while fallback_i < len(media_fields) and media_fields[fallback_i] in used:
-                fallback_i += 1
-            if fallback_i < len(media_fields):
-                key = media_fields[fallback_i]
-                image_bytes.append(sample[key])
-                used.add(key)
-                fallback_i += 1
-            else:
+            itype = item.get("type")
+            if itype == "audio":
                 raise ValueError(
-                    f"WDS sample {sample.get('__key__')!r} declares an image item "
-                    f"({item.get('path')!r}) with no matching in-tar field "
-                    f"(available: {media_fields})"
+                    f"WDS sample {sample.get('__key__')!r} carries an 'audio' "
+                    "content item, but prepared-WebDataset audio is unsupported "
+                    "(no in-tar audio bytes) — it would emit an <audio> "
+                    "placeholder with no backing feature and mis-splice the "
+                    "batch. Use the jsonl-loose layout for audio data."
                 )
+            if itype == "image":
+                image_bases.append(str(item.get("path", "")).split("/")[-1])
+
+    # Two-pass field assignment: bind every explicit basename match FIRST
+    # (marking those fields used), then positional-fallback the still-unmatched
+    # items over the still-unused fields. A single pass can let a positional
+    # fallback consume a field that a later item names by basename, duplicating
+    # one image's bytes and dropping another in mixed-naming multi-image samples.
+    assigned: list[str | None] = [None] * len(image_bases)
+    used: set[str] = set()
+    for i, base in enumerate(image_bases):
+        if base in media_set and base not in used:  # tar field == path basename
+            assigned[i] = base
+            used.add(base)
+    fallback = [f for f in media_fields if f not in used]
+    fi = 0
+    for i, base in enumerate(image_bases):
+        if assigned[i] is not None:
+            continue
+        if fi >= len(fallback):
+            raise ValueError(
+                f"WDS sample {sample.get('__key__')!r} declares an image item "
+                f"({base!r}) with no matching in-tar field "
+                f"(available: {media_fields})"
+            )
+        assigned[i] = fallback[fi]
+        used.add(fallback[fi])
+        fi += 1
+
+    image_bytes: list[bytes] = [sample[f] for f in assigned]
 
     return MMChatRawSample(
         **basic_sample_keys(sample),
