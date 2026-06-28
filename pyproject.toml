@@ -274,6 +274,8 @@ ignore-words-list = "afile,ans,arange,ist,mot,nd,oce,strat,te"
 # `PN` of `PNGs`. Map each to itself so typos leaves them (and real identifiers) intact.
 # `arange` is `torch.arange`: typos reads it as plain text in templates/*.j2 (and would
 # "correct" it to `arrange`, breaking the exported model — see tests/test_inference.py).
+# `mis` is the prefix typos splits off `mis-splice`/`mis-trained`/`mis-assignment` in the
+# energon data-path comments.
 oce = "oce"
 Nd = "Nd"
 pn = "pn"
@@ -282,6 +284,7 @@ ist = "ist"
 consol = "consol"
 PN = "PN"
 arange = "arange"
+mis = "mis"
 
 [tool.pytest.ini_options]
 python_files = ["*.py"]
