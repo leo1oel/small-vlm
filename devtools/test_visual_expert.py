@@ -1,7 +1,7 @@
 """CPU unit test for the visual-FFN expert routing (spec 2026-06-14).
 
 Tests the custom code in modeling_vlm.py (install_visual_experts,
-init_visual_experts_from_text, _routed_mlp_forward) on a REAL tiny Qwen3Model —
+init_visual_experts_from_text, _routed_expert_forward) on a REAL tiny Qwen3Model —
 no download, no GPU. Validates: structure attach + param names, init-from-text
 copy, routing math (mask 0 / 1 / blend), gradient flow to the expert under an
 all-zero mask (DeepSpeed ZeRO uneven-participation guard), and that an

@@ -2,6 +2,8 @@ import logging
 from collections import defaultdict
 from typing import Any
 
+from vlm.models.modeling_vlm import is_visual_expert_param
+
 log = logging.getLogger(__name__)
 
 
@@ -159,17 +161,18 @@ def set_trainable_params(model: Any, config: dict[str, bool]):
         param.requires_grad = True
 
     # BREEN port (spec 2026-06-24): the learnable queries, the CLIP->LLM distill
-    # head (+ norm_layer), the per-layer visual FFN expert (mlp_visual) and its
-    # sigmoid gates are the fresh visual capacity every BREEN recipe trains —
-    # including a frozen-LLM S0 (train_language_model=false). Force them on so
-    # they never inherit the frozen LM flag (the build-item-8 silent-no-op trap).
-    # No-op when the modules are absent (baseline / non-BREEN runs).
+    # head (+ norm_layer), the per-layer visual experts (FFN mlp_visual, norm
+    # norm_visual, attention proj_visual) and their sigmoid gates are the fresh
+    # visual capacity every BREEN recipe trains — including a frozen-LLM S0
+    # (train_language_model=false). Force them on so they never inherit the frozen
+    # LM flag (the build-item-8 silent-no-op trap). No-op when the modules are
+    # absent (baseline / non-BREEN runs).
     for _, param in grouped_params.get("learnable_query", []):
         param.requires_grad = True
     for _, param in grouped_params.get("visual_distill_head", []):
         param.requires_grad = True
     for name, param in model.named_parameters():
-        if ".mlp_visual." in name or "expert_gate" in name:
+        if is_visual_expert_param(name):
             param.requires_grad = True
 
     # Adding image start/end tokens grows the input embedding (and, when untied,
@@ -194,33 +197,36 @@ def apply_delta_tuning(model: Any):
     starvation (see devtools/grad_probe.py + memory visual-pathway-diagnosis).
 
     Overrides requires_grad AFTER set_trainable_params: keeps ONLY the visual
-    pathway (connector + per-layer visual FFN expert `mlp_visual`) and the shared
+    pathway (connector + per-layer visual experts — FFN `mlp_visual`, norm
+    `norm_visual`, attention `proj_visual` — and their gates) and the shared
     self-attention trainable; FREEZES the pure-language params (text FFN
-    gate/up/down, token embeddings, lm_head, all norms). This is the end-to-end
-    equivalent of Mono-InternVL EViP's frozen-LLM concept stage: by freezing the
-    text FFN the language shortcut can't update, so gradient flows to the visual
-    pathway instead of starving it — without multi-stage training. Attention is
-    left trainable for vision-language alignment (Mono S1.3). visual_aux_head, if
-    present, stays trainable."""
+    gate/up/down, token embeddings, lm_head, all shared norms). This is the
+    end-to-end equivalent of Mono-InternVL EViP's frozen-LLM concept stage: by
+    freezing the text FFN the language shortcut can't update, so gradient flows to
+    the visual pathway instead of starving it — without multi-stage training.
+    Attention is left trainable for vision-language alignment (Mono S1.3).
+    visual_aux_head, if present, stays trainable."""
     import os as _os
 
-    # DELTA_TUNING=2: also freeze attention (Mono-InternVL S1.1/S1.2 — entire LLM
-    # frozen, only visual pathway trains). v1 (=1) left attention trainable, which
-    # is itself a language shortcut and failed to stop starvation (measured).
+    # DELTA_TUNING=2: also freeze the SHARED attention (Mono-InternVL S1.1/S1.2 —
+    # entire shared LLM frozen, only the visual pathway trains). v1 (=1) left
+    # attention trainable, which is itself a language shortcut and failed to stop
+    # starvation (measured). The visual attention expert (`proj_visual`) is part of
+    # the visual pathway and stays trainable in BOTH modes (is_visual_expert_param).
     freeze_attn = _os.environ.get("DELTA_TUNING") == "2"
     trainable = frozen = 0
     for name, p in model.named_parameters():
         keep = (
             "connector" in name
-            or ".mlp_visual." in name
+            # Visual experts (FFN/norm/attention) + their gates — the visual pathway.
+            or is_visual_expert_param(name)
             or "visual_aux_head" in name
             or "gen_x_head" in name
             or "gen_t_embed" in name
             or "gen_patch_embed" in name
-            # BREEN port: queries / distill head / expert gates are visual pathway.
+            # BREEN port: queries / distill head are visual pathway.
             or "learnable_query" in name
             or "visual_distill_head" in name
-            or "expert_gate" in name
             or (not freeze_attn and ".self_attn." in name)
         )
         p.requires_grad = keep

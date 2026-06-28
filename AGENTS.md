@@ -86,16 +86,19 @@ default, so encoder-based and native paths are bit-identical.
     data is single-image-per-sample with one query block (the dedup guarantees at
     most one) — so multi-image SFT is out of scope (its extra images stay
     undistilled and would desync the cursor; keep SFT single-image).
-- **Routing to the image expert** — the visual-expert mask is
+- **Routing to the visual experts** — the visual-expert mask is
     `(image_block_ids>=0) | (query_block_ids>=0)`, so image AND query tokens go
-    through `mlp.mlp_visual` (forward + generate prefill `_ve_gen_mask`).
+    through EVERY enabled visual sibling (forward + generate prefill `_ve_gen_mask`).
+    See "Visual experts" below — `mlp_visual` is one of three (FFN / norm / attention).
 - **Per-expert sigmoid gate** — `model.visual_expert.gate=true` adds
-    `expert_gate_text`/`expert_gate_visual` Linears (`F.sigmoid(gate(x))*expert(x)`);
+    `expert_gate_text`/`expert_gate_visual` Linears (`F.sigmoid(gate(x))*expert(x)`) to
+    EVERY enabled expert sublayer (FFN/norm/attention), sized to the sublayer's input
+    (`in_features` for a projection — o_proj differs from hidden — else hidden);
     `init_visual_expert_gates` inits them near-identity (zero weight, bias 4 →
     sigmoid(4)≈0.982) fresh-build only — near-identity, NOT a literal t=0 no-op: an
-    enabled gate attenuates the text FFN by ~1.8%/layer from step 0 (raise the bias
-    to ~6-8 for a closer-to-identity start). NOTE: `init_visual_experts_from_text` must
-    exclude `expert_gate*` keys when copying the text FFN into `mlp_visual`.
+    enabled gate attenuates each sublayer by ~1.8% from step 0 (raise the bias to
+    ~6-8 for a closer-to-identity start). NOTE: `init_visual_experts_from_text` must
+    exclude `expert_gate*` keys when copying the text weights into the sibling.
 - **breen distill method** (`models/visual_distill.py`, `method="breen"`) —
     the head carries a `norm_layer = LayerNorm(1024)+Linear(1024→hidden,bias=False)`
     that projects the **CLIP target UP to LLM-hidden** (faithful direction; cosine
@@ -110,23 +113,62 @@ default, so encoder-based and native paths are bit-identical.
     (`vlm.py`) → `VisualDistillTeacher`. The teacher is training-only and off the
     module tree (not in state_dict / not needed at inference).
 
+## Visual experts (FFN / norm / attention; EVEv2 divide-and-conquer)
+
+`model.visual_expert` carries THREE independently-toggleable per-decoder-layer
+modality-routed experts under one master `enabled` switch + shared
+`layers`/`init_from_text`/`gate` (`config/config_schema.py:VisualExpertConfig`,
+flattened in `vlm.py`, installed in `install_visual_experts`,
+`models/modeling_vlm.py`):
+
+- **`ffn`** (default True for back-compat: an `enabled:true` config with no
+    ffn/norm/attention keys = the historical FFN expert alone) → sibling
+    `mlp.mlp_visual` (Mono-InternVL).
+- **`norm`** → sibling RMSNorms `input_layernorm.norm_visual` /
+    `post_attention_layernorm.norm_visual` (EVEv2 modality norms).
+- **`attention`** → sibling projections `self_attn.{q,k,v,o}_proj.proj_visual`
+    (EVEv2 modality attention). Only the projection WEIGHTS split per token; RoPE,
+    `q_norm`/`k_norm`, the causal/cross-modal mask and the KV-cache are untouched
+    (decode tokens take the text path; cached image k/v keep their visual
+    projection), so the attention PATTERN is unchanged.
+
+All three share one mechanism. `_install_routed_sibling` attaches the sibling
+(`type(mlp)(config)` for the FFN, meta-safe `copy.deepcopy` for norm/projections),
+then overrides the sublayer's `forward` with `_routed_expert_forward`
+(`text*(1-mask)+visual*mask`, with the optional gate). `_set_visual_mask` stashes
+the (B,N,1) image+query mask on every routed sublayer (`_visual_routed_modules`).
+`init_visual_experts_from_text` copies the text weights into each sibling
+(fresh-build only — step-0 no-op modulo the gate). `_visual_expert_mlps` is kept
+as the FFN-only list (devtools/breen_smoke read it). The structural fields
+serialize into `config.json`, so reload + inference (incl. the hub-export
+`templates/modeling_vlm.py.j2`, regenerated via `python -m vlm.utils.export_template`)
+rebuild the same experts (train/infer parity). FLOPs ride `num_parameters` in
+`floating_point_ops` automatically. `is_visual_expert_param(name)` (modeling_vlm)
+is the single source of truth for "this param is a visual-expert sibling/gate",
+shared by `set_trainable.py` + `grad_probe.py`. Smoke config:
+`config/model/qwen3-0.6b-unified-experts.yaml` (all three on).
+
 ### Param-grouping trap (the most likely silent failure — DO NOT regress)
 
-The queries, `visual_distill_head` (incl. `norm_layer`), `mlp_visual`, and expert
-gates default into the **`language_model`** optimizer group. A frozen-LLM S0
-(`train_language_model:false`) would therefore freeze the very modules S0 must
-train. Two coupled fixes (`train/set_trainable.py` + `train/optimizer.py`):
+The queries, `visual_distill_head` (incl. `norm_layer`), the visual experts
+(`mlp_visual`/`norm_visual`/`proj_visual`) and their gates default into the
+**`language_model`** optimizer group. A frozen-LLM S0 (`train_language_model:false`)
+would therefore freeze the very modules S0 must train. Two coupled fixes
+(`train/set_trainable.py` + `train/optimizer.py`):
 
 1. `set_trainable_params` force-enables `learnable_query` / `visual_distill_head`
-    (dedicated prefix groups) and any `.mlp_visual.` / `expert_gate` param, always,
-    regardless of the LM freeze flag (the visual-aux/generation pattern).
-    `apply_delta_tuning`'s keep-list includes them too.
+    (dedicated prefix groups) and any `is_visual_expert_param` (`.mlp_visual.` /
+    `.norm_visual.` / `.proj_visual.` / `expert_gate`) param, always, regardless of
+    the LM freeze flag (the visual-aux/generation pattern). `apply_delta_tuning`'s
+    keep-list includes them too (the visual attention expert `proj_visual` stays
+    trainable even under `DELTA_TUNING=2`, which freezes the SHARED attention).
 1. **`configure_optimizers` SILENTLY DROPS any param group not in its
     `component_to_config` map** — so `learnable_query` and `visual_distill_head`
     are mapped there (→ `connector` lr/wd: BREEN's higher "proj" LR in S0;
     identical to the LM lr in the single-LR SFT configs, so no eve/repa
-    regression). `mlp_visual`/gates stay in the `language_model→model` bucket
-    (LM lr). Forgetting either fix = the module is trainable but never stepped.
+    regression). The visual experts (`mlp_visual`/`norm_visual`/`proj_visual`)
+    and gates stay in the `language_model→model` bucket (LM lr). Forgetting either
+    fix = the module is trainable but never stepped.
 
 ### Configs (S0 → S1 → S2 chain)
 
@@ -178,8 +220,8 @@ stay frozen.
     repa arms is bf16-stable, so the shared `compute_distill_loss` path is left
     bf16.)
 1. **`init_visual_experts_from_text` must exclude `expert_gate*` keys** when
-    copying the text FFN into `mlp_visual` (the gateless expert has no such keys
-    → load_state_dict raises on unexpected keys).
+    copying the text weights into the sibling (the gateless sibling has no such
+    keys → load_state_dict raises on unexpected keys).
 
 ## Energon train-loader layouts (`build_energon_train_loader`)
 

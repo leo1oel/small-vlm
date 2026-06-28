@@ -404,11 +404,17 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         config.visual_aux_objective = str(model_cfg.visual_aux.objective)
         config.visual_aux_head_depth = int(model_cfg.visual_aux.head_depth)
         config.visual_aux_head_hidden = int(model_cfg.visual_aux.head_hidden)
-        # Visual-FFN expert structural fields (spec 2026-06-14) must be on the
-        # config BEFORE construction — the inner __init__ attaches the per-layer
-        # experts from them. Plain types; they serialize into checkpoint
-        # config.json so reloads rebuild the structure (visual_aux pattern).
+        # Visual-expert structural fields (spec 2026-06-14) must be on the config
+        # BEFORE construction — the inner __init__ attaches the per-layer experts
+        # from them. Plain types; they serialize into checkpoint config.json so
+        # reloads rebuild the structure (visual_aux pattern). `visual_expert` is
+        # the master switch; ffn/norm/attention toggle the three EVEv2-style
+        # experts independently (ffn defaults True for back-compat with configs
+        # that only set `enabled`).
         config.visual_expert = bool(model_cfg.visual_expert.enabled)
+        config.visual_expert_ffn = bool(model_cfg.visual_expert.ffn)
+        config.visual_expert_norm = bool(model_cfg.visual_expert.norm)
+        config.visual_expert_attention = bool(model_cfg.visual_expert.attention)
         config.visual_expert_layers = (
             [int(x) for x in model_cfg.visual_expert.layers]
             if model_cfg.visual_expert.layers is not None
