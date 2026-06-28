@@ -36,12 +36,19 @@ default bit-identical off.
   `ALL_ATTENTION_FUNCTIONS` + mask-registry entry so non-4D decode keeps
   key-padding). Wiring: `install_xmodal_masks` + forward/generate hunks in
   `modeling_vlm.py`. Cross-modal edges only ever target prefix columns
-  (positions before the first supervised label; whole prompt at inference) —
-  answer keys are never exposed non-causally.
+  (positions before the first supervised answer label; whole prompt at
+  inference) — answer keys are never exposed non-causally.
+  The boundary search excludes chat-delimiter ids the conversation
+  preprocessor unmasks into the labels (`cross_modal_prefix_skip_ids`, computed
+  at load for the `qwen` and `llama_v3` templates) so a leading delimiter cannot
+  collapse the prefix to empty; `img2q_window` additionally drops BREEN
+  learnable-query rows (`query_block_ids`) from the question-text key set. See
+  AGENTS.md → *Cross-modal 4D mask correctness* for the full invariants.
 - Self-describing checkpoints: `image_position`, `cross_modal_mask_mode`,
-  `cross_modal_mask_window` serialize into `config.json`; `load_model`
-  auto-upgrades `sdpa → sdpa_xmodal` when the checkpoint says `img2q_window`
-  (because `_attn_implementation` itself never serializes).
+  `cross_modal_mask_window`, `cross_modal_prefix_skip_ids` serialize into
+  `config.json`; `load_model` auto-upgrades `sdpa → sdpa_xmodal` when the
+  checkpoint says `img2q_window` (because `_attn_implementation` itself never
+  serializes).
 
 ## Known v1 limits
 

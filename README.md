@@ -48,7 +48,14 @@ The VLM consists of three main components:
 DeepSpeed configs in trainer yamls are bare filenames (e.g. `zero3.json`) resolved
 against `src/vlm/config/deepspeed/` automatically. `train.slurm` targets the hyak
 `ckpt-all` partition with `--requeue`; training auto-resumes from the last checkpoint
-in `trainer.output_dir`.
+in `trainer.output_dir` that carries optimizer/scheduler state. Model-only
+`save_only_model` snapshots have none, so auto-resume skips them and falls back to the
+newest older full checkpoint to avoid a corrupt optimizer restart. If no full
+checkpoint exists, the action is backend-aware: plain DDP/single-process runs resume
+weights-only from the snapshot (optimizer/scheduler/RNG reset, loud warning), while
+DeepSpeed/FSDP runs skip auto-resume and train from the loaded base (their resume path
+cannot load a weights-only snapshot and would crash). Pass
+`trainer.resume_from_checkpoint` explicitly to override.
 
 ## Training
 

@@ -708,8 +708,14 @@ def preprocess_qwen(
             if isinstance(sys_text, str) and sys_text.strip():
                 sample_system = sys_text
             source = source[1:]
-        if source and roles.get(source[0]["from"], source[0]["from"]) != roles["human"]:
-            source = source[1:]
+        if source:
+            # Schema-agnostic: OpenAI-style turns use "role"/"content", llava
+            # uses "from"/"value". An unconditional source[0]["from"] here used
+            # to KeyError on the role/content schema (the leading system turn may
+            # already have been stripped above, so re-read the new first turn).
+            next_role = source[0].get("from") or source[0].get("role")
+            if roles.get(next_role, next_role) != roles["human"]:
+                source = source[1:]
 
         input_id, target = [], []
 

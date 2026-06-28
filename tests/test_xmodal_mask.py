@@ -311,3 +311,156 @@ def test_cross_modal_mask_validation():
         "img2q_window",
         [1, 28],
     )
+
+
+# ---------------------------------------------------------------------------
+# #6 — prefix detection robust to Qwen ChatML delimiter unmasking
+# ---------------------------------------------------------------------------
+
+IM_START = 151644  # Qwen <|im_start|>
+IM_END = 151645  # Qwen <|im_end|>
+
+
+def test_prefix_skip_ids_under_qwen_delimiter_unmasking():
+    """Qwen `preprocess_qwen` unmasks ChatML delimiters EVERYWHERE, so the
+    leading system <|im_start|> at position 0 becomes "supervised". Without
+    skip ids the prefix collapses to empty (the arm is a silent no-op);
+    `prefix_skip_ids` excludes delimiters so the boundary lands on the first
+    real answer token and the prompt (image + question) stays in the prefix.
+
+    layout (L=7): [imS(sys) | img | q | imE | imS(asst) | ans | imE]
+    """
+    attn = torch.ones(1, 7, dtype=torch.bool)
+    labels = torch.tensor([[IM_START, -100, -100, IM_END, IM_START, 42, IM_END]])
+    blocks = torch.tensor([[-1, 0, -1, -1, -1, -1, -1]])
+
+    # BUG reproduction: no skip ids -> first supervised label = pos 0 -> empty
+    # prefix -> mask identical to plain causal (the cross-modal edges vanish).
+    buggy = build_cross_modal_mask(attn, blocks, labels, mode="img2q_window")
+    assert torch.equal(buggy, build_base_mask(attn))
+    buggy_p = build_cross_modal_mask(attn, None, labels, mode="prefix_lm")
+    assert torch.equal(buggy_p, build_base_mask(attn))
+
+    # FIX: skip the delimiters -> first answer = pos 5 -> prefix = {0,1,2,3,4}.
+    skip = [IM_START, IM_END]
+    fixed = build_cross_modal_mask(attn, blocks, labels, mode="img2q_window", prefix_skip_ids=skip)
+    assert allowed(fixed, 1, 2)  # image row -> question key (non-causal edge)
+    assert allowed(fixed, 1, 0)  # image row -> system prefix key (prefix kept)
+    assert not allowed(fixed, 1, 5)  # answer content key still blocked
+
+    fixed_p = build_cross_modal_mask(attn, None, labels, mode="prefix_lm", prefix_skip_ids=skip)
+    assert allowed(fixed_p, 1, 2) and allowed(fixed_p, 2, 1)  # bidirectional img<->q
+    assert not allowed(fixed_p, 1, 5)  # answer not in the prefix
+
+
+# llama3 delimiters (preprocess_llama3 blanket-unmasks the SAME way qwen does)
+BOS = 128000  # <|begin_of_text|>
+START_HDR = 128006  # <|start_header_id|>
+END_HDR = 128007  # <|end_header_id|>
+EOT = 128009  # <|eot_id|>
+NL2 = 271  # "\n\n"
+
+
+def test_prefix_skip_ids_under_llama3_delimiter_unmasking():
+    """preprocess_llama3 unmasks <|begin_of_text|>/<|start_header_id|>/
+    <|end_header_id|>/<|eot_id|>/\\n\\n EVERYWHERE, so the leading
+    <|begin_of_text|> at position 0 becomes "supervised" exactly like the qwen
+    case. The llama3 skip set must exclude those delimiters or the cross-modal
+    arm collapses to plain causal.
+
+    layout (L=7): [bos(sys) | img | q | eot | hdr(asst) | ans | eot]
+    """
+    attn = torch.ones(1, 7, dtype=torch.bool)
+    labels = torch.tensor([[BOS, -100, -100, EOT, START_HDR, 42, EOT]])
+    blocks = torch.tensor([[-1, 0, -1, -1, -1, -1, -1]])
+
+    # BUG reproduction: no skip ids -> first supervised label = pos 0 -> empty
+    # prefix -> mask identical to plain causal.
+    buggy = build_cross_modal_mask(attn, blocks, labels, mode="img2q_window")
+    assert torch.equal(buggy, build_base_mask(attn))
+
+    skip = [BOS, START_HDR, END_HDR, EOT, NL2]
+    fixed = build_cross_modal_mask(attn, blocks, labels, mode="img2q_window", prefix_skip_ids=skip)
+    assert allowed(fixed, 1, 2)  # image row -> question key (non-causal edge)
+    assert allowed(fixed, 1, 0)  # image row -> system prefix key (prefix kept)
+    assert not allowed(fixed, 1, 5)  # answer content key still blocked
+
+    fixed_p = build_cross_modal_mask(attn, None, labels, mode="prefix_lm", prefix_skip_ids=skip)
+    assert allowed(fixed_p, 1, 2) and allowed(fixed_p, 2, 1)  # bidirectional img<->q
+    assert not allowed(fixed_p, 1, 5)  # answer not in the prefix
+
+
+def test_prefix_skip_ids_noop_for_clean_templates():
+    """With no delimiter pollution the first supervised label already IS the
+    first answer token, so passing skip ids changes nothing."""
+    no_skip = build_cross_modal_mask(ATTN, BLOCKS, LABELS, mode="img2q_window")
+    with_skip = build_cross_modal_mask(
+        ATTN, BLOCKS, LABELS, mode="img2q_window", prefix_skip_ids=[IM_START, IM_END]
+    )
+    assert torch.equal(no_skip, with_skip)
+
+
+def test_install_xmodal_masks_reads_config_prefix_skip_ids():
+    """install_xmodal_masks threads config.cross_modal_prefix_skip_ids into the
+    prefix computation, so the Qwen-delimiter collapse is fixed end to end."""
+    import types
+
+    from vlm.models import modeling_vlm
+
+    class Attn:
+        pass
+
+    class Layer:
+        def __init__(self):
+            self.self_attn = Attn()
+
+    attn = torch.ones(1, 6, dtype=torch.bool)
+    # [imS(sys) | img | q | imE | ans | imE]
+    labels = torch.tensor([[IM_START, -100, -100, IM_END, 7, IM_END]])
+
+    def _fake(skip_ids):
+        return types.SimpleNamespace(
+            config=types.SimpleNamespace(
+                cross_modal_mask_mode="prefix_lm",
+                cross_modal_mask_window=[1, 2],
+                ignore_index=-100,
+                cross_modal_prefix_skip_ids=skip_ids,
+            ),
+            model=types.SimpleNamespace(layers=[Layer(), Layer()]),
+        )
+
+    out = modeling_vlm.install_xmodal_masks(_fake([IM_START, IM_END]), attn, None, labels)
+    assert bool(out[0, 0, 0, 2])  # row 0 (system) sees question col 2: prefix kept
+    out2 = modeling_vlm.install_xmodal_masks(_fake(None), attn, None, labels)
+    assert not bool(out2[0, 0, 0, 2])  # without skip ids the prefix collapses
+
+
+# ---------------------------------------------------------------------------
+# #29 — img2q_window must not treat BREEN learnable-query rows as question text
+# ---------------------------------------------------------------------------
+
+
+def test_img2q_window_excludes_query_rows_from_question_keys():
+    """BREEN learnable-query rows live in the prefix and are not image, so the
+    plain `prefix & ~is_img` question-text set wrongly includes them. Passing
+    query_block_ids excludes those columns from the image->question edges.
+
+    layout (L=6): [img | q0 | q1 | query | ans | pad]
+      image_block:   0   -1   -1    -1     -1   -1
+      query_block:  -1   -1   -1     0     -1   -1
+    """
+    attn = torch.tensor([[1, 1, 1, 1, 1, 0]], dtype=torch.bool)
+    labels = torch.tensor([[-100, -100, -100, -100, 9, -100]])
+    image_block = torch.tensor([[0, -1, -1, -1, -1, -1]])
+    query_block = torch.tensor([[-1, -1, -1, 0, -1, -1]])
+
+    # Without query ids: image row -> the query column (pos 3) is wrongly added.
+    without = build_cross_modal_mask(attn, image_block, labels, mode="img2q_window")
+    assert allowed(without, 0, 3)  # the bug: image attends the learnable-query row
+
+    # With query ids: the query column is excluded; real question keys stay.
+    fixed = build_cross_modal_mask(
+        attn, image_block, labels, mode="img2q_window", query_block_ids=query_block
+    )
+    assert allowed(fixed, 0, 1) and allowed(fixed, 0, 2)  # real question text kept
+    assert not allowed(fixed, 0, 3)  # learnable-query row no longer a question key

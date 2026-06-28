@@ -230,3 +230,41 @@ Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
     unconditionally `from deepspeed import DeepSpeedEngine`, whose op-builder
     probes `nvcc` at import → `FileNotFoundError: .../bin/nvcc` at trainer
     construction without it.
+
+## Cross-modal 4D mask correctness (xmodal_mask.py / install_xmodal_masks)
+
+The `prefix_lm` / `img2q_window` arms derive a per-row prefix from the labels (`_prefix`): non-pad positions before the first supervised label.
+Two sharp edges make that boundary wrong unless explicitly corrected, and both degrade silently to "looks like plain causal" rather than crashing.
+
+- **Chat-delimiter unmasking collapses the prefix (THE cross-cutting trap).**
+    Some conversation preprocessors globally unmask their structural delimiters into the labels, *including* the leading delimiter at position 0: `preprocess_qwen` unmasks the ChatML delimiters (`<|im_start|>` / `<|im_end|>` / newline), and the llama3 template unmasks `<|begin_of_text|>` / `<|start_header_id|>` / `<|end_header_id|>` / `<|eot_id|>` / `\n\n`.
+    Naive "first supervised label" then lands at position 0, the prefix is empty, and the cross-modal edges vanish — the arm becomes a no-op you won't notice without inspecting the mask.
+    Fix: `_prefix`/`build_cross_modal_mask` take `prefix_skip_ids` (the delimiter token ids) and exclude them from the boundary search so it falls on the first real answer token.
+    `vlm.py` (`_cross_modal_prefix_skip_ids`) computes that skip set at load time for the `qwen` and `llama_v3` conversation templates — keyed off the ACTIVE template (resolved the same way the preprocess dispatch is, not the raw `version` string), since other templates (e.g. gemma) supervise answer tokens only — and stows it on `config.cross_modal_prefix_skip_ids`; `install_xmodal_masks` reads it.
+    Any new conversation template that unmasks structural tokens into the labels must extend this skip set, or its prefix will be wrong.
+
+- **BREEN learnable-query rows are not question text.**
+    `img2q_window`'s question-text key set is `prefix & ~is_img`, which would wrongly include the BREEN `<query>` rows (they sit in the prefix and are not image tokens).
+    `build_cross_modal_mask` takes `query_block_ids` (the 8th splice return, `>=0` at query rows) and excludes those columns; it is threaded through `forward` and `generate`.
+
+- **Generation must not leak mask state, and must not skip the install.**
+    `install_xmodal_masks` writes a per-layer `_xmodal_mask` plus one-shot `_xmodal_gen_mask` / `_ve_gen_mask`; `generate()` clears all three in a `finally` so nothing carries into the next call.
+    A direct `model.generate(images=...)` caller may omit `attention_mask`, and the install is gated on it being non-None — `generate()` materializes a default all-ones mask before the splice so the install still runs.
+
+## Self-describing config fields must be refreshed on `from_pretrained`
+
+Inference rebuilds prompts and masks from the saved `config.json`, so any field that records *how the model was trained* must agree with the actual training run on BOTH the fresh-build and reload paths.
+`vlm()` refreshes these from the composed config after load (beside `image_position`): `learnable_query_placement` (an S2 SFT can flip `after_image`→`after_text` while loading an S1 checkpoint whose config still says `after_image`), the `cross_modal_mask_*` dials, and `cross_modal_prefix_skip_ids`.
+A reload that keeps the stale checkpoint value makes inference silently disagree with training; add new branch-agnostic self-describing fields to this refresh block.
+
+## Load-time guards (fail loud, don't crash deep)
+
+- **Generation modules:** enabling generation training on a reloaded understanding-only checkpoint routes any `target_patches` batch into `forward_generation` against `None` gen modules; `require_generation_modules` (`vlm.py`) fails at load.
+- **Visual distillation is native/raw-patch only:** an encoder-backed model carries no per-patch `image_position_ids`, so `compute_distill_loss` indexes `None`; `load_model` rejects `visual_distill` on a model with a `vision_model`.
+
+## Misc correctness invariants
+
+- **`ignore_index` must be honored by the loss, not hard-coded.** The splice fills ignored/media labels with `self.config.ignore_index`, so BOTH loss paths (chunked CE and the HF `ForCausalLMLoss`) must drop that same value — a non-default `ignore_index` otherwise trains on padded/media positions.
+- **`floating_point_ops` sees two shapes of `image_position_ids`.** The understanding splice passes a list of `(N_i, 2)` tensors; generation batching stacks a single `(B, N, 2)` tensor — test `is not None` / non-empty, never truth-value. BREEN `<query>` sentinels each expand to `num_fine + num_coarse` rows in the count.
+- **Auto-resume prefers a checkpoint with optimizer state.** `save_only_model` (legacy pretrain) checkpoints carry no optimizer/scheduler state, so `_checkpoint_is_resumable` (`train.py`) treats them as non-resumable and `_resolve_auto_resume_checkpoint` falls back to the newest OLDER full checkpoint rather than silently restarting the optimizer while advancing the step counter. If no full checkpoint exists the action is backend-aware: plain DDP/single-process resumes WEIGHTS ONLY from the snapshot (optimizer/scheduler/RNG reset, loud warning) to preserve weight progress, while DeepSpeed/FSDP safe-skip auto-resume and train from the loaded base (their resume path needs a `global_step*/`/`optimizer_*/` engine-state dir the snapshot lacks and would otherwise crash with "Can't find a valid checkpoint"). Explicit `resume_from_checkpoint` still opts in.
+- **`use_start_end_tokens` unfreezes the embedding modules directly.** `group_params_by_prefix` never creates an `"embeddings"` group, so the old `grouped_params.get("embeddings", [])` was a silent no-op; the new image start/end rows must train even with a frozen LM trunk.
