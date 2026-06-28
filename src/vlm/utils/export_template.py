@@ -204,7 +204,16 @@ def _emit_class(
 # Module globals Python always provides plus the implicit ``__class__`` cell a
 # zero-arg ``super()`` introduces — never imported, never flagged as drift.
 _IMPLICIT_GLOBALS = frozenset(
-    {"__name__", "__file__", "__doc__", "__builtins__", "__spec__", "__loader__", "__package__", "__class__"}
+    {
+        "__name__",
+        "__file__",
+        "__doc__",
+        "__builtins__",
+        "__spec__",
+        "__loader__",
+        "__package__",
+        "__class__",
+    }
 )
 _PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}", flags=re.DOTALL)
 
@@ -274,9 +283,7 @@ def build_modeling_template(modeling_source: str | None = None) -> str:
     # Module-level helpers: every top-level function except the dynamic-class
     # factories. Emitted verbatim, in source order (dependency-respecting).
     helpers = [
-        n
-        for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name not in _FACTORY_FUNCS
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name not in _FACTORY_FUNCS
     ]
     module_helpers = {n.name for n in helpers}
     helper_text = "\n\n\n".join(_block_source(src_lines, n).rstrip() for n in helpers)
@@ -301,7 +308,19 @@ def build_modeling_template(modeling_source: str | None = None) -> str:
         init_replace={"pretrain_class(config)": "VLM(config)"},
     )
 
-    parts = [_HEADER.rstrip(), "", "", helper_text, "", "", vlm_class, "", "", causal_class, _FOOTER]
+    parts = [
+        _HEADER.rstrip(),
+        "",
+        "",
+        helper_text,
+        "",
+        "",
+        vlm_class,
+        "",
+        "",
+        causal_class,
+        _FOOTER,
+    ]
     text = "\n".join(parts).rstrip() + "\n"
     _assert_all_names_bound(text)
     return text

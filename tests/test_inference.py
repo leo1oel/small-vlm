@@ -611,22 +611,37 @@ def test_generate_response_do_sample_independent_of_temperature(
     # do_sample=True with temperature=0: sampling enabled, temperature unset
     # (temperature=0 + do_sample=True is the invalid combination we avoid).
     generate_response(
-        tiny_model, tiny_processor, query="hi", images=image, temperature=0.0,
-        do_sample=True, max_new_tokens=1,
+        tiny_model,
+        tiny_processor,
+        query="hi",
+        images=image,
+        temperature=0.0,
+        do_sample=True,
+        max_new_tokens=1,
     )
     assert captured["do_sample"] is True
     assert "temperature" not in captured
 
     # do_sample=False with temperature>0: forced greedy.
     generate_response(
-        tiny_model, tiny_processor, query="hi", images=image, temperature=0.7,
-        do_sample=False, max_new_tokens=1,
+        tiny_model,
+        tiny_processor,
+        query="hi",
+        images=image,
+        temperature=0.7,
+        do_sample=False,
+        max_new_tokens=1,
     )
     assert captured["do_sample"] is False
 
     # default (None): derived from temperature (greedy at 0).
     generate_response(
-        tiny_model, tiny_processor, query="hi", images=image, temperature=0.0, max_new_tokens=1,
+        tiny_model,
+        tiny_processor,
+        query="hi",
+        images=image,
+        temperature=0.0,
+        max_new_tokens=1,
     )
     assert captured["do_sample"] is False
 
@@ -640,9 +655,7 @@ def test_eval_model_forwards_image_aspect_ratio(monkeypatch: pytest.MonkeyPatch)
     captured: dict[str, Any] = {}
     fake_model = SimpleNamespace(config=SimpleNamespace(conversation_version="qwen_2_5"))
     monkeypatch.setattr(eval_mod, "load_model", lambda *a, **k: (fake_model, object(), {}))
-    monkeypatch.setattr(
-        eval_mod, "generate_response", lambda *a, **k: captured.update(k) or "ok"
-    )
+    monkeypatch.setattr(eval_mod, "generate_response", lambda *a, **k: captured.update(k) or "ok")
     eval_mod.eval_model("ckpt", query="hi", image_aspect_ratio="square")
     assert captured.get("image_aspect_ratio") == "square"
 
