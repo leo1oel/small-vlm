@@ -24,7 +24,7 @@ from typing import Any
 
 from tqdm import tqdm
 
-from .eval import generate_response, load_model, resolve_conv_mode
+from .eval import _data_args_from_config, generate_response, load_model, resolve_conv_mode
 
 log: logging.Logger = logging.getLogger(name=__name__)
 
@@ -92,6 +92,12 @@ class SmallVLM(lmms):
         self.conv_mode: str = resolve_conv_mode(
             model.config, pretrained=pretrained, conv_mode=conv_mode
         )
+        # Media placeholders must match what the checkpoint was trained with —
+        # read them from the model config instead of hardcoding <image>/<audio>,
+        # so checkpoints with custom media tokens splice correctly.
+        data_args = _data_args_from_config(model.config)
+        self._image_token = data_args.image_token
+        self._audio_token = data_args.audio_token
         self.image_aspect_ratio = image_aspect_ratio
         self._max_new_tokens = max_new_tokens
         log.info(
@@ -119,9 +125,9 @@ class SmallVLM(lmms):
                 if content.type == "text":
                     parts.append(content.text)
                 elif content.type == "image":
-                    parts.append("<image>")
+                    parts.append(self._image_token)
                 elif content.type == "audio":
-                    parts.append("<audio>")
+                    parts.append(self._audio_token)
         return "\n".join(parts), images, audios
 
     def generate_until(self, requests: list[Instance]) -> list[str]:
@@ -136,9 +142,12 @@ class SmallVLM(lmms):
             until = gen_kwargs.pop("until", None)
             if isinstance(until, str):
                 until = [until]
+            # Thread generation kwargs through explicitly; do_sample is honoured
+            # independently of temperature (generate_response derives it from
+            # temperature only when do_sample is None), so a task can request
+            # sampling at the model's default temperature.
+            do_sample = gen_kwargs.get("do_sample", None)
             temperature = float(gen_kwargs.get("temperature") or 0.0)
-            if not gen_kwargs.get("do_sample", temperature > 0):
-                temperature = 0.0
 
             text = generate_response(
                 self._model,
@@ -153,9 +162,16 @@ class SmallVLM(lmms):
                 max_new_tokens=int(gen_kwargs.get("max_new_tokens") or self._max_new_tokens),
                 stop_strings=list(until) if until else None,
                 image_aspect_ratio=self.image_aspect_ratio,
+                do_sample=None if do_sample is None else bool(do_sample),
             )
             results.append(text)
-            self.cache_hook.add_partial("generate_until", (ctx, gen_kwargs), text)
+            # Cache key must carry doc/media identity: two docs with identical
+            # context text but different images would otherwise collide on
+            # (ctx, gen_kwargs). Include (task, split, doc_id) so repeated text
+            # with different media is cached separately.
+            self.cache_hook.add_partial(
+                "generate_until", (ctx, gen_kwargs, task, split, doc_id), text
+            )
         return results
 
     def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:

@@ -353,8 +353,20 @@ def exported_pkg(tmp_path_factory: pytest.TempPathFactory):
     pkg_dir = pkg_root / "vlm_export_under_test"
     pkg_dir.mkdir()
     (pkg_dir / "__init__.py").write_text("")
-    shutil.copy(MODELS_DIR / "connectors.py", pkg_dir / "connectors.py")
-    shutil.copy(MODELS_DIR / "image_processing_raw.py", pkg_dir / "image_processing_raw.py")
+    # Sibling modules the rendered modeling_vlm.py imports (mirrors
+    # push_to_hub._copy_from_models). Without the gen_*/xmodal_mask/visual_distill
+    # modules the rendered file would not import.
+    for mod in (
+        "connectors.py",
+        "image_processing_raw.py",
+        "xmodal_mask.py",
+        "gen_diffusion.py",
+        "gen_image.py",
+        "gen_rope.py",
+        "visual_distill.py",
+        "gen_perceptual.py",
+    ):
+        shutil.copy(MODELS_DIR / mod, pkg_dir / mod)
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(TEMPLATES_DIR))
     modeling = env.get_template("modeling_vlm.py.j2").render(
@@ -436,3 +448,261 @@ def test_exported_config_roundtrip(exported_pkg: Any, tmp_path: Path):
     assert getattr(reloaded.vision_config, "hf_name", None) is None
     assert reloaded.connector_config.type == "raw_patch"
     assert reloaded.conversation_version == "qwen_2_5"
+
+
+# ---------------------------------------------------------------------------
+# export coverage for the live arms (#7): BREEN learnable queries, visual-FFN
+# experts, visual-prefix, text->image generation. A stale hand-maintained
+# template silently dropped these modules and exported broken models; these
+# pin the rendered artifact to the live model per arm.
+# ---------------------------------------------------------------------------
+
+_EXPORT_ARMS: dict[str, dict] = {
+    "visual_expert": {"visual_expert": True},
+    "visual_prefix": {
+        "visual_prefix": True,
+        "visual_prefix_depth": 2,
+        "visual_prefix_heads": 4,
+        "visual_prefix_intermediate": 64,
+    },
+    "generation": {"generation": True},
+    "breen": {
+        "learnable_query": True,
+        "visual_expert": True,
+        "query_token": "<query>",
+        "query_token_index": -202,
+        "query_placement": "after_image",
+        "learnable_query_num_fine": 5,
+        "learnable_query_num_coarse": 3,
+    },
+}
+
+
+def test_export_template_in_sync_with_live_model():
+    """#7 anti-drift: the committed template must equal a fresh generation from
+    the live modeling_vlm.py, so a model change that isn't re-exported fails CI
+    instead of silently shipping a broken hub artifact. Refresh with
+    `uv run python -m vlm.utils.export_template`."""
+    from vlm.utils.export_template import TEMPLATE_PATH, build_modeling_template
+
+    assert build_modeling_template() == TEMPLATE_PATH.read_text(), (
+        "templates/modeling_vlm.py.j2 is stale relative to "
+        "src/vlm/models/modeling_vlm.py — regenerate it with "
+        "`uv run python -m vlm.utils.export_template`."
+    )
+
+
+@pytest.mark.parametrize("arm", sorted(_EXPORT_ARMS))
+def test_exported_template_state_dict_parity(exported_pkg: Any, arm: str):
+    """#7: the exported model must build the SAME module set (state_dict keys)
+    as the live dynamic model for every arm, so checkpoints with experts /
+    visual-prefix / generation / learnable queries load with no dropped or
+    unexpected weights (a dropped module = a silently broken export)."""
+    kw = {**_tiny_vlm_config_kwargs(), **_EXPORT_ARMS[arm]}
+    live_cls, live_cfg_cls = get_dynamic_vlm(BASE_LM)
+    torch.manual_seed(0)
+    live = live_cls(live_cfg_cls(**kw))
+    torch.manual_seed(0)
+    exported = exported_pkg.VLMForCausalLM(exported_pkg.VLMConfig(**kw))
+    assert set(live.state_dict()) == set(exported.state_dict())
+
+
+@pytest.mark.parametrize("arm", ["visual_expert", "breen"])
+def test_exported_template_numerical_parity(exported_pkg: Any, arm: str):
+    """#7: with identical weights the exported model must produce bit-identical
+    logits to the live model — covering the routing-sensitive arms (visual-FFN
+    expert blending; BREEN <query> splice + expert routing)."""
+    kw = {**_tiny_vlm_config_kwargs(), **_EXPORT_ARMS[arm]}
+    live_cls, live_cfg_cls = get_dynamic_vlm(BASE_LM)
+    torch.manual_seed(0)
+    live = live_cls(live_cfg_cls(**kw)).eval()
+    exported = exported_pkg.VLMForCausalLM(exported_pkg.VLMConfig(**kw)).eval()
+    exported.load_state_dict(live.state_dict())
+
+    processor = RawImageProcessor(**VISION_DIALS)
+    out = processor.preprocess(PIL_Image.new("RGB", (20, 10), (7, 9, 11)))
+    is_breen = bool(_EXPORT_ARMS[arm].get("learnable_query"))
+    da = DataArguments(
+        audio_enabled=True,
+        learnable_query_enabled=is_breen,
+        query_token="<query>",
+        query_token_index=-202,
+    )
+    prompt = "<image>\n<query>\nhi" if is_breen else "<image>\nhi"
+    ids = tokenizer_multimodal_token(prompt, _TOKENIZER, da, return_tensors="pt").unsqueeze(0)
+    feats = dict(images=out["pixel_values"], image_position_ids=out["image_position_ids"])
+    with torch.inference_mode():
+        live_logits = live(input_ids=ids, attention_mask=torch.ones_like(ids), **feats).logits
+        exp_logits = exported(input_ids=ids, attention_mask=torch.ones_like(ids), **feats).logits
+    assert torch.equal(live_logits, exp_logits)
+
+
+# ---------------------------------------------------------------------------
+# prompt-construction regressions (#2 BREEN <query>, #9 image_position order)
+# ---------------------------------------------------------------------------
+
+
+def test_media_regex_mirrors_training_pattern():
+    """#2: inference _media_regex must equal training _media_pattern for both
+    plain and BREEN (the plain template extracts placeholders via this regex —
+    a divergence drops the injected <query> tokens)."""
+    from vlm.data.dataset import _media_pattern
+    from vlm.inference.eval import _media_regex
+
+    for learnable in (False, True):
+        da = DataArguments(learnable_query_enabled=learnable, query_token="<query>")
+        assert _media_regex(da) == _media_pattern(da)
+
+
+def test_plain_breen_prompt_keeps_query_placeholder():
+    """#2: BREEN + plain template must keep the injected <query> alongside
+    <image> (training preprocess_plain keeps both via _media_pattern). The
+    regression dropped <query>, producing a query-block-free prompt."""
+    da_breen = DataArguments(learnable_query_enabled=True, query_token="<query>")
+    assert build_prompt("plain", "<image>\n<query>\ncaption", da_breen) == "<image><query>"
+    # control: with BREEN off, a literal "<query>" is plain text and is dropped
+    da_plain = DataArguments(learnable_query_enabled=False)
+    assert build_prompt("plain", "<image>\n<query>\ncaption", da_plain) == "<image>"
+
+
+def test_image_position_applied_after_placeholder_insertion(
+    tiny_model: Any, tiny_processor: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """#9: training injects the missing <image> placeholder FIRST, then
+    repositions. A query with no placeholder + question_first must yield
+    'describe\\n<image>', not the bare-prepended '<image>\\ndescribe'."""
+    import vlm.inference.eval as eval_mod
+
+    captured: dict[str, str] = {}
+    orig_build_prompt = eval_mod.build_prompt
+
+    def spy(conv_mode: str, query: str, data_args: Any) -> str:
+        captured["query"] = query
+        return orig_build_prompt(conv_mode, query, data_args)
+
+    monkeypatch.setattr(eval_mod, "build_prompt", spy)
+    # image_position is read via getattr(..., "keep") and not set on the tiny
+    # config, so allow creating it (raising=False).
+    monkeypatch.setattr(tiny_model.config, "image_position", "question_first", raising=False)
+    image = PIL_Image.new("RGB", (20, 10), (1, 2, 3))
+    generate_response(tiny_model, tiny_processor, query="describe", images=image, max_new_tokens=1)
+    assert captured["query"] == "describe\n<image>"
+
+
+# ---------------------------------------------------------------------------
+# generation-kwargs threading (#23) and one-shot forwarding (#30)
+# ---------------------------------------------------------------------------
+
+
+def test_generate_response_do_sample_independent_of_temperature(
+    tiny_model: Any, tiny_processor: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """#23: do_sample is honoured independently of temperature."""
+    captured: dict[str, Any] = {}
+
+    def fake_generate(input_ids: Any, **kwargs: Any) -> Any:
+        captured.clear()
+        captured.update(kwargs)
+        return torch.zeros((1, 1), dtype=torch.long)
+
+    monkeypatch.setattr(tiny_model, "generate", fake_generate)
+    image = PIL_Image.new("RGB", (20, 10), (0, 0, 0))
+
+    # do_sample=True with temperature=0: sampling enabled, temperature unset
+    # (temperature=0 + do_sample=True is the invalid combination we avoid).
+    generate_response(
+        tiny_model,
+        tiny_processor,
+        query="hi",
+        images=image,
+        temperature=0.0,
+        do_sample=True,
+        max_new_tokens=1,
+    )
+    assert captured["do_sample"] is True
+    assert "temperature" not in captured
+
+    # do_sample=False with temperature>0: forced greedy.
+    generate_response(
+        tiny_model,
+        tiny_processor,
+        query="hi",
+        images=image,
+        temperature=0.7,
+        do_sample=False,
+        max_new_tokens=1,
+    )
+    assert captured["do_sample"] is False
+
+    # default (None): derived from temperature (greedy at 0).
+    generate_response(
+        tiny_model,
+        tiny_processor,
+        query="hi",
+        images=image,
+        temperature=0.0,
+        max_new_tokens=1,
+    )
+    assert captured["do_sample"] is False
+
+
+def test_eval_model_forwards_image_aspect_ratio(monkeypatch: pytest.MonkeyPatch):
+    """#30: eval_model exposes and forwards image_aspect_ratio."""
+    from types import SimpleNamespace
+
+    import vlm.inference.eval as eval_mod
+
+    captured: dict[str, Any] = {}
+    fake_model = SimpleNamespace(config=SimpleNamespace(conversation_version="qwen_2_5"))
+    monkeypatch.setattr(eval_mod, "load_model", lambda *a, **k: (fake_model, object(), {}))
+    monkeypatch.setattr(eval_mod, "generate_response", lambda *a, **k: captured.update(k) or "ok")
+    eval_mod.eval_model("ckpt", query="hi", image_aspect_ratio="square")
+    assert captured.get("image_aspect_ratio") == "square"
+
+
+# ---------------------------------------------------------------------------
+# lmms-eval adapter cache identity (#22)
+# ---------------------------------------------------------------------------
+
+
+def test_lmms_eval_cache_key_includes_doc_identity(monkeypatch: pytest.MonkeyPatch):
+    """#22: two docs with identical context text but different images/docs must
+    get distinct cache keys, so a repeated prompt with a different image does
+    not collide on a stale cached response."""
+    pytest.importorskip("lmms_eval")
+    from types import SimpleNamespace
+
+    from vlm.inference import lmms_eval as lm
+
+    keys: list[Any] = []
+
+    class FakeCache:
+        def add_partial(self, attr: str, key: Any, value: Any) -> None:
+            keys.append(key)
+
+    adapter = lm.SmallVLM.__new__(lm.SmallVLM)
+    adapter._model = object()
+    adapter.processor = object()
+    adapter.conv_mode = "qwen_2_5"
+    adapter.image_aspect_ratio = None
+    adapter._max_new_tokens = 4
+    adapter._image_token = "<image>"
+    adapter._audio_token = "<audio>"
+    adapter.rank = 0
+    adapter.cache_hook = FakeCache()
+    docs = {0: {"img": "A"}, 1: {"img": "B"}}
+    adapter.task_dict = {"task": {"val": docs}}
+
+    monkeypatch.setattr(lm, "ChatMessages", lambda messages: messages)
+    monkeypatch.setattr(lm, "generate_response", lambda *a, **k: "resp")
+    monkeypatch.setattr(
+        adapter, "_messages_to_query_and_media", lambda chat: ("same question", [chat], [])
+    )
+
+    requests = [
+        SimpleNamespace(args=("same question", lambda doc: doc, {}, doc_id, "task", "val"))
+        for doc_id in (0, 1)
+    ]
+    adapter.generate_until(requests)
+    assert keys[0] != keys[1]
+    assert keys[0][-1] == 0 and keys[1][-1] == 1  # doc_id distinguishes them

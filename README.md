@@ -166,7 +166,7 @@ This project provides a script to easily upload your trained models and processo
     # ... proceed with inference
     ```
 
-    The `push-to-hub` script automatically prepares the necessary configuration files (`modeling_vlm.py`, `processing_vlm.py`, `configuration_vlm.py`, `connectors.py`) and updates `config.json` and `processor_config.json` to enable this seamless loading.
+    The `push-to-hub` script automatically prepares the necessary remote-code files — the rendered `modeling_vlm.py` and `configuration_vlm.py`, the `processing_vlm.py`/`connectors.py`/`image_processing_raw.py` processors, and the sibling modules `modeling_vlm.py` imports (`xmodal_mask.py`, `gen_diffusion.py`, `gen_image.py`, `gen_rope.py`, `visual_distill.py`, `gen_perceptual.py`) — and updates `config.json`, `processor_config.json` (plus `preprocessor_config.json` for encoder-free checkpoints) to enable this seamless loading. `modeling_vlm.py` is generated from the live model by `vlm.utils.export_template`; see [AGENTS.md](AGENTS.md) for the regenerate workflow.
 
 ______________________________________________________________________
 

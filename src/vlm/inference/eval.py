@@ -68,9 +68,14 @@ QWEN_SYSTEM_MESSAGE = "You are a helpful assistant."
 def _media_regex(data_args: DataArguments) -> str:
     """Same pattern as vlm.data.dataset._media_pattern (kept in sync; the
     prompt-parity tests would catch a divergence)."""
-    return (
-        "(" + "|".join(re.escape(t) for t in (data_args.image_token, data_args.audio_token)) + ")"
-    )
+    tokens = [data_args.image_token, data_args.audio_token]
+    # BREEN port: "<query>" is a splice placeholder (the model expands it into
+    # the learnable query block), so the plain template must keep/extract it
+    # alongside the media tokens — mirrors _media_pattern's learnable_query
+    # gating. Without this the plain path drops the injected "<query>" tokens.
+    if getattr(data_args, "learnable_query_enabled", False):
+        tokens.append(data_args.query_token)
+    return "(" + "|".join(re.escape(t) for t in tokens) + ")"
 
 
 def _auto_detect_conv_mode(model_path: str) -> str:
@@ -452,6 +457,7 @@ def generate_response(
     max_new_tokens: int = 512,
     stop_strings: list[str] | None = None,
     image_aspect_ratio: str | None = None,
+    do_sample: bool | None = None,
 ) -> str:
     """Run one generation against a loaded model/processor pair.
 
@@ -470,6 +476,10 @@ def generate_response(
             recorded in the checkpoint config at training time (fallback
             "pad"). Multi-image calls force "pad", mirroring training. The
             encoder-free path ignores this.
+        do_sample: sampling switch. ``None`` (default) derives it from
+            ``temperature > 0`` (greedy when temperature is 0); pass ``True``/
+            ``False`` to control sampling independently of temperature (e.g.
+            sample at the model's default temperature, or force greedy).
 
     Returns:
         The decoded response text.
@@ -489,23 +499,29 @@ def generate_response(
             f"templates, got conv_mode={conv_mode!r}"
         )
 
-    # Self-describing checkpoints: rebuild the prompt with the SAME image
-    # layout the model was trained on (plan 2026-06-10). Only the single-image
-    # case is repositioned (mirrors apply_image_position's training-side guard);
-    # the seed mirrors the energon path (crc32 of the rendered query).
+    # Self-describing checkpoints: rebuild the prompt with the SAME image layout
+    # the model was trained on (plan 2026-06-10). Mirror the training order in
+    # energon encode_sample: inject missing media placeholders FIRST, then
+    # reposition, then inject <query>. Doing ensure_placeholders first matters
+    # so a checkpoint trained with image_position != "keep" repositions even
+    # when the caller relied on auto-injection (the query had no <image>). Only
+    # the single-image case is repositioned (mirrors apply_image_position's
+    # training-side guard); the seed mirrors the energon path (crc32 of the
+    # user-typed query, before injection, so the layout is stable whether or not
+    # the placeholder was supplied explicitly).
     image_token = str(getattr(model.config, "image_token", "<image>") or "<image>")
     image_position = str(getattr(model.config, "image_position", "keep") or "keep")
+    position_seed = zlib.crc32(query.encode())
+    query = ensure_placeholders(query, len(images), len(audios), data_args)
     if image_position != "keep" and query.count(image_token) == 1:
         _turns = [{"from": "human", "value": query}]
         apply_image_position(
             _turns,
             mode=image_position,
             image_token=image_token,
-            seed=zlib.crc32(query.encode()),
+            seed=position_seed,
         )
         query = _turns[0]["value"]
-
-    query = ensure_placeholders(query, len(images), len(audios), data_args)
     # BREEN port: emit one "<query>" per image at the trained placement, mirroring
     # the training data path so the splice inserts the learnable query block.
     if data_args.learnable_query_enabled and images:
@@ -543,17 +559,21 @@ def generate_response(
         base_eos = [base_eos] if isinstance(base_eos, int) else list(base_eos or [])
         eos_token_id = sorted(set(base_eos) | set(conv.stop_token_ids))
 
+    do_sample_effective = (temperature > 0) if do_sample is None else bool(do_sample)
     generate_kwargs: dict[str, Any] = dict(
         attention_mask=attention_mask,
         pad_token_id=tokenizer.pad_token_id,
-        do_sample=temperature > 0,
+        do_sample=do_sample_effective,
         num_beams=num_beams,
         max_new_tokens=max_new_tokens,
         use_cache=True,
         **gen_kwargs,
     )
-    if temperature > 0:
-        generate_kwargs["temperature"] = temperature
+    if do_sample_effective:
+        # temperature=0 with do_sample=True is invalid (division by zero); leave
+        # it unset so the model's generation_config default applies in that case.
+        if temperature > 0:
+            generate_kwargs["temperature"] = temperature
         generate_kwargs["top_p"] = top_p
     if stop_strings:
         generate_kwargs["stop_strings"] = stop_strings
@@ -582,13 +602,19 @@ def eval_model(
     top_p: float = 1.0,
     num_beams: int = 1,
     max_new_tokens: int = 512,
+    image_aspect_ratio: str | None = None,
     bf16: bool = True,
     fp16: bool = False,
     attn_implementation: str = "sdpa",
     device: str | torch.device | None = None,
 ) -> str:
     """One-shot convenience wrapper: load the checkpoint, run a single
-    generation, print and return the response."""
+    generation, print and return the response.
+
+    ``image_aspect_ratio`` (legacy encoder checkpoints only) is forwarded to
+    :func:`generate_response`; see its docstring. Defaults to the value recorded
+    in the checkpoint config; pass square/pad for checkpoints that predate the
+    recording. The encoder-free path ignores it."""
     model, processor, _config = load_model(
         pretrained, bf16=bf16, fp16=fp16, attn_implementation=attn_implementation, device=device
     )
@@ -610,6 +636,7 @@ def eval_model(
         top_p=top_p,
         num_beams=num_beams,
         max_new_tokens=max_new_tokens,
+        image_aspect_ratio=image_aspect_ratio,
     )
     print(outputs)
     return outputs
