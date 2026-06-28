@@ -1,0 +1,67 @@
+defaults:
+  - cfg
+  - model: qwen3-1.7b-unified
+  - trainer: finetune # unfreeze=LM+connector (vision tower stays frozen: n/a here)
+  - inference: default
+  - dataset: energon-honey-sft-wds
+  - override hydra/job_logging: rich
+  - _self_
+
+# ENCODER ABLATION — Group G2 (native encoder-free), STAGE 2.
+# Instruction SFT on Honey-Data-1M (~1M, multi-turn). Resumes from the G2 S1
+# caption checkpoint (VLM_S1_CKPT). Trains LM + connector (finetune unfreeze).
+# Qwen3 ChatML template (qwen_2_5). Visual experts OFF, BREEN OFF.
+
+model:
+  audio:
+    enabled: false
+
+trainer:
+  version: qwen_2_5 # Qwen3 ChatML multi-turn template (NOT v1/plain — see report)
+  from_pretrained: ${oc.env:VLM_S1_CKPT} # G2 Stage-1 checkpoint dir (REQUIRED)
+
+  # --- max-speed (identical to S1) ---
+  deepspeed: null
+  bf16: true
+  tf32: true
+  gradient_checkpointing: false
+  attn_implementation: flash_attention_2
+  optim: adamw_torch_fused
+  loss_chunk_size: 1024
+  torch_compile: false # graph-breaks + recompiles -> ~20x slower (report.md)
+  ddp_timeout: 7200
+  include_num_input_tokens_seen: non_padding # wandb logs total tokens seen
+  group_by_modality_length: false # energon streams (no map-style length grouping)
+
+  per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
+  gradient_accumulation_steps: 1
+
+  # 1e9 EFFECTIVE tokens (budget × steps × world). max_steps = 1e9 / (14000 × 6)
+  # = 11905 @ budget 14000 -> ~0.41M samples ≈ 0.38 epochs of Honey (1.072M) --
+  # UNDER 1 epoch (captain accepted: S2 stays at 1e9 effective, no full pass).
+  # budget=14000 (was 20000; 1.7B full-param OOMs there; 14000 peaks ~65GB and
+  # is faster than 10000). EQUAL-TOKEN fairness: CLIP-G1 uses IDENTICAL budget+steps.
+  max_steps: 11905
+  save_steps: 2500 # ~5 checkpoints
+  save_total_limit: null
+  save_only_model: false
+
+  learning_rate:
+    language_model_learning_rate: 6e-5
+    connector_learning_rate: 6e-5
+    visual_encoder_learning_rate: 6e-5 # no-op for encoder-free
+    default_lr: 6e-5
+
+  run_name: encabl-native-s2
+
+hydra:
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: INFO
+  run:
+    dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

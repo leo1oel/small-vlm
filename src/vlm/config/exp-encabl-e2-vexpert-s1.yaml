@@ -1,0 +1,20 @@
+defaults:
+  - exp-encabl-native-s1
+  - _self_
+
+# 10-EXP ablation — Exp 2 (+ visual expert), STAGE 1.
+# Base = exp-encabl-native-s1. The ONLY delta vs base is the FFN visual expert
+# (Mono-InternVL arXiv:2410.08202 / BREEN arXiv:2503.12446): each decoder layer
+# gets a sibling `mlp.mlp_visual` (fresh FFN init-copied from the text FFN);
+# image tokens route through it, text through the original FFN, blended by the
+# image mask. Experts live in the language_model LR group (force-trainable even
+# under the connector-only Stage-1 unfreeze: set_trainable.is_visual_expert_param).
+# Identical token budget / steps / seed / data stream as base -> comparable.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true # norm/attention stay at their dataclass defaults (false)
+
+trainer:
+  run_name: encabl-e2-vexpert-s1

@@ -1,0 +1,18 @@
+defaults:
+  - exp-encabl-native-s2
+  - _self_
+
+# 10-EXP ablation — Exp 3 (+ visual expert + visual norm), STAGE 2.
+# Base = exp-encabl-native-s2. Carries the FFN expert + EVEv2 modality-norm
+# expert through SFT (delta vs base = visual_expert.ffn + visual_expert.norm).
+# Both experts serialize into the checkpoint config.json -> rebuilt on the
+# from_pretrained S2 build. Pair VLM_S1_CKPT with the Exp-3 Stage-1 checkpoint.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true # attention stays at its dataclass default (false)
+
+trainer:
+  run_name: encabl-e3-vexpert-norm-s2

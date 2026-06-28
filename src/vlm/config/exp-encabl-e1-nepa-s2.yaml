@@ -1,0 +1,18 @@
+defaults:
+  - exp-encabl-native-s2
+  - _self_
+
+# 10-EXP ablation — Exp 1 (+ NePA), STAGE 2.
+# Base = exp-encabl-native-s2 (instruction SFT on energon-honey-sft-wds, LM +
+# connector unfreeze, qwen_2_5 ChatML template, 1e9 effective tokens @ budget
+# 14000 -> max_steps 11905, lr 6e-5, from_pretrained=${oc.env:VLM_S1_CKPT}).
+# Carries the NePA auxiliary loss through SFT (delta vs base = visual_aux). Pair
+# VLM_S1_CKPT with the Exp-1 Stage-1 checkpoint (exp-encabl-e1-nepa-s1).
+
+model:
+  visual_aux:
+    objective: nepa
+
+trainer:
+  visual_aux_weight: 0.5
+  run_name: encabl-e1-nepa-s2

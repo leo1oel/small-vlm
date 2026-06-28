@@ -44,10 +44,13 @@ shuffle_buffer_size: 2000
 # Samples past the last edge land in an overflow bucket and are clipped to
 # model.max_seq_length at the splice (modeling_vlm), not dropped.
 length_buckets: [512, 768, 1024, 1536, 2304, 4096]
-# ~constant effective tokens per micro-batch (bucket bs = budget // edge); the
-# SFT-proven 32000 (48G A40/L40S; recover the effective batch with
-# trainer.gradient_accumulation_steps) is the safe start — probe before raising.
-batch_token_budget: 32000
+# ~constant effective tokens per micro-batch (bucket bs = budget // edge).
+# EMPIRICAL (A100 80GB, grad-ckpt OFF, Qwen3-1.7B connector-only): 32000 OOMs
+# (peak >82GB); 24000 peaks ~64GB native / ~64GB CLIP -- ~18GB headroom for the
+# full run's rare long buckets; 28000 ~73GB. 24000 is the Stage-1 default, same
+# value for BOTH encoder groups -> equal tokens/step (wall-clock is set by the
+# effective-token target, not the budget, so 24000 ≈ 28000 in time).
+batch_token_budget: 24000
 max_samples_per_sequence: 100 # randomness vs. sequential-read efficiency
 # Azure fetch latency is fat-tailed; a high worker count amortizes stragglers.
 # The "PicklingError" is a phantom (data/datapipe-rootcause-m6: an energon
