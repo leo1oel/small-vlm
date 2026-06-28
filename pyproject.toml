@@ -211,6 +211,11 @@ reportExplicitAny = false
 reportImplicitStringConcatenation = false
 reportUnreachable = false
 reportPrivateImportUsage = false
+# basedpyright-only sibling of reportPrivateImportUsage: warns when a first-party
+# module re-imports a symbol that the source module does not list in __all__. The
+# data layer deliberately re-exports megatron-energon helpers through
+# vlm.data.energon_dataset, so silence the local variant the same way.
+reportPrivateLocalImportUsage = false
 reportOperatorIssue = false
 reportUnknownVariableType = false
 reportUnknownArgumentType = false
