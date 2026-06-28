@@ -206,19 +206,19 @@ The `prefix_lm` / `img2q_window` arms derive a per-row prefix from the labels (`
 Two sharp edges make that boundary wrong unless explicitly corrected, and both degrade silently to "looks like plain causal" rather than crashing.
 
 - **Chat-delimiter unmasking collapses the prefix (THE cross-cutting trap).**
-  Some conversation preprocessors globally unmask their structural delimiters into the labels, *including* the leading delimiter at position 0: `preprocess_qwen` unmasks the ChatML delimiters (`<|im_start|>` / `<|im_end|>` / newline), and the llama3 template unmasks `<|begin_of_text|>` / `<|start_header_id|>` / `<|end_header_id|>` / `<|eot_id|>` / `\n\n`.
-  Naive "first supervised label" then lands at position 0, the prefix is empty, and the cross-modal edges vanish — the arm becomes a no-op you won't notice without inspecting the mask.
-  Fix: `_prefix`/`build_cross_modal_mask` take `prefix_skip_ids` (the delimiter token ids) and exclude them from the boundary search so it falls on the first real answer token.
-  `vlm.py` (`_cross_modal_prefix_skip_ids`) computes that skip set at load time for the `qwen` and `llama_v3` conversation templates — keyed off the ACTIVE template (resolved the same way the preprocess dispatch is, not the raw `version` string), since other templates (e.g. gemma) supervise answer tokens only — and stows it on `config.cross_modal_prefix_skip_ids`; `install_xmodal_masks` reads it.
-  Any new conversation template that unmasks structural tokens into the labels must extend this skip set, or its prefix will be wrong.
+    Some conversation preprocessors globally unmask their structural delimiters into the labels, *including* the leading delimiter at position 0: `preprocess_qwen` unmasks the ChatML delimiters (`<|im_start|>` / `<|im_end|>` / newline), and the llama3 template unmasks `<|begin_of_text|>` / `<|start_header_id|>` / `<|end_header_id|>` / `<|eot_id|>` / `\n\n`.
+    Naive "first supervised label" then lands at position 0, the prefix is empty, and the cross-modal edges vanish — the arm becomes a no-op you won't notice without inspecting the mask.
+    Fix: `_prefix`/`build_cross_modal_mask` take `prefix_skip_ids` (the delimiter token ids) and exclude them from the boundary search so it falls on the first real answer token.
+    `vlm.py` (`_cross_modal_prefix_skip_ids`) computes that skip set at load time for the `qwen` and `llama_v3` conversation templates — keyed off the ACTIVE template (resolved the same way the preprocess dispatch is, not the raw `version` string), since other templates (e.g. gemma) supervise answer tokens only — and stows it on `config.cross_modal_prefix_skip_ids`; `install_xmodal_masks` reads it.
+    Any new conversation template that unmasks structural tokens into the labels must extend this skip set, or its prefix will be wrong.
 
 - **BREEN learnable-query rows are not question text.**
-  `img2q_window`'s question-text key set is `prefix & ~is_img`, which would wrongly include the BREEN `<query>` rows (they sit in the prefix and are not image tokens).
-  `build_cross_modal_mask` takes `query_block_ids` (the 8th splice return, `>=0` at query rows) and excludes those columns; it is threaded through `forward` and `generate`.
+    `img2q_window`'s question-text key set is `prefix & ~is_img`, which would wrongly include the BREEN `<query>` rows (they sit in the prefix and are not image tokens).
+    `build_cross_modal_mask` takes `query_block_ids` (the 8th splice return, `>=0` at query rows) and excludes those columns; it is threaded through `forward` and `generate`.
 
 - **Generation must not leak mask state, and must not skip the install.**
-  `install_xmodal_masks` writes a per-layer `_xmodal_mask` plus one-shot `_xmodal_gen_mask` / `_ve_gen_mask`; `generate()` clears all three in a `finally` so nothing carries into the next call.
-  A direct `model.generate(images=...)` caller may omit `attention_mask`, and the install is gated on it being non-None — `generate()` materializes a default all-ones mask before the splice so the install still runs.
+    `install_xmodal_masks` writes a per-layer `_xmodal_mask` plus one-shot `_xmodal_gen_mask` / `_ve_gen_mask`; `generate()` clears all three in a `finally` so nothing carries into the next call.
+    A direct `model.generate(images=...)` caller may omit `attention_mask`, and the install is gated on it being non-None — `generate()` materializes a default all-ones mask before the splice so the install still runs.
 
 ## Self-describing config fields must be refreshed on `from_pretrained`
 
