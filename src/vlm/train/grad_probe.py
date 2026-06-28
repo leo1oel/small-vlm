@@ -8,8 +8,9 @@ LANGUAGE pathway. If the visual RMS collapses relative to language early in
 training (and loss saturates ~step 500), the visual gradient is being starved.
 
 Pathway split by parameter name:
-  visual   = '.mlp_visual.' (per-layer visual FFN expert) or 'connector'
-             (raw-patch projection / patch embedding)
+  visual   = a per-layer visual expert sibling/gate ('.mlp_visual.' / '.norm_visual.'
+             / '.proj_visual.' / 'expert_gate') or 'connector' (raw-patch
+             projection / patch embedding)
   language = everything else (text FFN gate/up/down, self_attn, embed, norm, lm_head)
 
 RMS (sqrt(sum_sq / numel)) is used, not raw norm, so the comparison is fair
@@ -23,14 +24,16 @@ import math
 
 from transformers import TrainerCallback
 
+from vlm.models.modeling_vlm import is_visual_expert_param
+
 
 def _group(name: str) -> str:
     """connector = raw-patch projection (RANDOM init — most exposed to
-    starvation); vexpert = per-layer visual FFN (init from text FFN); language =
-    rest of the LLM backbone."""
+    starvation); vexpert = per-layer visual expert siblings/gates (FFN/norm/
+    attention, init from text); language = rest of the LLM backbone."""
     if "connector" in name:
         return "connector"
-    if ".mlp_visual." in name:
+    if is_visual_expert_param(name):
         return "vexpert"
     return "language"
 

@@ -127,27 +127,52 @@ class VisualAuxConfig:
 
 @dataclass
 class VisualExpertConfig:
-    """Per-decoder-layer modality-routed visual FFN expert (Mono-InternVL
-    arXiv:2410.08202 / BREEN arXiv:2503.12446 style; spec:
+    """Per-decoder-layer modality-routed visual experts (EVEv2 "divide-and-conquer"
+    / Mono-InternVL arXiv:2410.08202 / BREEN arXiv:2503.12446 style; spec:
     docs/superpowers/specs/2026-06-14-native-vlm-capacity-readiness-design.md).
-    Structural — it attaches a sibling `mlp.mlp_visual` to each selected decoder
-    layer and routes the FFN by the per-token image mask, so it lives on the
-    model config and serializes into checkpoint config.json (visual_aux pattern).
-    enabled=False = bit-identical baseline (no module attached, no routing)."""
+    Image (and BREEN <query>) tokens flow through vision-specific copies of the
+    selected transformer sublayers, while text tokens use the shared ones, routed
+    per-token by the same image+query mask. Three independently-toggleable experts
+    share one routing / `layers` / `init_from_text` / `gate` mechanism:
+      - ffn:       sibling `mlp.mlp_visual` per layer (Mono-InternVL FFN expert).
+      - norm:      sibling RMSNorms `input_layernorm.norm_visual` /
+                   `post_attention_layernorm.norm_visual` (EVEv2 modality norms).
+      - attention: sibling q/k/v/o projections
+                   `self_attn.{q,k,v,o}_proj.proj_visual` (EVEv2 modality
+                   attention) — only the projection WEIGHTS are split per-token;
+                   RoPE, q_norm/k_norm, the causal / cross-modal mask and the
+                   KV-cache are untouched, so the attention pattern is unchanged.
+    Structural — the modules attach at build time and serialize into checkpoint
+    config.json (visual_aux pattern), so inference rebuilds the same experts
+    (train/infer parity). enabled=False = bit-identical baseline (nothing
+    attached, no routing); with enabled=True each expert is on/off independently."""
 
-    # Attach the per-layer visual FFN expert and route image tokens through it.
+    # Master switch. False = bit-identical baseline (no experts, no routing).
+    # Back-compat: this was the FFN-expert toggle and `ffn` defaults True, so an
+    # existing `enabled: true` config (no ffn/norm/attention keys) still builds
+    # exactly the FFN expert and nothing else.
     enabled: bool = False
-    # null = every decoder layer; else explicit 0-based layer indices.
+    # FFN expert (Mono-InternVL): sibling `mlp.mlp_visual` per selected layer.
+    ffn: bool = True
+    # Norm expert (EVEv2): sibling input/post-attention RMSNorms per selected layer.
+    norm: bool = False
+    # Attention expert (EVEv2): sibling q/k/v/o projections per selected layer.
+    attention: bool = False
+    # null = every decoder layer; else explicit 0-based layer indices. Shared by
+    # all enabled experts.
     layers: list[int] | None = None
-    # Fresh-build only: initialize each visual FFN by copying the text FFN's
-    # weights (so training starts from an identical, then diverging, FFN).
+    # Fresh-build only: initialize each visual sibling by copying the matching
+    # text weights (so training starts identical, then diverges). Shared by all
+    # enabled experts; makes enabling an expert on a pretrained ckpt a step-0 no-op
+    # (modulo the gate below).
     init_from_text: bool = True
     # Per-expert sigmoid gate (BREEN arXiv:2503.12446: F.sigmoid(gate(x))*expert(x)
-    # on both the text and image FFN). A localized fidelity upgrade over the hard
-    # 0/1 mask; each gate is a Linear(hidden, 1) initialized near-identity (zero
-    # weight, bias 4 -> sigmoid(4)≈0.982) — close to identity but NOT a literal
-    # t=0 no-op: it attenuates each FFN by ~1.8%/layer from step 0. False =
-    # bit-identical to the hard-mask routing.
+    # on both the text and visual paths). A localized fidelity upgrade over the
+    # hard 0/1 mask, applied UNIFORMLY to every enabled expert (FFN/norm/attention):
+    # each routed sublayer gets its own Linear(in_dim, 1) gate pair initialized
+    # near-identity (zero weight, bias 4 -> sigmoid(4)≈0.982) — close to identity
+    # but NOT a literal t=0 no-op: it attenuates each sublayer by ~1.8% from step 0.
+    # False = bit-identical to the hard-mask routing.
     gate: bool = False
 
 

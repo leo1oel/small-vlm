@@ -1,0 +1,44 @@
+defaults:
+  - _self_
+
+# Encoder-free unified model (small Qwen3-0.6B backbone, like qwen3-0.6b-unified)
+# with ALL THREE per-layer modality-routed visual experts ON (EVEv2
+# "divide-and-conquer" / Mono-InternVL arXiv:2410.08202 / BREEN arXiv:2503.12446;
+# spec 2026-06-14). For local smoke tests and the captain's expert-combination
+# sweep — image (and BREEN <query>) tokens flow through vision-specific copies of
+# each decoder layer's FFN, input/post-attention norms, and q/k/v/o projections;
+# text tokens use the shared ones, routed per token. Toggle any subset by flipping
+# ffn / norm / attention below (the three are independent; enabled=false = the
+# bit-identical baseline). Combine with learnable_query + visual_distill for the
+# full BREEN recipe (see qwen3-1.7b-unified-breen.yaml).
+
+language_model:
+  hf_name: Qwen/Qwen3-0.6B
+  max_seq_length: 4096
+
+visual_encoder:
+  hf_name: null # encoder-free: no vision tower; raw patches -> connector
+  patch_size: 16 # teacher patch, px
+  pooling_kernel_size: 3 # model patch = 16*3 = 48px (gemma4 geometry)
+  max_soft_tokens: 280 # per-image token budget (any positive int)
+  # image_mean / image_std: null -> rescale-only, like gemma4
+
+connector:
+  name: raw_patch
+  type: raw_patch
+  # mm_embed_dim: null -> defaults to the LM hidden size
+  # mm_posemb_size: null -> auto-filled with max_soft_tokens by load_model
+
+audio:
+  enabled: false # vision-only experts demo
+
+visual_expert:
+  enabled: true # master switch (false = bit-identical baseline)
+  ffn: true # Mono-InternVL FFN expert (mlp.mlp_visual)
+  norm: true # EVEv2 modality norms (input/post-attention layernorm)
+  attention: true # EVEv2 modality attention (q/k/v/o projections)
+  gate: true # BREEN per-expert sigmoid gate (near-identity init), all three
+  layers: null # every decoder layer
+  init_from_text: true # start each visual sibling identical to its text weights
+
+name: qwen3-0.6b-unified-experts

@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 from pathlib import Path
@@ -318,98 +319,189 @@ def install_xmodal_masks(
     return base
 
 
-def _routed_mlp_forward(self: Any, hidden_states: Tensor) -> Tensor:
-    """Instance-level FFN forward for a decoder layer carrying a visual expert
-    (Mono-InternVL arXiv:2410.08202 / BREEN). Routes each token through the
-    text FFN (`_text_mlp_cls_forward`, the original unbound class forward) or
-    the visual FFN (`mlp_visual`), blended by the per-token image mask stashed
-    on the module by the causal forward. Training always runs BOTH experts (the
-    mask is all-zero for text-only batches) so the visual FFN keeps a gradient
-    every step — required so DeepSpeed ZeRO does not assert on uneven param
-    participation across ranks; with no mask set (cached decode / eval text-only)
-    only the text FFN runs. The mask is a non-grad (B, N, 1) tensor that persists
-    on the module across the forward+backward of a step, so gradient-checkpoint
-    recompute reproduces the same routing."""
-    text_out = self._text_mlp_cls_forward(self, hidden_states)
-    gated = getattr(self, "_expert_gate", False)
+def is_visual_expert_param(name: str) -> bool:
+    """True iff a parameter name belongs to a visual-expert sibling or its gate
+    (FFN `mlp_visual` / norm `norm_visual` / attention `proj_visual`, plus the
+    per-expert sigmoid gates `expert_gate_*`). Single source of truth shared by
+    train/set_trainable.py + train/grad_probe.py so the three experts get
+    identical trainability / probe treatment. The sibling markers carry
+    surrounding dots so they match the `<dotted-parent>.<sibling>.<weight>`
+    parameter path and never a prefix like `visual_aux`/`visual_distill`;
+    `expert_gate` matches the gate Linears. (Markers are inlined, not a module
+    constant, so the static hub-export mirror copies this helper self-contained.)"""
+    markers = (".mlp_visual.", ".norm_visual.", ".proj_visual.", "expert_gate")
+    return any(m in name for m in markers)
+
+
+def _routed_expert_forward(self: Any, hidden_states: Tensor) -> Tensor:
+    """Instance-level forward for a sublayer carrying a vision-specific sibling
+    (EVEv2 / Mono-InternVL arXiv:2410.08202 / BREEN). Routes each token through
+    the shared (text) computation (`_text_cls_forward`, the original unbound class
+    forward) or its visual sibling (`_visual_sibling_attr`), blended by the
+    per-token image mask stashed on the module by the causal forward, with an
+    optional BREEN per-expert sigmoid gate (F.sigmoid(gate(x)) * out) on each
+    path. Used identically by all three experts — FFN (`mlp`), norm
+    (`input_layernorm`/`post_attention_layernorm`) and attention (`{q,k,v,o}_proj`)
+    — because each is token-wise, so the (B, N, 1) mask broadcasts over every
+    output dim. Training always runs BOTH paths (the mask is all-zero for
+    text-only batches) so the visual sibling keeps a gradient every step —
+    required so DeepSpeed ZeRO does not assert on uneven param participation
+    across ranks; with no mask set (cached decode / eval text-only) only the
+    shared path runs (bit-identical to baseline when ungated). The mask is a
+    non-grad (B, N, 1) tensor that persists on the module across the
+    forward+backward of a step, so gradient-checkpoint recompute reproduces the
+    same routing."""
+    text_out = self._text_cls_forward(self, hidden_states)
+    gated = self._expert_gate
     if gated:
-        # BREEN per-expert sigmoid gate: F.sigmoid(gate(x)) * expert(x). Applied
-        # to the text FFN for every token; the visual FFN gate is applied below.
+        # BREEN per-expert sigmoid gate on the shared (text) path; the visual
+        # path is gated below with its own gate.
         text_out = torch.sigmoid(self.expert_gate_text(hidden_states)) * text_out
     mask = self._visual_mask
     if mask is None:
         return text_out
-    visual_out = self.mlp_visual(hidden_states)
+    visual_out = getattr(self, self._visual_sibling_attr)(hidden_states)
     if gated:
         visual_out = torch.sigmoid(self.expert_gate_visual(hidden_states)) * visual_out
     return text_out * (1.0 - mask) + visual_out * mask
 
 
+def _install_routed_sibling(
+    module: nn.Module, sibling_attr: str, sibling: nn.Module, config: Any
+) -> None:
+    """Attach `sibling` (a same-class, same-shape vision copy supplied by the
+    caller) under `module.<sibling_attr>`, build the optional BREEN sigmoid gate
+    pair, and override `module.forward` to route per token (see
+    _routed_expert_forward). The shared (text) weights keep their original
+    parameter names so the HF backbone and any checkpoint still load unchanged;
+    the sibling (and gates) are new keys that the checkpoint carries on reload and
+    `_init_weights` materializes on a fresh build (visual_aux pattern). Caller
+    guards idempotency via `_visual_expert_installed`."""
+    setattr(module, sibling_attr, sibling)
+    module._visual_mask = None
+    module._visual_sibling_attr = sibling_attr
+    # Per-expert sigmoid gate (BREEN, optional). Built on BOTH paths so checkpoint
+    # shards have a module to load into; near-identity init is a fresh-build-only
+    # step (init_visual_expert_gates). The gate consumes the module's INPUT, whose
+    # width is `in_features` for a projection (o_proj differs from hidden_size) and
+    # hidden_size for the FFN / norm.
+    if bool(getattr(config, "visual_expert_gate", False)):
+        gate_in = module.in_features if isinstance(module, nn.Linear) else int(config.hidden_size)
+        module.expert_gate_text = nn.Linear(gate_in, 1)
+        module.expert_gate_visual = nn.Linear(gate_in, 1)
+        module._expert_gate = True
+    else:
+        module._expert_gate = False
+    # The ORIGINAL (text) computation as the unbound class forward: calling it on
+    # `self` runs only the shared weights and never recurses into the sibling or
+    # this override.
+    module._text_cls_forward = type(module).forward
+    module.forward = _routed_expert_forward.__get__(module, type(module))
+    module._visual_expert_installed = True
+
+
+def _visual_expert_layer_idxs(model: Any, config: Any) -> list[int]:
+    """0-based decoder-layer indices the experts attach to: `visual_expert_layers`
+    if set (clamped to range), else every layer."""
+    layers_cfg = getattr(config, "visual_expert_layers", None)
+    n = len(model.layers)
+    return list(range(n)) if not layers_cfg else [int(i) for i in layers_cfg if 0 <= int(i) < n]
+
+
 def install_visual_experts(model: Any, config: Any) -> None:
-    """Attach a per-decoder-layer modality-routed visual FFN expert to a built
-    LM backbone (spec 2026-06-14). The original `layer.mlp` keeps its parameter
-    names (so the HF backbone and any checkpoint still load unchanged); we add a
-    sibling `layer.mlp.mlp_visual` (a fresh same-class FFN) and override that
-    mlp's forward to route by modality. Called from __init__ on BOTH the
-    fresh-build and checkpoint-reload paths so the structure exists when weights
-    land; the text->visual weight copy is a separate fresh-build-only step
+    """Attach the per-decoder-layer modality-routed visual experts (spec
+    2026-06-14) to a built LM backbone: any combination of the FFN expert
+    (Mono-InternVL `mlp.mlp_visual`), the norm expert (EVEv2 modality-specific
+    `input_layernorm`/`post_attention_layernorm`) and the attention expert (EVEv2
+    modality-specific `{q,k,v,o}_proj`), each routed per token by the image+query
+    mask, with the optional shared BREEN sigmoid gate. Independently toggled by
+    config.visual_expert_{ffn,norm,attention} under the master config.visual_expert;
+    `visual_expert_layers` selects the layers. The original sublayers keep their
+    parameter names (HF backbone / checkpoint still load unchanged); the visual
+    copies are siblings. Called from __init__ on BOTH the fresh-build and
+    checkpoint-reload paths so the structure exists when weights land; the
+    text->visual weight copy is a separate fresh-build-only step
     (init_visual_experts_from_text). Idempotent."""
     if not getattr(config, "visual_expert", False):
         return
-    layers_cfg = getattr(config, "visual_expert_layers", None)
+    # Back-compat: checkpoints predating the ffn/norm/attention split carry only
+    # `visual_expert` (= the old FFN toggle); default ffn True there so they
+    # rebuild exactly the FFN expert. norm/attention default off (baseline).
+    want_ffn = bool(getattr(config, "visual_expert_ffn", True))
+    want_norm = bool(getattr(config, "visual_expert_norm", False))
+    want_attn = bool(getattr(config, "visual_expert_attention", False))
+    idxs = _visual_expert_layer_idxs(model, config)
     n = len(model.layers)
-    idxs = list(range(n)) if not layers_cfg else [int(i) for i in layers_cfg if 0 <= int(i) < n]
+    ffn_mlps: list[nn.Module] = []
     routed: list[nn.Module] = []
+    n_norm = n_attn = 0
     for i in idxs:
-        mlp = model.layers[i].mlp
-        if getattr(mlp, "_visual_expert_installed", False):
-            routed.append(mlp)
-            continue
-        # Fresh same-class FFN (built under meta during from_pretrained;
-        # materialized by _init_weights on fresh build, or by the checkpoint
-        # shards on reload — exactly like visual_aux_head).
-        mlp.mlp_visual = type(mlp)(config)
-        mlp._visual_mask = None
-        # Per-expert sigmoid gate (BREEN, optional). Built on BOTH paths so
-        # checkpoint shards have a module to load into; near-identity init is a
-        # fresh-build-only step (init_visual_expert_gates). _expert_gate flips
-        # the gated forward on.
-        if bool(getattr(config, "visual_expert_gate", False)):
-            h = int(config.hidden_size)
-            mlp.expert_gate_text = nn.Linear(h, 1)
-            mlp.expert_gate_visual = nn.Linear(h, 1)
-            mlp._expert_gate = True
-        else:
-            mlp._expert_gate = False
-        # The ORIGINAL (text) FFN computation as the unbound class forward:
-        # calling it on `self` runs only gate/up/down and never recurses into
-        # mlp_visual or this override.
-        mlp._text_mlp_cls_forward = type(mlp).forward
-        mlp.forward = _routed_mlp_forward.__get__(mlp, type(mlp))
-        mlp._visual_expert_installed = True
-        routed.append(mlp)
-    model._visual_expert_mlps = routed
-    log.info(f"Installed visual FFN experts on {len(routed)}/{n} decoder layers.")
+        layer = model.layers[i]
+        # (module, sibling_attr, fresh same-class sibling). Fresh siblings are
+        # built under meta during from_pretrained and materialized by
+        # _init_weights on a fresh build or by the checkpoint shards on reload
+        # (exactly like visual_aux_head). deepcopy gives a same-class, same-shape,
+        # meta-safe clone for norm/projection modules whose __init__ signature is
+        # not `(config)`.
+        targets: list[tuple[nn.Module, str, nn.Module]] = []
+        if want_ffn:
+            mlp = layer.mlp
+            targets.append((mlp, "mlp_visual", type(mlp)(config)))
+            ffn_mlps.append(mlp)
+        if want_norm:
+            # EVEv2 modality-specific norms.
+            for norm_attr in ("input_layernorm", "post_attention_layernorm"):
+                norm = getattr(layer, norm_attr, None)
+                if norm is not None:
+                    targets.append((norm, "norm_visual", copy.deepcopy(norm)))
+                    n_norm += 1
+        if want_attn:
+            # EVEv2 modality-specific attention: split ONLY the q/k/v/o projection
+            # weights per token. RoPE, q_norm/k_norm, the causal/cross-modal mask
+            # and the KV-cache are untouched, so the attention pattern is unchanged
+            # — vision tokens just use the vision projection weights.
+            attn = layer.self_attn
+            for proj_attr in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                proj = getattr(attn, proj_attr, None)
+                if proj is not None:
+                    targets.append((proj, "proj_visual", copy.deepcopy(proj)))
+                    n_attn += 1
+        for module, sibling_attr, sibling in targets:
+            if not getattr(module, "_visual_expert_installed", False):
+                _install_routed_sibling(module, sibling_attr, sibling, config)
+            routed.append(module)
+    # Keep the FFN-expert list under its historical name (any external reference /
+    # FFN-specific logic still works); the mask setter / init use the unified list.
+    model._visual_expert_mlps = ffn_mlps
+    model._visual_routed_modules = routed
+    log.info(
+        f"Installed visual experts on up to {len(idxs)}/{n} decoder layers "
+        f"(ffn={len(ffn_mlps) if want_ffn else 0}, norm={n_norm}, attn_proj={n_attn}, "
+        f"gate={bool(getattr(config, 'visual_expert_gate', False))})."
+    )
 
 
 def init_visual_experts_from_text(model: Any) -> None:
-    """Fresh-build only: copy each layer's text FFN weights into its visual
-    expert so the expert starts identical to the text FFN and diverges from
-    there (Mono-InternVL init-from-LLM-FFN). No-op when no experts installed."""
+    """Fresh-build only: copy each routed sublayer's shared (text) weights into
+    its visual sibling so the sibling starts identical and diverges from there
+    (Mono-InternVL init-from-LLM / EVEv2 modality-specific init). Makes enabling
+    an expert a step-0 no-op (modulo the optional gate). No-op when no experts
+    installed."""
     count = 0
-    for mlp in getattr(model, "_visual_expert_mlps", []):
-        # Only the base text-FFN weights (gate_proj/up_proj/down_proj) — exclude
-        # the visual expert itself AND the per-expert sigmoid gates (expert_gate_*),
-        # which mlp_visual (a plain FFN) does not have.
+    for module in getattr(model, "_visual_routed_modules", []):
+        sibling_attr = module._visual_sibling_attr
+        # Only the shared (text) sublayer weights — exclude the visual sibling
+        # itself AND the per-expert sigmoid gates (expert_gate_*), which the plain
+        # sibling does not have.
         text_sd = {
             k: v
-            for k, v in mlp.state_dict().items()
-            if not k.startswith("mlp_visual.") and not k.startswith("expert_gate")
+            for k, v in module.state_dict().items()
+            if not k.startswith(f"{sibling_attr}.") and not k.startswith("expert_gate")
         }
-        mlp.mlp_visual.load_state_dict(text_sd)
+        getattr(module, sibling_attr).load_state_dict(text_sd)
         count += 1
     if count:
-        log.info(f"Initialized {count} visual FFN experts from their text FFN weights.")
+        log.info(f"Initialized {count} visual-expert siblings from their text weights.")
 
 
 def init_learnable_query(model: Any) -> None:
@@ -436,17 +528,17 @@ def init_learnable_query(model: Any) -> None:
 
 
 def init_visual_expert_gates(model: Any) -> None:
-    """Fresh-build only: initialize each per-expert sigmoid gate to near-identity
-    (zero weight, bias 4.0 -> sigmoid(4)≈0.982) so training starts from a nearly
-    ungated routed FFN, then learns to attenuate. Near-identity, NOT a literal
-    t=0 no-op: it scales each FFN by ~0.982 (≈1.8% attenuation) from step 0
-    (raise the bias toward 6-8 for a closer-to-identity start).
-    Reloads skip this — the checkpoint carries trained gates. No-op when gates
-    are off (no expert_gate_* modules)."""
+    """Fresh-build only: initialize each per-expert sigmoid gate (on EVERY routed
+    sublayer — FFN/norm/attention) to near-identity (zero weight, bias 4.0 ->
+    sigmoid(4)≈0.982) so training starts from a nearly ungated routed sublayer,
+    then learns to attenuate. Near-identity, NOT a literal t=0 no-op: it scales
+    each sublayer by ~0.982 (≈1.8% attenuation) from step 0 (raise the bias toward
+    6-8 for a closer-to-identity start). Reloads skip this — the checkpoint carries
+    trained gates. No-op when gates are off (no expert_gate_* modules)."""
     count = 0
-    for mlp in getattr(model, "_visual_expert_mlps", []):
+    for module in getattr(model, "_visual_routed_modules", []):
         for name in ("expert_gate_text", "expert_gate_visual"):
-            g = getattr(mlp, name, None)
+            g = getattr(module, name, None)
             if g is None:
                 continue
             nn.init.zeros_(g.weight)
@@ -2056,13 +2148,14 @@ def create_dynamic_causal_vlm_class(
         )
 
     def _set_visual_mask(self: Any, mask: Tensor | None) -> None:
-        """Stash the per-token image mask (B, N, 1) on every visual-expert mlp
-        so _routed_mlp_forward can blend text/visual FFN outputs. No-op unless
-        experts are installed (install_visual_experts populated the list)."""
-        mlps = getattr(self.model, "_visual_expert_mlps", None)
-        if mlps:
-            for mlp in mlps:
-                mlp._visual_mask = mask
+        """Stash the per-token image mask (B, N, 1) on every routed visual-expert
+        sublayer (FFN mlp + norm + attention projections) so _routed_expert_forward
+        can blend text/visual outputs. No-op unless experts are installed
+        (install_visual_experts populated the list)."""
+        modules = getattr(self.model, "_visual_routed_modules", None)
+        if modules:
+            for module in modules:
+                module._visual_mask = mask
 
     def _build_generation_modules(self: Any, config: Any) -> None:
         """Text->image generation modules (spec 2026-06-20): an x-prediction

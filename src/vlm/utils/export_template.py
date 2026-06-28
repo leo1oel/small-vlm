@@ -16,7 +16,7 @@ with a mechanical AST transform:
     real class bodies (the ``type(name, bases, dict)`` assembly dict gives the
     exact method set + order);
   * every other module-level function (the helpers the methods call, e.g.
-    ``install_visual_experts``, ``_routed_mlp_forward``) is copied verbatim;
+    ``install_visual_experts``, ``_routed_expert_forward``) is copied verbatim;
   * ``super(self.__class__, self)`` -> ``super()`` and the ``pretrain_class``
     closure -> the static ``VLM`` name;
   * ``@override`` (a no-op hint that needs the import) is dropped; real
@@ -72,6 +72,7 @@ image_position_ids, optional raw-waveform audio), plus the BREEN learnable-query
 visual-FFN expert, visual-prefix and text->image generation arms.
 """
 
+import copy
 import logging
 from typing import Any
 
