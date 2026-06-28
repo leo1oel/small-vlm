@@ -32,8 +32,10 @@ now feed the collator the same media contract:
 - `apply_image_position` ("sandwich"/"random" repeat the question text) takes
     `protected_tokens` and **protects non-image media placeholders in place** —
     it pulls them out before building the question and reinserts each exactly once,
-    so it can never duplicate `<audio>`/`<query>`. Passed at the local call site
-    (and the energon call site).
+    so it can never duplicate `<audio>`/`<query>`. Passed at all three call
+    sites — the local and energon data paths and inference
+    (`eval.py::generate_response`, #8) — so the trained layout reproduces at
+    inference too.
 - `DataCollatorForSupervisedDataset` takes `media_token_ids` +
     `media_feature_token_ids` and, when `model_max_length` truncation would drop a
     sentinel whose feature is still queued, **neutralizes** — it realigns that
