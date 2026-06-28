@@ -23,8 +23,10 @@ try:
     from vlm.data.dataset import (
         DataCollatorForSupervisedDataset,
         LazySupervisedDataset,
+        _load_local_records,  # pyright: ignore[reportPrivateUsage]
         inject_missing_media_tokens,
         load_audio_frames,
+        make_supervised_data_module,
         tokenizer_image_token,
         tokenizer_multimodal_token,
     )
@@ -315,3 +317,194 @@ def test_legacy_clip_path_unchanged(media_dir: Path):
     ]
     assert batch["images"][0].shape == (3, 224, 224)
     assert batch["image_sizes"] == [(200, 150)]
+
+
+# ---------------------------------------------------------------------------
+# #3 multi-image local JSON: one <image> sentinel per loaded image
+# ---------------------------------------------------------------------------
+
+
+def test_multi_image_local_json_preserves_placeholder_count(media_dir: Path):
+    """A multi-image local-JSON sample must emit exactly one <image> sentinel
+    per loaded image. Collapsing N->1 (the old preprocess_multimodal) makes the
+    splice consume one feature here and leak the rest into the next sample."""
+    conversation_lib.default_conversation = conversation_lib.conv_templates["qwen_2_5"]
+    samples = [
+        {
+            "id": "multi-image",
+            "image": ["a.jpg", "b.jpg"],
+            "conversations": [
+                {"from": "human", "value": "<image>\n<image>\nCompare the two images."},
+                {"from": "gpt", "value": "ok"},
+            ],
+        }
+    ]
+    ds, _ = _make_dataset(media_dir, samples)
+    item = ds[0]
+    n_sentinels = int((item["input_ids"] == -200).sum())
+    n_features = len(item["image"])
+    assert n_features == 2
+    assert n_sentinels == 2  # was 1 before the fix (collapsed)
+    assert n_sentinels == n_features  # splice invariant
+
+    # the collator queues both image features and the batch-wide counts agree
+    batch = DataCollatorForSupervisedDataset(tokenizer=_TOKENIZER)([item])
+    assert len(batch["images"]) == 2
+    assert int((batch["input_ids"] == -200).sum()) == len(batch["images"])
+
+
+def test_multi_image_injected_when_no_placeholder(media_dir: Path):
+    """When the text carries no placeholder, injection prepends N <image>
+    tokens; preprocess_multimodal must keep all N (not collapse to one)."""
+    conversation_lib.default_conversation = conversation_lib.conv_templates["qwen_2_5"]
+    samples = [
+        {
+            "id": "multi-image-noph",
+            "image": ["a.jpg", "b.jpg"],
+            "conversations": [
+                {"from": "human", "value": "describe both"},
+                {"from": "gpt", "value": "ok"},
+            ],
+        }
+    ]
+    ds, _ = _make_dataset(media_dir, samples)
+    item = ds[0]
+    assert int((item["input_ids"] == -200).sum()) == len(item["image"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# #12 collator truncation must not silently drop a media sentinel
+# ---------------------------------------------------------------------------
+
+
+class _TinyTok:
+    """Minimal tokenizer surface the collator reads — lets us force a tiny
+    model_max_length without mutating the shared module tokenizer."""
+
+    model_max_length: int = 8
+    padding_side: str = "right"
+    pad_token_id: int = 0
+
+
+def test_collator_neutralizes_when_truncation_drops_media_sentinel():
+    # Two image sentinels with two queued image features; the second sentinel
+    # sits past model_max_length=8. Right-truncation drops it, so the collator
+    # realigns the feature list to the one surviving sentinel and WARNs, rather
+    # than raising — a raise crash-loops energon's buffer-restore on resume.
+    collator = DataCollatorForSupervisedDataset(
+        tokenizer=_TinyTok(),
+        media_token_ids=(-200, -201),
+        media_feature_token_ids={"image": -200},
+    )
+    ids = torch.tensor([1, -200, 3, 4, 5, 6, 7, 8, -200, 11])  # idx 1 kept, idx 8 dropped
+    instance = {
+        "input_ids": ids,
+        "labels": torch.full_like(ids, -100),
+        "image": ["feat-a", "feat-b"],
+        "id": "trunc-victim",
+    }
+    collator._neutralize_truncated_media([instance])  # must not raise
+    assert instance["image"] == ["feat-a"]  # realigned to the surviving sentinel
+
+
+def test_collator_ok_when_sentinel_survives_truncation():
+    collator = DataCollatorForSupervisedDataset(tokenizer=_TinyTok(), media_token_ids=(-200, -201))
+    ids = torch.tensor([1, 2, -200, 4, 5, 6, 7, 8, 9, 10, 11])  # sentinel at idx 2 < 8
+    instance = {"input_ids": ids, "labels": torch.full_like(ids, -100), "id": "ok"}
+    batch = collator([instance])
+    assert batch["input_ids"].shape[1] == 8
+    assert int((batch["input_ids"] == -200).sum()) == 1
+
+
+def test_collator_truncation_check_is_noop_without_media_token_ids():
+    """Guard-off default: a collator built without media_token_ids leaves
+    truncation a plain slice (no realign, no raise)."""
+    collator = DataCollatorForSupervisedDataset(tokenizer=_TinyTok())  # media_token_ids=()
+    ids = torch.tensor([1, 2, 3, 4, 5, 6, 7, 8, 9, -200, 11])
+    instance = {"input_ids": ids, "labels": torch.full_like(ids, -100), "id": "x"}
+    batch = collator([instance])  # must not raise
+    assert batch["input_ids"].shape[1] == 8
+
+
+def test_make_supervised_data_module_wires_media_token_ids(media_dir: Path):
+    conversation_lib.default_conversation = conversation_lib.conv_templates["qwen_2_5"]
+    data_path = media_dir / "wire.json"
+    data_path.write_text(json.dumps([s for s in SAMPLES if s["id"] == "img-only-no-ph"]))
+    processor = RawImageProcessor(patch_size=16, pooling_kernel_size=3, max_soft_tokens=280)
+    data_args = DataArguments(
+        data_path=str(data_path),
+        image_folder=str(media_dir / "imgs"),
+        audio_folder=str(media_dir / "wavs"),
+        audio_enabled=True,
+    )
+
+    class _Proc:
+        tokenizer: Any = _TOKENIZER
+        image_processor: Any = processor
+
+    module = make_supervised_data_module(processor=_Proc(), data_args=data_args)
+    collator = module["data_collator"]
+    # audio_enabled=True, learnable_query off: image + audio sentinels, plus the
+    # feature-list map the neutralize guard uses to realign truncated samples.
+    assert collator.media_token_ids == [-200, -201]
+    assert collator.media_feature_token_ids == {"image": -200, "audio": -201}
+
+
+# ---------------------------------------------------------------------------
+# #26 direct local .jsonl path (documented but previously unsupported)
+# ---------------------------------------------------------------------------
+
+
+def test_load_local_records_json_jsonl_and_rejection(tmp_path: Path):
+    j = tmp_path / "a.json"
+    j.write_text(json.dumps([{"x": 1}, {"x": 2}]))
+    assert _load_local_records(str(j)) == [{"x": 1}, {"x": 2}]
+
+    jl = tmp_path / "a.jsonl"
+    jl.write_text('{"x": 1}\n\n{"x": 2}\n')  # blank line tolerated
+    assert _load_local_records(str(jl)) == [{"x": 1}, {"x": 2}]
+
+    bad = tmp_path / "a.txt"
+    bad.write_text("nope")
+    with pytest.raises(ValueError, match="unsupported local dataset file"):
+        _load_local_records(str(bad))
+
+
+def test_direct_jsonl_dataset_path_loads(media_dir: Path):
+    """A direct dataset.path=*.jsonl now parses line-by-line; previously it fell
+    through to json.load() and crashed on the second object."""
+    conversation_lib.default_conversation = conversation_lib.conv_templates["qwen_2_5"]
+    samples = [s for s in SAMPLES if s["id"] in ("img-only-no-ph", "text-only")]
+    data_path = media_dir / "data.jsonl"
+    data_path.write_text("\n".join(json.dumps(s) for s in samples) + "\n")
+    processor = RawImageProcessor(patch_size=16, pooling_kernel_size=3, max_soft_tokens=280)
+    data_args = DataArguments(
+        data_path=str(data_path),
+        image_folder=str(media_dir / "imgs"),
+        audio_folder=str(media_dir / "wavs"),
+        audio_enabled=True,
+    )
+
+    class _Proc:
+        tokenizer: Any = _TOKENIZER
+        image_processor: Any = processor
+
+    ds = LazySupervisedDataset(str(data_path), _Proc(), data_args)
+    assert len(ds) == 2  # both lines parsed (json.load would have raised)
+    # the loaded sample still tokenizes end-to-end
+    assert int((ds[0]["input_ids"] == -200).sum()) == 1
+
+
+def test_direct_unsupported_extension_dataset_path_rejected(media_dir: Path):
+    data_path = media_dir / "data.txt"
+    data_path.write_text("not json")
+    data_args = DataArguments(data_path=str(data_path), image_folder=str(media_dir / "imgs"))
+
+    class _Proc:
+        tokenizer: Any = _TOKENIZER
+        image_processor: Any = RawImageProcessor(
+            patch_size=16, pooling_kernel_size=3, max_soft_tokens=280
+        )
+
+    with pytest.raises(ValueError, match="unsupported local dataset file"):
+        LazySupervisedDataset(str(data_path), _Proc(), data_args)

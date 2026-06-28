@@ -372,14 +372,24 @@ def preprocess_multimodal(sources: Sequence[str], data_args: DataArguments) -> d
 
     for source in sources:
         for sentence in source:
-            if data_args.image_token in sentence["value"]:
+            n_image = sentence["value"].count(data_args.image_token)
+            # Single-image LLaVA convention: hoist the lone "<image>" to the
+            # front of its turn ("<image>\n<text>"). For an interleaved
+            # multi-image turn (n_image > 1) every placeholder MUST stay in
+            # place: stripping all and prepending one would emit a single
+            # sentinel for N images, so the splice (one feature per sentinel)
+            # would consume image 1 here and leak images 2..N into the next
+            # sample's sentinel (silent cross-sample corruption). This is the
+            # local-JSON path only; the energon path normalizes separately and
+            # never calls preprocess_multimodal.
+            if n_image == 1:
                 sentence["value"] = sentence["value"].replace(data_args.image_token, "").strip()
                 sentence["value"] = data_args.image_token + "\n" + sentence["value"]
                 sentence["value"] = sentence["value"].strip()
-                if "mmtag" in conversation_lib.default_conversation.version:
-                    sentence["value"] = sentence["value"].replace(
-                        data_args.image_token, "<Image>" + data_args.image_token + "</Image>"
-                    )
+            if n_image >= 1 and "mmtag" in conversation_lib.default_conversation.version:
+                sentence["value"] = sentence["value"].replace(
+                    data_args.image_token, "<Image>" + data_args.image_token + "</Image>"
+                )
             replace_token = data_args.image_token
             if data_args.use_start_end_tokens:
                 replace_token = (
@@ -402,7 +412,9 @@ def apply_image_position(
 
     Only human/user turns containing EXACTLY ONE image token and non-empty
     text are rewritten; everything else (gpt turns, image-only turns,
-    multi-image turns) is left untouched. Modes:
+    multi-image turns) is left untouched.
+
+    Modes:
       keep           - no-op (default; preserves both paths' current layout)
       question_first - "Q\\n<image>"
       sandwich       - "Q\\n<image>\\nQ"  (question repeated after the image)
@@ -1229,6 +1241,34 @@ def preprocess(
     return dict(input_ids=input_ids, labels=targets)
 
 
+def _load_local_records(path: str) -> list:
+    """Load a local LLaVA-style dataset file into a list of sample dicts.
+
+    Supports both on-disk formats the schema advertises (DatasetConfig.path):
+      ``.json``  - a single JSON array of samples;
+      ``.jsonl`` - one JSON object per line (blank lines skipped).
+    Any other extension is rejected loudly. Previously a direct ``.jsonl`` path
+    fell through to ``json.load`` (which chokes on the second line), so a
+    documented format silently failed; JSONL was honored only inside YAML
+    mixtures. Centralizing here makes every load site accept both.
+    """
+    if path.endswith(".jsonl"):
+        records = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+        return records
+    if path.endswith(".json"):
+        with open(path) as f:
+            return json.load(f)
+    raise ValueError(
+        f"unsupported local dataset file {path!r}: expected a .json array or a "
+        ".jsonl file (one JSON object per line)"
+    )
+
+
 class LazySupervisedDataset(Dataset):
     def __init__(self, data_path: str, processor: VLMProcessor, data_args: DataArguments):
         super().__init__()
@@ -1247,10 +1287,9 @@ class LazySupervisedDataset(Dataset):
                 data_args.dataset_paths.append(f"{base_path}{file_name}.json")
                 full_path = f"{base_path}{file_name}.json"
                 log.info(f"Loading {full_path}")
-                with open(full_path) as file:
-                    cur_data_dict = json.load(file)
-                    log.info(f"Loaded {len(cur_data_dict)} samples from {full_path}")
-                    self.list_data_dict.extend(cur_data_dict)
+                cur_data_dict = _load_local_records(full_path)
+                log.info(f"Loaded {len(cur_data_dict)} samples from {full_path}")
+                self.list_data_dict.extend(cur_data_dict)
         elif data_path.endswith(".yaml"):
             with open(data_path) as file:
                 yaml_data = yaml.safe_load(file)
@@ -1271,16 +1310,7 @@ class LazySupervisedDataset(Dataset):
 
                     log.info(f"Loading {json_path} with {sampling_strategy} sampling strategy")
 
-                    if json_path.endswith(".jsonl"):
-                        cur_data_dict = []
-                        with open(json_path) as json_file:
-                            for line in json_file:
-                                cur_data_dict.append(json.loads(line.strip()))
-                    elif json_path.endswith(".json"):
-                        with open(json_path) as json_file:
-                            cur_data_dict = json.load(json_file)
-                    else:
-                        raise ValueError(f"Unsupported file type: {json_path}")
+                    cur_data_dict = _load_local_records(json_path)
 
                     if ":" in sampling_strategy:
                         sampling_strategy, sampling_number = sampling_strategy.split(":")
@@ -1305,10 +1335,9 @@ class LazySupervisedDataset(Dataset):
         else:
             data_args.dataset_paths = [data_path]
             log.info(f"Loading {data_path}")
-            with open(data_path) as file:
-                cur_data_dict = json.load(file)
-                log.info(f"Loaded {len(cur_data_dict)} samples from {data_path}")
-                self.list_data_dict.extend(cur_data_dict)
+            cur_data_dict = _load_local_records(data_path)
+            log.info(f"Loaded {len(cur_data_dict)} samples from {data_path}")
+            self.list_data_dict.extend(cur_data_dict)
 
         log.info(f"Loaded {len(self.list_data_dict)} samples from {data_path}")
         log.info("Formatting inputs...Skip in lazy mode")
@@ -1463,11 +1492,17 @@ class LazySupervisedDataset(Dataset):
                     mode=self.data_args.image_position,
                     image_token=self.data_args.image_token,
                     seed=i,
+                    # "<query>" is injected below, after this rewrite, so the
+                    # audio placeholder is the only non-image sentinel present
+                    # here that must not be duplicated by sandwich/random.
+                    protected_tokens=(self.data_args.audio_token,),
                 )
                 # BREEN port: one "<query>" per image at the configured placement.
                 inject_query_placeholders(
                     source,
-                    n_images=len(image) if image is not None else 0,
+                    # inside `if image is not None`, so the guard is provably
+                    # redundant here; kept parallel with the unguarded call above.
+                    n_images=len(image) if image is not None else 0,  # pyright: ignore[reportUnnecessaryComparison]
                     data_args=self.data_args,
                 )
 
@@ -1660,8 +1695,9 @@ class DataCollatorForSupervisedDataset:
         input_ids, labels = tuple(
             [instance[key] for instance in instances] for key in ("input_ids", "labels")
         )
-        input_ids = [_input_ids[: self.tokenizer.model_max_length] for _input_ids in input_ids]
-        labels = [_labels[: self.tokenizer.model_max_length] for _labels in labels]
+        max_len = self.tokenizer.model_max_length
+        input_ids = [_input_ids[:max_len] for _input_ids in input_ids]
+        labels = [_labels[:max_len] for _labels in labels]
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = 0  # This gets the best result. Don't know why.
         input_ids = self.pad_sequence(
@@ -1718,7 +1754,22 @@ def make_supervised_data_module(
     train_dataset = LazySupervisedDataset(
         processor=processor, data_path=data_args.data_path, data_args=data_args
     )
+    # Guard the collator's truncation against dropping a media sentinel while its
+    # feature stays in the batch: realign (neutralize) the affected sample's
+    # feature lists instead of mis-splicing (#12). Mirrors energon_dataset's
+    # _media_token_ids / _media_feature_token_ids so both data paths feed the
+    # collator the same media contract (image always; audio / <query> when on).
+    media_token_ids = [data_args.image_token_index]
+    media_feature_token_ids = {"image": data_args.image_token_index}
+    if getattr(data_args, "audio_enabled", False):
+        media_token_ids.append(data_args.audio_token_index)
+        media_feature_token_ids["audio"] = data_args.audio_token_index
+    if getattr(data_args, "learnable_query_enabled", False):
+        media_token_ids.append(data_args.query_token_index)
     data_collator = DataCollatorForSupervisedDataset(
-        tokenizer=processor.tokenizer, ignore_index=data_args.ignore_index
+        tokenizer=processor.tokenizer,
+        ignore_index=data_args.ignore_index,
+        media_token_ids=media_token_ids,
+        media_feature_token_ids=media_feature_token_ids,
     )
     return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
