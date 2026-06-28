@@ -162,6 +162,25 @@ def validate_energon_args(training_args: TrainingArguments) -> None:
         log.info("dataset.type='energon': forcing ignore_data_skip=True (exact loader resume)")
 
 
+def _checkpoint_is_resumable(checkpoint_dir: str) -> bool:
+    """True if the checkpoint carries optimizer/scheduler state (a full
+    resumable checkpoint), False for a save_only_model weights snapshot.
+
+    A save_only_model checkpoint (legacy pretrain configs) has the model and
+    trainer_state.json but NO optimizer state, so resuming from it silently
+    restarts the optimizer while advancing the step counter. Detect the
+    optimizer artifacts across backends: HF single-process writes optimizer.pt;
+    DeepSpeed shards it under global_step*/; FSDP/sharded under optimizer_*/."""
+    import glob
+    import os
+
+    return (
+        os.path.exists(os.path.join(checkpoint_dir, "optimizer.pt"))
+        or bool(glob.glob(os.path.join(checkpoint_dir, "global_step*")))
+        or bool(glob.glob(os.path.join(checkpoint_dir, "optimizer_*")))
+    )
+
+
 def train(
     model: Any,
     training_args: TrainingArguments,
@@ -363,6 +382,20 @@ def train(
         resume_ckpt = None
         if os.path.isdir(training_args.output_dir):
             resume_ckpt = get_last_checkpoint(training_args.output_dir)
+        if resume_ckpt is not None and not _checkpoint_is_resumable(resume_ckpt):
+            # Model-only checkpoints (save_only_model=True, e.g. legacy pretrain
+            # configs) carry no optimizer/scheduler/RNG state. Auto-resuming from
+            # one would restart the optimizer while advancing the step counter
+            # (LR-schedule jump, lost momentum). Refuse to auto-select it; the
+            # user can still pass trainer.resume_from_checkpoint explicitly to opt
+            # in to a weights-only resume.
+            log.warning(
+                f"Latest checkpoint {resume_ckpt} has no optimizer state "
+                "(save_only_model) — SKIPPING auto-resume to avoid a corrupt "
+                "optimizer/scheduler restart. Pass trainer.resume_from_checkpoint "
+                "explicitly to force a weights-only resume."
+            )
+            resume_ckpt = None
         if resume_ckpt is not None:
             log.info(f"Auto-resuming from last checkpoint: {resume_ckpt} (requeued job?)")
         else:

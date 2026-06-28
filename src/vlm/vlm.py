@@ -225,6 +225,21 @@ def init_patch_stem_from_encoder(model: Any, model_cfg: ModelConfig) -> None:
     )
 
 
+def require_generation_modules(model: Any, requested: bool) -> None:
+    """Load-time guard (spec 2026-06-20): enabling generation training on a
+    reloaded understanding-only checkpoint (which carries no gen_x_head /
+    gen_t_embed) would route any target_patches batch into forward_generation
+    and call those None modules. Fail loud here instead, mirroring the
+    visual-aux retrofit guard."""
+    if requested and getattr(model, "gen_x_head", None) is None:
+        raise ValueError(
+            "model.generation.enabled is set but the loaded checkpoint has no "
+            "generation modules (gen_x_head/gen_t_embed) — enabling generation "
+            "on an understanding-only checkpoint is not supported; train from "
+            "scratch with generation enabled or load a generation checkpoint"
+        )
+
+
 def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
     log.info(
         f"Loading model: [bold red][link=file://{CONFIG_PATH / 'model' / f'{model_cfg.name}.yaml'}]{model_cfg.name}[/link][/bold red]"
@@ -267,6 +282,13 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
                 "is not supported yet; train from scratch (sft-unified-aimpixel / "
                 "sft-unified-nepa) or load a checkpoint trained with the head"
             )
+        # Generation retrofit guard (spec 2026-06-20): a composed config can turn
+        # on generation training, but a reload rebuilds the x-prediction head /
+        # in-context timestep embedder ONLY when the checkpoint config already had
+        # generation enabled. Without them, a batch carrying target_patches routes
+        # to forward_generation and calls gen_t_embed(...)/gen_x_head(...) on None.
+        # Mirror the visual-aux guard: fail loud at load instead of crashing.
+        require_generation_modules(model, bool(model_cfg.generation.enabled))
     else:
         if model_cfg.visual_encoder.hf_name is None:
             # Encoder-free (gemma4_unified-style raw-patch) path: no vision tower,
@@ -515,6 +537,24 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             )
         model.config.lazy_load = False
 
+    # Visual distillation is native (encoder-free / raw-patch) ONLY: the loss
+    # reconstructs each image from its raw patches and indexes per-image
+    # image_position_ids (compute_distill_loss -> distill_positions[k]). A
+    # classic encoder-backed model provides images + image_sizes but NO
+    # image_position_ids, so distill_positions is None and the loss crashes the
+    # moment an image block appears. Fail loud at load (both build paths) — the
+    # head is structurally present whenever visual_distill is enabled.
+    if bool(getattr(model.config, "visual_distill", False)) and (
+        getattr(model.model, "vision_model", None) is not None
+    ):
+        raise ValueError(
+            "model.visual_distill.enabled requires the encoder-free / raw-patch "
+            "path (visual_encoder.hf_name=null), but this checkpoint is "
+            "encoder-backed (has a vision_model) — classic encoders don't carry "
+            "the per-patch image_position_ids the distill loss indexes. Use a "
+            "native (encoder-free) model or disable visual_distill"
+        )
+
     # Frozen distill teacher (spec 2026-06-21): attach on both build paths,
     # AFTER the head exists. Off the module tree -> not in .parameters() below.
     attach_distill_teacher(model)
@@ -552,6 +592,16 @@ def vlm(cfg: AppConfig) -> None:
         # Self-describing checkpoints: inference must rebuild prompts with the
         # SAME image layout the model was trained on (plan 2026-06-10).
         model.config.image_position = str(data_args.image_position)
+        # BREEN learnable-query placement is the same kind of self-describing,
+        # branch-agnostic field as image_position: an S2 SFT can override it
+        # (e.g. after_image -> after_text) while loading from an S1 checkpoint
+        # whose config.json still says after_image. The fresh-build branch sets
+        # it once from model_cfg, but a reload would keep the stale checkpoint
+        # value and inference (eval.py reads config.learnable_query_placement)
+        # would silently disagree with how S2 actually trained. Refresh it here
+        # from the SAME source training uses (data_args.query_placement) so
+        # train == saved config == inference on both build paths.
+        model.config.learnable_query_placement = str(data_args.query_placement)
         # Cross-modal 4D mask dials (early-fusion access arms, plan 2026-06-10):
         # place the model-config dials onto model.config (applies on both fresh
         # and from_pretrained paths) BEFORE train() validates them against the
@@ -561,6 +611,29 @@ def vlm(cfg: AppConfig) -> None:
         model.config.cross_modal_mask_mode = str(cfg.model.cross_modal_mask.mode)
         model.config.cross_modal_mask_window = [int(x) for x in cfg.model.cross_modal_mask.window]
         model.config.cross_modal_mask_bidirectional = bool(cfg.model.cross_modal_mask.bidirectional)
+        # Chat-delimiter token ids the conversation preprocessor unmasks into the
+        # labels (Qwen ChatML <|im_start|>/<|im_end|>/newline). The xmodal prefix
+        # detector must skip them, else the leading system <|im_start|> at
+        # position 0 makes the first "supervised" label position 0 and collapses
+        # the prefix to empty (xmodal_mask._prefix). Only the qwen template
+        # unmasks delimiters; other templates supervise answer tokens only, so
+        # leave it None there (prefix-from-labels is already correct). Serialized
+        # (flat name) so a resume re-reads the same skip set.
+        skip_ids: list[int] | None = None
+        if str(cfg.model.cross_modal_mask.mode) != "none" and str(
+            cfg.trainer.version
+        ).startswith("qwen"):
+            tok = processor.tokenizer
+            unk = tok.unk_token_id
+            cand = [
+                tok.convert_tokens_to_ids("<|im_start|>"),
+                tok.convert_tokens_to_ids("<|im_end|>"),
+                *tok.encode("\n", add_special_tokens=False),
+            ]
+            skip_ids = [
+                int(t) for t in cand if isinstance(t, int) and t >= 0 and t != unk
+            ] or None
+        model.config.cross_modal_prefix_skip_ids = skip_ids
         # Image-grounding margin loss dials (spec 2026-06-18). Pure training
         # loss, no module to build -> set here on model.config like the
         # cross_modal dials (branch-agnostic, before train()); flat names so

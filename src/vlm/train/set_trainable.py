@@ -172,9 +172,19 @@ def set_trainable_params(model: Any, config: dict[str, bool]):
         if ".mlp_visual." in name or "expert_gate" in name:
             param.requires_grad = True
 
+    # Adding image start/end tokens grows the input embedding (and, when untied,
+    # the lm_head) with fresh rows that MUST train even if the LM trunk stays
+    # frozen. group_params_by_prefix folds token embeddings into "language_model"
+    # and never creates an "embeddings" group, so the old grouped_params.get(
+    # "embeddings", []) was always empty (a silent no-op). Unfreeze the embedding
+    # modules directly.
     if getattr(model.config, "use_start_end_tokens", False):
-        for _, param in grouped_params.get("embeddings", []):
-            param.requires_grad = True
+        in_emb = model.get_input_embeddings()
+        if in_emb is not None and getattr(in_emb, "weight", None) is not None:
+            in_emb.weight.requires_grad = True
+        out_emb = model.get_output_embeddings()
+        if out_emb is not None and getattr(out_emb, "weight", None) is not None:
+            out_emb.weight.requires_grad = True
 
     return log_trainable_params_detailed(model)
 

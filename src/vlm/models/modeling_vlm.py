@@ -282,6 +282,7 @@ def install_xmodal_masks(
     attn2d: Tensor,
     image_block_ids: Tensor | None,
     labels: Tensor | None,
+    query_block_ids: Tensor | None = None,
 ) -> Tensor:
     """Build the cross-modal-arm 4D mask(s) (plan 2026-06-10). Returns the
     tensor to pass downstream as attention_mask; for img2q_window additionally
@@ -292,12 +293,23 @@ def install_xmodal_masks(
     dynamic class in the assembly dict below."""
     mode = str(getattr(self.config, "cross_modal_mask_mode", "none") or "none")
     ignore_index = int(getattr(self.config, "ignore_index", -100))
+    # Chat-delimiter ids the conversation preprocessor unmasks into the labels
+    # (Qwen ChatML im_start/im_end/newline). Excluded from the prefix-boundary
+    # search so a leading delimiter at position 0 cannot collapse the prefix to
+    # empty (xmodal_mask._prefix). Set at load time in vlm.py.
+    skip_ids = getattr(self.config, "cross_modal_prefix_skip_ids", None)
     if mode == "prefix_lm":
         return _xmodal_mask.build_cross_modal_mask(
-            attn2d, None, labels, mode, ignore_index=ignore_index
+            attn2d, None, labels, mode, ignore_index=ignore_index, prefix_skip_ids=skip_ids
         )
     win = _xmodal_mask.build_cross_modal_mask(
-        attn2d, image_block_ids, labels, mode, ignore_index=ignore_index
+        attn2d,
+        image_block_ids,
+        labels,
+        mode,
+        ignore_index=ignore_index,
+        query_block_ids=query_block_ids,
+        prefix_skip_ids=skip_ids,
     )
     base = _xmodal_mask.build_base_mask(attn2d)
     lo, hi = (int(x) for x in getattr(self.config, "cross_modal_mask_window", [1, 9]))
@@ -670,7 +682,9 @@ def create_dynamic_causal_vlm_class(
             and attention_mask is not None
             and attention_mask.dim() == 2
         ):
-            attention_mask = self.install_xmodal_masks(attention_mask, image_block_ids, labels)
+            attention_mask = self.install_xmodal_masks(
+                attention_mask, image_block_ids, labels, query_block_ids
+            )
         gen_mask = getattr(self, "_xmodal_gen_mask", None)
         if (
             gen_mask is not None
@@ -756,6 +770,12 @@ def create_dynamic_causal_vlm_class(
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            # Honor the configurable ignore_index in the HF loss too: the parent
+            # forward threads this kwarg into ForCausalLMLoss (TransformersKwargs)
+            # so both loss paths drop the same ignored/media positions the splice
+            # fills. At the -100 default this is a no-op; the backbone's permissive
+            # **kwargs absorbs the extra arg.
+            ignore_index=int(getattr(self.config, "ignore_index", -100)),
         )
 
     def chunked_ce_forward(
@@ -870,12 +890,15 @@ def create_dynamic_causal_vlm_class(
                 h.remove()
         hidden_states = outputs.last_hidden_state
         # ForCausalLMLoss's shift: pad labels right with ignore_index, drop
-        # the first -> target[i] = labels[i+1], last target ignored. -100 is
-        # the fixed ignore_index of the reference implementation.
-        shift_targets = nn.functional.pad(labels, (0, 1), value=-100)[..., 1:]
+        # the first -> target[i] = labels[i+1], last target ignored. Honor the
+        # configurable ignore_index (the splice fills ignored/media labels with
+        # self.config.ignore_index, so the loss MUST drop the same value or a
+        # non-default ignore_index silently trains on padded/media positions).
+        ignore_index = int(getattr(self.config, "ignore_index", -100))
+        shift_targets = nn.functional.pad(labels, (0, 1), value=ignore_index)[..., 1:]
         flat_hidden = hidden_states.reshape(-1, hidden_states.shape[-1])
         flat_targets = shift_targets.reshape(-1).to(flat_hidden.device)
-        valid = flat_targets != -100
+        valid = flat_targets != ignore_index
         n_valid = int(valid.sum())
         components: dict[str, Tensor] = {}
         zero = torch.zeros((), dtype=torch.float32, device=flat_hidden.device)
@@ -1413,6 +1436,15 @@ def create_dynamic_causal_vlm_class(
         attention_mask = kwargs.pop("attention_mask", None)
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
+        # A direct `model.generate(inputs, images=...)` caller may omit
+        # attention_mask. The multimodal splice restores it to None at the end,
+        # so the xmodal generation-mask install below (gated on
+        # `attention_mask is not None`) would be silently skipped and an
+        # img2q_window / prefix_lm checkpoint would generate WITHOUT its
+        # cross-modal mask. Materialize a default all-ones mask (no padding) so
+        # the splice keeps a real 2D mask and the install runs.
+        if attention_mask is None and inputs is not None:
+            attention_mask = torch.ones_like(inputs, dtype=torch.long)
 
         if images is not None or audios is not None:
             image_features = None
@@ -1454,7 +1486,7 @@ def create_dynamic_causal_vlm_class(
                 # the experiment is about image arms, lmms-eval vision tasks
                 # always carry an image, and text-only prompts keep stock causal.
                 self._xmodal_gen_mask = self.install_xmodal_masks(
-                    attention_mask, image_block_ids, None
+                    attention_mask, image_block_ids, None, query_block_ids
                 )
             # Visual FFN experts (spec 2026-06-14): stash a one-shot prefill
             # image mask so generation routes image tokens through the expert
@@ -1471,12 +1503,25 @@ def create_dynamic_causal_vlm_class(
         else:
             inputs_embeds = self.get_input_embeddings()(inputs)
 
-        return super(self.__class__, self).generate(
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            **kwargs,
-        )
+        try:
+            return super(self.__class__, self).generate(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                **kwargs,
+            )
+        finally:
+            # img2q_window stashes a per-layer 4D mask on each in-window
+            # attention module (install_xmodal_masks). It persists on the module
+            # after generate() returns; a later generation whose prompt matches
+            # the stale length could re-trigger sdpa_xmodal_forward's shape guard
+            # and reuse it. Clear all per-layer + one-shot xmodal / visual-expert
+            # state so nothing leaks across generations.
+            for layer in self.model.layers:
+                if getattr(layer.self_attn, "_xmodal_mask", None) is not None:
+                    layer.self_attn._xmodal_mask = None
+            self._xmodal_gen_mask = None
+            self._ve_gen_mask = None
 
     @override
     def prepare_inputs_for_generation(
@@ -2301,14 +2346,24 @@ def create_dynamic_causal_vlm_class(
         mask = input_dict.get("attention_mask")
         tokens = int(mask.sum().item()) if mask is not None else input_ids.numel()
         image_position_ids = input_dict.get("image_position_ids")
-        if image_position_ids:
+        # `image_position_ids` is a LIST of (N_i, 2) tensors on the understanding
+        # splice path, but generation batching stacks it into a single (B, N, 2)
+        # tensor — `if tensor:` raises ("ambiguous truth value"), so test for
+        # None/emptiness explicitly. Iterating either form yields per-image
+        # position tensors, so the patch-row sum below works for both.
+        if image_position_ids is not None and len(image_position_ids) > 0:
             tokens += sum(int(p.shape[0]) for p in image_position_ids)
-            image_token_index = getattr(self.config, "image_token_index", -200)
-            n_sentinels = int((input_ids == image_token_index).sum().item())
-            tokens -= n_sentinels  # each sentinel is replaced by its expansion
-            # Absent-modality dummies carry one placeholder row (shape (1, 2))
-            # but splice in zero-width and have no sentinel — don't count them.
-            tokens -= max(0, len(image_position_ids) - n_sentinels)
+            if input_dict.get("target_patches") is None:
+                # Understanding path: each image replaces one <image> sentinel in
+                # input_ids; rows missing the modality carry a 1-row dummy that
+                # splices in zero-width and has no sentinel — don't count those.
+                image_token_index = getattr(self.config, "image_token_index", -200)
+                n_sentinels = int((input_ids == image_token_index).sum().item())
+                tokens -= n_sentinels  # each sentinel is replaced by its expansion
+                tokens -= max(0, len(image_position_ids) - n_sentinels)
+            # Generation path (target_patches present): image patches are appended
+            # to the text prompt rather than replacing a sentinel, so the added
+            # patch rows above are the whole contribution.
         elif input_dict.get("images") is not None:
             # Classic encoder path (CLIP/SigLIP/DINO): no per-image position
             # ids; every real image (one sentinel each) splices a fixed
@@ -2336,6 +2391,18 @@ def create_dynamic_causal_vlm_class(
             n_sentinels = int((input_ids == audio_token_index).sum().item())
             tokens -= n_sentinels
             tokens -= max(0, len(audios) - n_sentinels)  # zero-width dummies
+        # BREEN learnable queries: each "<query>" sentinel expands at splice time
+        # into num_fine + num_coarse learnable-query rows. The sentinel itself is
+        # already counted in `tokens`; add the remaining rows so total_flos
+        # reflects the real spliced length.
+        if bool(getattr(self.config, "learnable_query", False)):
+            query_token_index = getattr(self.config, "query_token_index", -202)
+            n_q = int((input_ids == query_token_index).sum().item())
+            if n_q:
+                rows = int(getattr(self.config, "learnable_query_num_fine", 64)) + int(
+                    getattr(self.config, "learnable_query_num_coarse", 36)
+                )
+                tokens += n_q * (rows - 1)  # sentinel itself already counted
         return 6 * tokens * self.num_parameters(exclude_embeddings=exclude_embeddings)
 
     DynamicCausalVLMClass = type(
