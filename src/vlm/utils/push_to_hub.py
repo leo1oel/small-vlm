@@ -218,6 +218,18 @@ def _copy_from_models(pretrained_path: Path) -> list[Path]:
         # preprocessor_config.json; ship the module so remote-code loading
         # (and VLMProcessor's manual rebuild) can resolve it.
         "image_processing_raw.py": models_dir / "image_processing_raw.py",
+        # Sibling modules the rendered modeling_vlm.py imports. The cross-modal
+        # mask arms and the text->image generation stack (xmodal_mask,
+        # gen_diffusion, gen_image, gen_rope) are imported at module load, so
+        # they are always required; visual_distill and gen_perceptual are lazily
+        # imported by the BREEN-distill / perceptual-loss paths but shipped too
+        # so those checkpoints export self-contained.
+        "xmodal_mask.py": models_dir / "xmodal_mask.py",
+        "gen_diffusion.py": models_dir / "gen_diffusion.py",
+        "gen_image.py": models_dir / "gen_image.py",
+        "gen_rope.py": models_dir / "gen_rope.py",
+        "visual_distill.py": models_dir / "visual_distill.py",
+        "gen_perceptual.py": models_dir / "gen_perceptual.py",
     }
 
     console.print(

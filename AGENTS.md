@@ -4,6 +4,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - Add durable project-specific notes here as they are discovered through real work.
 
+## Hub export template is GENERATED, not hand-edited
+
+`templates/modeling_vlm.py.j2` is the static, `trust_remote_code` mirror of the dynamically-built classes in `src/vlm/models/modeling_vlm.py`, shipped by `utils/push_to_hub.py`.
+It is no longer hand-maintained: it drifted (missing the BREEN learnable-query, visual-FFN-expert, visual-prefix and text→image generation arms, plus `torch.arrange` typos) and exported broken models.
+It is now produced by a mechanical AST transform in `src/vlm/utils/export_template.py`, which emits the two `create_dynamic_*_class` factories' inner methods as real class bodies (the `type(name, bases, {...})` assembly dict gives the exact method set + order), copies every other module-level helper verbatim, rewrites `super(self.__class__, self)` → `super()` and the `pretrain_class` closure → the static `VLM` name, drops the `@override` hint, and leaves `{{ parent_class }}` / `{{ causal_parent_class }}` placeholders for push_to_hub to fill.
+After ANY change to `modeling_vlm.py`, regenerate with `uv run python -m vlm.utils.export_template` and commit the updated template.
+`tests/test_inference.py::test_export_template_in_sync_with_live_model` pins the committed template to a fresh generation, so a missed regenerate fails CI instead of silently shipping a broken hub artifact; companion tests assert state_dict + numerical parity per arm.
+`push_to_hub._copy_from_models` must ship every sibling module the rendered file imports (`xmodal_mask`, `gen_diffusion`, `gen_image`, `gen_rope`, `visual_distill`, `gen_perceptual`); add to that list whenever the model grows a new import.
+
 ## BREEN port (encoder-free CLIP-distilled learnable queries; arXiv:2503.12446)
 
 Spec: the `breen-plan-q9` report (code-grounded port plan). BREEN = learnable
