@@ -34,15 +34,17 @@ trainer:
   per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
   gradient_accumulation_steps: 1
 
-  # EQUAL-TOKEN fairness: SAME budget (32000) + SAME max_steps as G2/native.
-  # CLIP-B/16 = 196 tokens/img (< native's <=280) so it covers slightly MORE
-  # samples (~10.8M) at the identical token budget. max_steps set by the binding
-  # native group (47.8 samples/microbatch @ 32000 -> 286.8/step -> 35000 ≈ 10M).
-  max_steps: 35000
+  # EQUAL-TOKEN fairness: SAME budget (32000) + SAME max_steps as native-G2.
+  # Target 5e9 non-padding input tokens (anchored on the measured native rate:
+  # ~82.6k tok/step -> 60500 steps). CLIP-B/16 = 196 img tokens (< native's
+  # ~280) so at the identical budget+steps it covers slightly MORE samples and
+  # its own non-pad total runs a touch below 5e9 -- inherent to the encoder
+  # ablation; budget+steps are held identical, which is the fair control.
+  max_steps: 60500
   save_steps: 2500
   save_total_limit: null
   save_only_model: false
-  warmup_steps: 350
+  warmup_steps: 605
 
   learning_rate:
     language_model_learning_rate: 8e-4 # no-op: backbone frozen

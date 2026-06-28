@@ -36,12 +36,13 @@ trainer:
   per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
   gradient_accumulation_steps: 1
 
-  # EQUAL-TOKEN fairness: SAME budget (20000, from energon-honey-sft-wds) + SAME
-  # max_steps for G1/G2. Honey multi-turn is long (~3800 eff tokens/sample) so
-  # only ~5.0 samples/microbatch @ 20000 -> 30/optimizer-step (x6) -> 33500 steps
-  # ≈ 1.0M samples (~1 epoch of Honey-Data-1M).
-  max_steps: 33500
-  save_steps: 2500 # 13 checkpoints
+  # Target 1e9 non-padding input tokens (canonical metric). Measured @ budget
+  # 20000 (6xA100, full local Honey): 59.4k non-pad tok/s, 0.787 steps/s ->
+  # ~75.4k tok/step (~38 samples/step x ~1960 tok/sample). 1e9 / 75.4k = 13250
+  # steps ≈ 0.51M samples ≈ 0.48 epochs of Honey (1.072M) -- UNDER 1 epoch.
+  # EQUAL-TOKEN fairness: CLIP-G1 uses the IDENTICAL budget 20000 + max_steps.
+  max_steps: 13250
+  save_steps: 2500 # ~5 checkpoints
   save_total_limit: null
   save_only_model: false
 

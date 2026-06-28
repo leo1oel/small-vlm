@@ -42,15 +42,16 @@ trainer:
   per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
   gradient_accumulation_steps: 1
 
-  # --- schedule: EQUAL-TOKEN fairness (same budget 32000 + same max_steps for
-  # G1/G2). Measured native 47.8 samples/microbatch @ budget 32000 -> 286.8
-  # samples/optimizer-step (x6 ranks) -> 35000 steps ≈ 10.0M samples (the binding
-  # group; CLIP, more token-efficient, covers ~10.8M at identical tokens). ---
-  max_steps: 35000
-  save_steps: 2500 # 14 checkpoints; frequent enough for safe preemption-resume
+  # --- schedule: target 5e9 non-padding input tokens (canonical metric).
+  # Measured @ budget 32000 (6xA100, full local bee): 63.7k non-pad tok/s,
+  # 0.771 steps/s -> ~82.6k tok/step (~293 samples/step x ~282 tok/sample).
+  # 5e9 / 82.6k = 60500 steps ≈ 17.7M samples ≈ 1.41 epochs of bee (12.60M).
+  # EQUAL-TOKEN fairness: CLIP-G1 uses the IDENTICAL budget 32000 + max_steps. ---
+  max_steps: 60500
+  save_steps: 2500 # 24 checkpoints; frequent enough for safe preemption-resume
   save_total_limit: null
   save_only_model: false # resume needs optimizer + energon stream state
-  warmup_steps: 350 # ~1% of max_steps
+  warmup_steps: 605 # ~1% of max_steps
 
   learning_rate:
     language_model_learning_rate: 8e-4 # no-op: backbone frozen in pretrain
