@@ -2,10 +2,12 @@
 checkpoint bugs fixed on fm/fix-model-t3 (codereview-2026-06-28):
 
   #1  BREEN S2 learnable_query_placement persists/refreshes across reload
+  #6  cross_modal_prefix_skip_ids covers every blanket-delimiter template
   #8  generation-module load guard (require_generation_modules)
   #10 Qwen local-JSON first-turn role/content schema (preprocess_qwen)
   #15 floating_point_ops on a stacked tensor image_position_ids
   #16 floating_point_ops counts BREEN <query> expansion
+  #17 auto-resume skips optimizer-less checkpoints without losing weights
   #18 per-layer xmodal mask state cleared between generations
   #19 default all-ones attention mask in generate() so the xmodal install runs
 
@@ -24,7 +26,7 @@ try:
     from vlm.data.dataset import preprocess_qwen, tokenizer_multimodal_token
     from vlm.models import get_dynamic_vlm
     from vlm.models.image_processing_raw import RawImageProcessor
-    from vlm.vlm import require_generation_modules
+    from vlm.vlm import _cross_modal_prefix_skip_ids, require_generation_modules
 except ModuleNotFoundError as e:  # pragma: no cover - slim envs
     pytest.skip(f"vlm package not importable here: {e}", allow_module_level=True)
 
@@ -303,3 +305,137 @@ def test_generate_without_attention_mask_runs_xmodal_install():
     # Without the default-mask fix, attention_mask stays None and the install is
     # skipped entirely. With the fix it runs with a real 2D mask.
     assert calls and calls[0] is True
+
+
+# ---------------------------------------------------------------------------
+# #6 — cross_modal_prefix_skip_ids must cover EVERY template whose preprocessor
+#      blanket-unmasks delimiters (qwen AND llama3), not just qwen
+# ---------------------------------------------------------------------------
+
+
+class _FakeTokenizer:
+    """Minimal tokenizer stub mapping the delimiter tokens
+    _cross_modal_prefix_skip_ids needs to fixed ids, plus newline encoding."""
+
+    unk_token_id = 0
+
+    _VOCAB = {
+        "<|im_start|>": 151644,
+        "<|im_end|>": 151645,
+        "<|begin_of_text|>": 128000,
+        "<|start_header_id|>": 128006,
+        "<|end_header_id|>": 128007,
+        "<|eot_id|>": 128009,
+    }
+
+    def convert_tokens_to_ids(self, tok):
+        return self._VOCAB.get(tok, self.unk_token_id)
+
+    def encode(self, text, add_special_tokens=False):
+        return {"\n": [198], "\n\n": [271]}[text]
+
+
+def test_prefix_skip_ids_qwen_uses_real_chatml_delimiters():
+    # real Qwen3 tokenizer: <|im_start|>, <|im_end|>, newline
+    assert _cross_modal_prefix_skip_ids("qwen_2_5", _TOKENIZER) == [151644, 151645, 198]
+
+
+def test_prefix_skip_ids_llama3_uses_llama_delimiters():
+    """preprocess_llama3 blanket-unmasks the SAME way qwen does, so a llama3 run
+    must get a llama3 skip set — not None — else the cross-modal arm silently
+    collapses to plain causal (#6 prefix-collapse, llama3 gap)."""
+    assert _cross_modal_prefix_skip_ids("llava_llama_3", _FakeTokenizer()) == [
+        128000,
+        128006,
+        128007,
+        128009,
+        271,
+    ]
+
+
+def test_prefix_skip_ids_none_for_non_delimiter_templates():
+    """gemma (round-based masking) and unknown versions supervise answer tokens
+    only, so no delimiter skip set is needed (prefix-from-labels is correct)."""
+    assert _cross_modal_prefix_skip_ids("gemma_instruct", _FakeTokenizer()) is None
+    assert _cross_modal_prefix_skip_ids("does_not_exist", _FakeTokenizer()) is None
+
+
+def test_prefix_skip_ids_drops_unk_and_invalid():
+    """unk / negative / non-int ids are dropped; an all-invalid set -> None."""
+
+    class _BadTokenizer:
+        unk_token_id = 151644  # pretend <|im_start|> resolves to unk
+
+        def convert_tokens_to_ids(self, tok):
+            return {"<|im_start|>": 151644, "<|im_end|>": -1}.get(tok, 151644)
+
+        def encode(self, text, add_special_tokens=False):
+            return []
+
+    assert _cross_modal_prefix_skip_ids("qwen_2_5", _BadTokenizer()) is None
+
+
+# ---------------------------------------------------------------------------
+# #17 — auto-resume skips optimizer-less (save_only_model) checkpoints, but never
+#       silently restarts from base when ONLY weights-only snapshots exist
+# ---------------------------------------------------------------------------
+
+
+def _make_ckpt(root, step, resumable):
+    import os
+
+    d = os.path.join(str(root), f"checkpoint-{step}")
+    os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, "model.safetensors"), "w").close()  # every ckpt has weights
+    if resumable:
+        open(os.path.join(d, "optimizer.pt"), "w").close()  # full ckpt has optimizer
+    return d
+
+
+def test_auto_resume_prefers_newest_older_resumable(tmp_path):
+    """Mixed history: latest is weights-only, older ones are full -> resume the
+    newest OLDER resumable checkpoint (optimizer state preserved)."""
+    from vlm.train.train import _resolve_auto_resume_checkpoint
+
+    _make_ckpt(tmp_path, 100, resumable=True)
+    _make_ckpt(tmp_path, 150, resumable=True)
+    latest = _make_ckpt(tmp_path, 200, resumable=False)
+    chosen = _resolve_auto_resume_checkpoint(str(tmp_path))
+    assert chosen.endswith("checkpoint-150")
+    assert chosen != latest
+
+
+def test_auto_resume_weights_only_falls_back_to_latest(tmp_path, caplog):
+    """All-weights-only history (e.g. config/trainer/pretrain.yaml
+    save_only_model=True): no resumable checkpoint exists, so resume WEIGHTS ONLY
+    from the latest snapshot (loud warning) instead of silently restarting from
+    base and discarding all prior training."""
+    import logging
+
+    from vlm.train.train import _resolve_auto_resume_checkpoint
+
+    _make_ckpt(tmp_path, 100, resumable=False)
+    latest = _make_ckpt(tmp_path, 200, resumable=False)
+    with caplog.at_level(logging.WARNING):
+        chosen = _resolve_auto_resume_checkpoint(str(tmp_path))
+    assert chosen == latest
+    assert "WEIGHTS ONLY" in caplog.text
+
+
+def test_auto_resume_latest_already_resumable(tmp_path):
+    """Latest checkpoint already carries optimizer state -> resume it directly."""
+    from vlm.train.train import _resolve_auto_resume_checkpoint
+
+    _make_ckpt(tmp_path, 100, resumable=True)
+    latest = _make_ckpt(tmp_path, 200, resumable=True)
+    assert _resolve_auto_resume_checkpoint(str(tmp_path)) == latest
+
+
+def test_auto_resume_no_checkpoints_is_scratch(tmp_path):
+    """Empty output_dir (or no dir) -> train from scratch (None)."""
+    import os
+
+    from vlm.train.train import _resolve_auto_resume_checkpoint
+
+    assert _resolve_auto_resume_checkpoint(str(tmp_path)) is None
+    assert _resolve_auto_resume_checkpoint(os.path.join(str(tmp_path), "missing")) is None

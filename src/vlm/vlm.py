@@ -21,10 +21,45 @@ from .data import get_data_args, make_supervised_data_module
 from .models import VLMProcessor, get_dynamic_vlm
 from .models.image_processing_raw import RawImageProcessor
 from .train import get_training_args, train, validate_energon_args
+from .utils import conversation as conversation_lib
 from .utils.precision import resolve_precision
 
 log: logging.Logger = logging.getLogger(name=__name__)
 CONFIG_PATH: Path = Path(__file__).resolve().parent / "config"
+
+
+def _cross_modal_prefix_skip_ids(version: str, tokenizer: Any) -> list[int] | None:
+    """Chat-delimiter token ids the conversation preprocessor unmasks into the
+    labels. The xmodal prefix detector must skip them, else the leading delimiter
+    at position 0 makes the first "supervised" label position 0 and collapses the
+    prefix to empty (xmodal_mask._prefix). Both the Qwen ChatML template
+    (<|im_start|>/<|im_end|>/newline) and the llama3 template
+    (<|begin_of_text|>/<|start_header_id|>/<|end_header_id|>/<|eot_id|>/\\n\\n)
+    blanket-unmask their delimiters everywhere; gemma and the rest supervise
+    answer tokens only, so return None there (prefix-from-labels is already
+    correct). Key off the ACTIVE conversation template (resolved the same way the
+    preprocess dispatch does in train.py) so the skip set always matches the
+    preprocessor, not the raw version string. Drops unk/negative/non-int ids and
+    collapses an empty result to None."""
+    template = conversation_lib.conv_templates.get(version)
+    template_version = template.version if template is not None else None
+    unk = tokenizer.unk_token_id
+    cand: list[int] = []
+    if template_version == "qwen":
+        cand = [
+            tokenizer.convert_tokens_to_ids("<|im_start|>"),
+            tokenizer.convert_tokens_to_ids("<|im_end|>"),
+            *tokenizer.encode("\n", add_special_tokens=False),
+        ]
+    elif template_version == "llama_v3":
+        cand = [
+            tokenizer.convert_tokens_to_ids("<|begin_of_text|>"),
+            tokenizer.convert_tokens_to_ids("<|start_header_id|>"),
+            tokenizer.convert_tokens_to_ids("<|end_header_id|>"),
+            tokenizer.convert_tokens_to_ids("<|eot_id|>"),
+            *tokenizer.encode("\n\n", add_special_tokens=False),
+        ]
+    return [int(t) for t in cand if isinstance(t, int) and t >= 0 and t != unk] or None
 
 
 def add_special_tokens(tokenizer: PreTrainedTokenizer, config: LanguageModelConfig) -> None:
@@ -612,25 +647,12 @@ def vlm(cfg: AppConfig) -> None:
         model.config.cross_modal_mask_window = [int(x) for x in cfg.model.cross_modal_mask.window]
         model.config.cross_modal_mask_bidirectional = bool(cfg.model.cross_modal_mask.bidirectional)
         # Chat-delimiter token ids the conversation preprocessor unmasks into the
-        # labels (Qwen ChatML <|im_start|>/<|im_end|>/newline). The xmodal prefix
-        # detector must skip them, else the leading system <|im_start|> at
-        # position 0 makes the first "supervised" label position 0 and collapses
-        # the prefix to empty (xmodal_mask._prefix). Only the qwen template
-        # unmasks delimiters; other templates supervise answer tokens only, so
-        # leave it None there (prefix-from-labels is already correct). Serialized
-        # (flat name) so a resume re-reads the same skip set.
+        # labels (see _cross_modal_prefix_skip_ids). Only emit them when the
+        # cross-modal arm is active. Serialized (flat name) so a resume re-reads
+        # the same skip set.
         skip_ids: list[int] | None = None
-        if str(cfg.model.cross_modal_mask.mode) != "none" and str(cfg.trainer.version).startswith(
-            "qwen"
-        ):
-            tok = processor.tokenizer
-            unk = tok.unk_token_id
-            cand = [
-                tok.convert_tokens_to_ids("<|im_start|>"),
-                tok.convert_tokens_to_ids("<|im_end|>"),
-                *tok.encode("\n", add_special_tokens=False),
-            ]
-            skip_ids = [int(t) for t in cand if isinstance(t, int) and t >= 0 and t != unk] or None
+        if str(cfg.model.cross_modal_mask.mode) != "none":
+            skip_ids = _cross_modal_prefix_skip_ids(str(cfg.trainer.version), processor.tokenizer)
         model.config.cross_modal_prefix_skip_ids = skip_ids
         # Image-grounding margin loss dials (spec 2026-06-18). Pure training
         # loss, no module to build -> set here on model.config like the

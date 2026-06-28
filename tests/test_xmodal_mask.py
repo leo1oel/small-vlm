@@ -353,6 +353,43 @@ def test_prefix_skip_ids_under_qwen_delimiter_unmasking():
     assert not allowed(fixed_p, 1, 5)  # answer not in the prefix
 
 
+# llama3 delimiters (preprocess_llama3 blanket-unmasks the SAME way qwen does)
+BOS = 128000  # <|begin_of_text|>
+START_HDR = 128006  # <|start_header_id|>
+END_HDR = 128007  # <|end_header_id|>
+EOT = 128009  # <|eot_id|>
+NL2 = 271  # "\n\n"
+
+
+def test_prefix_skip_ids_under_llama3_delimiter_unmasking():
+    """preprocess_llama3 unmasks <|begin_of_text|>/<|start_header_id|>/
+    <|end_header_id|>/<|eot_id|>/\\n\\n EVERYWHERE, so the leading
+    <|begin_of_text|> at position 0 becomes "supervised" exactly like the qwen
+    case. The llama3 skip set must exclude those delimiters or the cross-modal
+    arm collapses to plain causal.
+
+    layout (L=7): [bos(sys) | img | q | eot | hdr(asst) | ans | eot]
+    """
+    attn = torch.ones(1, 7, dtype=torch.bool)
+    labels = torch.tensor([[BOS, -100, -100, EOT, START_HDR, 42, EOT]])
+    blocks = torch.tensor([[-1, 0, -1, -1, -1, -1, -1]])
+
+    # BUG reproduction: no skip ids -> first supervised label = pos 0 -> empty
+    # prefix -> mask identical to plain causal.
+    buggy = build_cross_modal_mask(attn, blocks, labels, mode="img2q_window")
+    assert torch.equal(buggy, build_base_mask(attn))
+
+    skip = [BOS, START_HDR, END_HDR, EOT, NL2]
+    fixed = build_cross_modal_mask(attn, blocks, labels, mode="img2q_window", prefix_skip_ids=skip)
+    assert allowed(fixed, 1, 2)  # image row -> question key (non-causal edge)
+    assert allowed(fixed, 1, 0)  # image row -> system prefix key (prefix kept)
+    assert not allowed(fixed, 1, 5)  # answer content key still blocked
+
+    fixed_p = build_cross_modal_mask(attn, None, labels, mode="prefix_lm", prefix_skip_ids=skip)
+    assert allowed(fixed_p, 1, 2) and allowed(fixed_p, 2, 1)  # bidirectional img<->q
+    assert not allowed(fixed_p, 1, 5)  # answer not in the prefix
+
+
 def test_prefix_skip_ids_noop_for_clean_templates():
     """With no delimiter pollution the first supervised label already IS the
     first answer token, so passing skip ids changes nothing."""

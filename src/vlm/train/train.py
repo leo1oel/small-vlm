@@ -204,6 +204,48 @@ def _get_last_resumable_checkpoint(output_dir: str) -> str | None:
     return None
 
 
+def _resolve_auto_resume_checkpoint(output_dir: str) -> str | None:
+    """Pick the checkpoint to auto-resume from on a (re)queued job, or None to
+    train from scratch.
+
+    Model-only checkpoints (save_only_model=True, e.g. the active
+    config/trainer/pretrain.yaml) carry no optimizer/scheduler/RNG state.
+    Auto-resuming from one restarts the optimizer while advancing the step
+    counter (LR-schedule jump, lost momentum). So:
+      * mixed history -> prefer the newest OLDER full (resumable) checkpoint;
+      * all-weights-only history -> there is no resumable checkpoint, so resume
+        WEIGHTS ONLY from the latest snapshot (loud warning) rather than silently
+        restarting from the base model and discarding all prior training;
+      * latest already resumable -> resume normally.
+    """
+    import os
+
+    from transformers.trainer_utils import get_last_checkpoint
+
+    if not os.path.isdir(output_dir):
+        return None
+    last_ckpt = get_last_checkpoint(output_dir)
+    resume_ckpt = _get_last_resumable_checkpoint(output_dir)
+    if last_ckpt is not None and resume_ckpt != last_ckpt:
+        if resume_ckpt is not None:
+            log.warning(
+                f"Latest checkpoint {last_ckpt} has no optimizer state "
+                "(save_only_model) — falling back to older resumable "
+                f"checkpoint {resume_ckpt}."
+            )
+        else:
+            resume_ckpt = last_ckpt
+            log.warning(
+                f"Latest checkpoint {last_ckpt} has no optimizer state "
+                "(save_only_model) and there is NO older resumable checkpoint "
+                "— resuming WEIGHTS ONLY from it. Optimizer/scheduler/RNG state "
+                "will be RESET (LR-schedule jump, lost momentum), but model-weight "
+                "progress is preserved. Pass trainer.resume_from_checkpoint or set "
+                "save_only_model=False to keep full optimizer state across requeues."
+            )
+    return resume_ckpt
+
+
 def train(
     model: Any,
     training_args: TrainingArguments,
@@ -396,36 +438,11 @@ def train(
         )
         log.info("GRAD_PROBE enabled: logging visual-vs-language gradient RMS per step.")
 
-    from transformers.trainer_utils import get_last_checkpoint
-
     if training_args.resume_from_checkpoint:
         resume_ckpt = training_args.resume_from_checkpoint
         log.info(f"Resuming from checkpoint: {resume_ckpt}")
     else:
-        resume_ckpt = None
-        last_ckpt = None
-        if os.path.isdir(training_args.output_dir):
-            last_ckpt = get_last_checkpoint(training_args.output_dir)
-            resume_ckpt = _get_last_resumable_checkpoint(training_args.output_dir)
-        if last_ckpt is not None and resume_ckpt != last_ckpt:
-            # Model-only checkpoints (save_only_model=True, e.g. legacy pretrain
-            # configs) carry no optimizer/scheduler/RNG state. Auto-resuming from
-            # one would restart the optimizer while advancing the step counter
-            # (LR-schedule jump, lost momentum). Skip weights-only snapshots and
-            # fall back to the newest older full checkpoint if one exists.
-            if resume_ckpt is not None:
-                log.warning(
-                    f"Latest checkpoint {last_ckpt} has no optimizer state "
-                    "(save_only_model) — falling back to older resumable "
-                    f"checkpoint {resume_ckpt}."
-                )
-            else:
-                log.warning(
-                    f"Latest checkpoint {last_ckpt} has no optimizer state "
-                    "(save_only_model) — SKIPPING auto-resume to avoid a corrupt "
-                    "optimizer/scheduler restart. Pass trainer.resume_from_checkpoint "
-                    "explicitly to force a weights-only resume."
-                )
+        resume_ckpt = _resolve_auto_resume_checkpoint(training_args.output_dir)
         if resume_ckpt is not None:
             log.info(f"Auto-resuming from last checkpoint: {resume_ckpt} (requeued job?)")
         else:
