@@ -15,9 +15,9 @@ type: energon
 
 # blob folder -> blend weight (sampling ratio, normalized automatically)
 folders:
-    LLaVA-OneVision-1.5-Instruct: 1.0
-    FineVision: 1.0
-    yiming/Bee-Training-Data-Stage1: 1.0
+  LLaVA-OneVision-1.5-Instruct: 1.0
+  FineVision: 1.0
+  yiming/Bee-Training-Data-Stage1: 1.0
 
 # Bee assistant turns carry a constant empty "<think>\n\n</think>\n\n" prefix
 # (4 tokens; 15-25% of short captions' loss mass) — strip it at the

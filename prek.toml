@@ -7,7 +7,10 @@ hooks = [
     { id = "trailing-whitespace" },
     { id = "check-added-large-files" },
     { id = "check-case-conflict" },
-    { id = "end-of-file-fixer" },
+    # neo_report/ holds generated research result dumps (minified JSON with no
+    # trailing newline); exempt from the newline fixer like the JSON/markdown
+    # formatters below, so the dir is not reformatted on every run.
+    { id = "end-of-file-fixer", exclude = "^neo_report/" },
     { id = "fix-byte-order-marker" },
     { id = "check-json" },
     { id = "check-toml" },
@@ -20,10 +23,14 @@ hooks = [
     { id = "check-executables-have-shebangs" },
     {
         id = "pretty-format-json",
+        # neo_report/ holds generated research result dumps (large minified JSON);
+        # not project data, exempt from JSON reformatting (same rationale as the
+        # mdformat/markdownlint excludes below).
         args = [
             "--autofix",
             "--no-sort-keys"
-        ]
+        ],
+        exclude = "^neo_report/"
     }
 ]
 
@@ -59,9 +66,11 @@ hooks = [
     {
         id = "mdformat",
         language = "python",
-        # generated working documents (AI plan files) contain pseudo-code
-        # blocks that mdformat-black cannot parse
-        exclude = "^docs/superpowers/",
+        # Generated working documents are exempt from markdown tooling:
+        # docs/superpowers/ (AI plan files) carry pseudo-code blocks mdformat-black
+        # cannot parse; neo_report/ holds generated research reports (mixed-language
+        # headings, raw result dumps) that are not project documentation.
+        exclude = "^(docs/superpowers/|neo_report/)",
         additional_dependencies = [
             "mdformat-gfm",
             "mdformat-black",
@@ -82,7 +91,7 @@ hooks = [
 repo = "https://github.com/igorshubovych/markdownlint-cli"
 rev = "v0.47.0"
 hooks = [
-    { id = "markdownlint-fix", exclude = "^docs/superpowers/" }
+    { id = "markdownlint-fix", exclude = "^(docs/superpowers/|neo_report/)" }
 ]
 
 [[repos]]

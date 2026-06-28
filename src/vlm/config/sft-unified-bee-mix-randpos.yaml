@@ -1,10 +1,10 @@
 defaults:
-    - sft-unified-bee-mix
-    - _self_
+  - sft-unified-bee-mix
+  - _self_
 
 # Access arm B (plan 2026-06-10): per-sample random image placement
 # (first / middle-of-question / last) — dual-order-style training that
 # yields a within-run contrast between samples where the image did and
 # did not see the question. Seeded per sample key (deterministic).
 dataset:
-    image_position: random
+  image_position: random

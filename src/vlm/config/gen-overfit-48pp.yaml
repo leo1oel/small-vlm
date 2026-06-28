@@ -1,6 +1,6 @@
 defaults:
-    - gen-overfit
-    - _self_
+  - gen-overfit
+  - _self_
 
 # 48px overfit (SHARED connector — native, understanding+generation use the one
 # patch embedding) + the two pixel-space sharpness levers from PRX / HiDream-O1:
@@ -11,16 +11,16 @@ defaults:
 # to see if it overfits fast. Consumed by gen_overfit_multi.py -cn gen-overfit-48pp.
 
 model:
-    connector:
-        bottleneck_dim: 512           # shared patch embedding: 6912 -> 512 -> 2048
-    generation:
-        independent_embed: false      # reuse the shared 48px connector (native/unified)
-        perceptual_enabled: true
-        perceptual_lpips_weight: 0.1
-        perceptual_dino_weight: 0.01
-        perceptual_lpips_net: vgg
-        perceptual_dino_model: dinov2_vitb14_reg
-        perceptual_resize: 224
+  connector:
+    bottleneck_dim: 512 # shared patch embedding: 6912 -> 512 -> 2048
+  generation:
+    independent_embed: false # reuse the shared 48px connector (native/unified)
+    perceptual_enabled: true
+    perceptual_lpips_weight: 0.1
+    perceptual_dino_weight: 0.01
+    perceptual_lpips_net: vgg
+    perceptual_dino_model: dinov2_vitb14_reg
+    perceptual_resize: 224
 
 trainer:
-    run_name: gen-overfit-48pp
+  run_name: gen-overfit-48pp

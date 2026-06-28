@@ -1,5 +1,5 @@
 defaults:
-    - _self_
+  - _self_
 
 # Stronger-encoder variant of qwen3-1.7b-clip: CLIP-ViT-L/14@336 tower + MLP
 # connector on the same Qwen3-1.7B backbone. Every image becomes a fixed
@@ -8,19 +8,19 @@ defaults:
 # read from the tower config automatically by the MLP connector.
 
 language_model:
-    hf_name: Qwen/Qwen3-1.7B
-    max_seq_length: 4096
+  hf_name: Qwen/Qwen3-1.7B
+  max_seq_length: 4096
 
 visual_encoder:
-    hf_name: openai/clip-vit-large-patch14-336
-    output_layer: -2 # standard LLaVA tap: penultimate layer features
-    use_cls_token: false
+  hf_name: openai/clip-vit-large-patch14-336
+  output_layer: -2 # standard LLaVA tap: penultimate layer features
+  use_cls_token: false
 
 connector:
-    name: mlp_2_gelu
-    type: mlp
+  name: mlp_2_gelu
+  type: mlp
 
 audio:
-    enabled: false # vision-only ablation; symmetric with the unified arm
+  enabled: false # vision-only ablation; symmetric with the unified arm
 
 name: qwen3-1.7b-clip-large

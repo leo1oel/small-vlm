@@ -1,6 +1,6 @@
 defaults:
-    - sft-unified-bee-mix
-    - _self_
+  - sft-unified-bee-mix
+  - _self_
 
 # 1000-step catch-up matrix (2026-06-22): STACK two legal encoder-free levers —
 # internal visual-prefix (K=6 bidirectional layers that BUILD vision before the
@@ -16,18 +16,18 @@ defaults:
 #   sbatch -p gpu-a40 --gpus=a40:4 --cpus-per-task=32 --mem=320G train_l40s.slurm
 
 model:
-    visual_prefix:
-        enabled: true
-        depth: 6
-    visual_distill:
-        enabled: true
-        method: softdepth
-        teacher_kind: siglip
-        teacher_name: google/siglip-base-patch16-224
-        layers: [4, 8, 12, 16, 20, 24]
+  visual_prefix:
+    enabled: true
+    depth: 6
+  visual_distill:
+    enabled: true
+    method: softdepth
+    teacher_kind: siglip
+    teacher_name: google/siglip-base-patch16-224
+    layers: [4, 8, 12, 16, 20, 24]
 
 trainer:
-    max_steps: 1500
-    save_steps: 250
-    visual_distill_weight: 1.0
-    run_name: prefix-distill-siglip-1k
+  max_steps: 1500
+  save_steps: 250
+  visual_distill_weight: 1.0
+  run_name: prefix-distill-siglip-1k

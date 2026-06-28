@@ -29,9 +29,9 @@ from .eval import _data_args_from_config, generate_response, load_model, resolve
 log: logging.Logger = logging.getLogger(name=__name__)
 
 try:
-    from lmms_eval.api.instance import Instance
-    from lmms_eval.api.model import lmms
-    from lmms_eval.protocol import ChatMessages
+    from lmms_eval.api.instance import Instance  # pyright: ignore[reportMissingImports]
+    from lmms_eval.api.model import lmms  # pyright: ignore[reportMissingImports]
+    from lmms_eval.protocol import ChatMessages  # pyright: ignore[reportMissingImports]
 except ImportError as e:  # pragma: no cover - eval extra not installed
     raise ImportError(
         "lmms-eval is required for the benchmark adapter: uv pip install lmms-eval"
@@ -40,8 +40,8 @@ except ImportError as e:  # pragma: no cover - eval extra not installed
 
 def register() -> None:
     """Register 'small-vlm' with lmms-eval's ModelRegistryV2 (idempotent)."""
-    from lmms_eval.models import MODEL_REGISTRY_V2
-    from lmms_eval.models.registry_v2 import ModelManifest
+    from lmms_eval.models import MODEL_REGISTRY_V2  # pyright: ignore[reportMissingImports]
+    from lmms_eval.models.registry_v2 import ModelManifest  # pyright: ignore[reportMissingImports]
 
     MODEL_REGISTRY_V2.register_manifest(
         ModelManifest(

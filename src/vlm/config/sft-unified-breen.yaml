@@ -1,8 +1,8 @@
 defaults:
-    - sft-unified
-    - override /model: qwen3-1.7b-unified-breen
-    - override /dataset: energon-honey-sft
-    - _self_
+  - sft-unified
+  - override /model: qwen3-1.7b-unified-breen
+  - override /dataset: energon-honey-sft
+  - _self_
 
 # BREEN port (spec 2026-06-24) — STAGE 2: instruction SFT on Honey-Data-1M,
 # continuing from the S1 checkpoint. LM + connector train (trainer: finetune);
@@ -15,23 +15,23 @@ defaults:
 #     CONFIG_NAME=sft-unified-breen sbatch devtools/breen_train.slurm
 
 model:
-    learnable_query:
-        placement: after_text # SFT: queries follow the question text
+  learnable_query:
+    placement: after_text # SFT: queries follow the question text
 
 trainer:
-    from_pretrained: ${oc.env:VLM_BREEN_S1_CKPT}
-    # sft-unified already sets loss_chunk_size: 1024 (the breen distill needs it)
-    # and gradient_accumulation_steps: 1 — the smaller accum gives BREEN's ~256-
-    # sample SFT effective batch (vs ~1024 for the accum=4 alignment stages).
-    visual_distill_weight: 1.0
-    # S2 budget (captain revision 2026-06-24): 4000 steps (unchanged), ~1M Honey.
-    # Honey throughput is measured at launch (single-image instruct, accum=1).
-    # save_steps=2000 (was 500) -> final = checkpoint-4000.
-    max_steps: 4000
-    save_steps: 2000
-    learning_rate:
-        visual_encoder_learning_rate: 2e-5
-        connector_learning_rate: 2e-5
-        language_model_learning_rate: 2e-5
-        default_lr: 2e-5
-    run_name: breen-s2-sft-honey
+  from_pretrained: ${oc.env:VLM_BREEN_S1_CKPT}
+  # sft-unified already sets loss_chunk_size: 1024 (the breen distill needs it)
+  # and gradient_accumulation_steps: 1 — the smaller accum gives BREEN's ~256-
+  # sample SFT effective batch (vs ~1024 for the accum=4 alignment stages).
+  visual_distill_weight: 1.0
+  # S2 budget (captain revision 2026-06-24): 4000 steps (unchanged), ~1M Honey.
+  # Honey throughput is measured at launch (single-image instruct, accum=1).
+  # save_steps=2000 (was 500) -> final = checkpoint-4000.
+  max_steps: 4000
+  save_steps: 2000
+  learning_rate:
+    visual_encoder_learning_rate: 2e-5
+    connector_learning_rate: 2e-5
+    language_model_learning_rate: 2e-5
+    default_lr: 2e-5
+  run_name: breen-s2-sft-honey

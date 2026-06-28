@@ -1,6 +1,6 @@
 defaults:
-    - sft-unified-bee-mix
-    - _self_
+  - sft-unified-bee-mix
+  - _self_
 
 # 1000-step catch-up matrix (2026-06-22) — "warm tokenizer". The native
 # bottleneck is the tokenizer: a single linear turns a 48x48x3 raw patch into
@@ -18,22 +18,22 @@ defaults:
 #   sbatch -p gpu-a40 --gpus=a40:4 --cpus-per-task=32 --mem=320G train_l40s.slurm
 
 model:
-    connector:
-        patch_stem: siglip
-        patch_stem_name: google/siglip-base-patch16-224
-        patch_stem_kernel: 16
-        patch_stem_freeze: false
+  connector:
+    patch_stem: siglip
+    patch_stem_name: google/siglip-base-patch16-224
+    patch_stem_kernel: 16
+    patch_stem_freeze: false
 
 trainer:
-    max_steps: 1500
-    save_steps: 250
-    # High connector LR (EVEv2/Mono two-LR): the LLM-default 6e-5 will not move a
-    # warm tokenizer in 1000 steps. Stem + connector train fast; the LLM stays
-    # gentle (6e-5). Pair with DELTA_TUNING=1 at submit (freeze text FFN, keep
-    # connector + attention trainable) for the Mono/BREEN few-step recipe.
-    learning_rate:
-        connector_learning_rate: 2e-4
-        language_model_learning_rate: 6e-5
-        visual_encoder_learning_rate: 6e-5
-        default_lr: 6e-5
-    run_name: warmstem-siglip-1k
+  max_steps: 1500
+  save_steps: 250
+  # High connector LR (EVEv2/Mono two-LR): the LLM-default 6e-5 will not move a
+  # warm tokenizer in 1000 steps. Stem + connector train fast; the LLM stays
+  # gentle (6e-5). Pair with DELTA_TUNING=1 at submit (freeze text FFN, keep
+  # connector + attention trainable) for the Mono/BREEN few-step recipe.
+  learning_rate:
+    connector_learning_rate: 2e-4
+    language_model_learning_rate: 6e-5
+    visual_encoder_learning_rate: 6e-5
+    default_lr: 6e-5
+  run_name: warmstem-siglip-1k

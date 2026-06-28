@@ -23,7 +23,7 @@ task: understanding # image -> caption (NOT generation)
 
 # Azure blob prefix under container `data` (streamed via msc://azure/data/<prefix>).
 folders:
-    yiming/bee_stage2/train: 1.0
+  yiming/bee_stage2/train: 1.0
 jsonl_name: train.jsonl
 
 # Stage1 captions carry a constant empty "<think>\n\n</think>" prefix; strip it at

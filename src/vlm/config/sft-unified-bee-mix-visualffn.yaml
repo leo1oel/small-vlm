@@ -1,6 +1,6 @@
 defaults:
-    - sft-unified-bee-mix
-    - _self_
+  - sft-unified-bee-mix
+  - _self_
 
 # 48G matrix — visual-FFN expert arm (A-pos; Mono-InternVL arXiv:2410.08202 /
 # BREEN arXiv:2503.12446 style). Each decoder layer gets a sibling
@@ -21,12 +21,12 @@ defaults:
 #   CONFIG_NAME=sft-unified-bee-mix-visualffn sbatch train_l40s.slurm
 
 model:
-    visual_expert:
-        enabled: true
-        layers: null # all decoder layers
-        init_from_text: true
+  visual_expert:
+    enabled: true
+    layers: null # all decoder layers
+    init_from_text: true
 
 trainer:
-    # Distinctive wandb run name (the baseline auto-name is indistinguishable
-    # across arms — set it explicitly so runs are easy to tell apart).
-    run_name: visualffn-beemix-2b
+  # Distinctive wandb run name (the baseline auto-name is indistinguishable
+  # across arms — set it explicitly so runs are easy to tell apart).
+  run_name: visualffn-beemix-2b

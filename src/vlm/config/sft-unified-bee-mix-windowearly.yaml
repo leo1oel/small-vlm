@@ -1,6 +1,6 @@
 defaults:
-    - sft-unified-bee-mix
-    - _self_
+  - sft-unified-bee-mix
+  - _self_
 
 # Force arm window-early (plan 2026-06-10): image-query rows attend
 # question keys in decoder layers 1-9 ONLY (28-layer Qwen3-1.7B); above
@@ -8,9 +8,9 @@ defaults:
 # of visual processing must happen early. text->image direction untouched
 # (plain causal at all layers).
 model:
-    cross_modal_mask:
-        mode: img2q_window
-        window: [1, 9]
+  cross_modal_mask:
+    mode: img2q_window
+    window: [1, 9]
 
 trainer:
-    attn_implementation: sdpa_xmodal
+  attn_implementation: sdpa_xmodal

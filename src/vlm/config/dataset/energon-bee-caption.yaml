@@ -14,7 +14,7 @@ type: energon
 # Container is the MSC default ("data"); the folder key is the blob prefix
 # inside it. Single folder -> weight is a no-op.
 folders:
-    yiming/Bee-Training-Data-Stage1: 1.0
+  yiming/Bee-Training-Data-Stage1: 1.0
 
 # Every assistant caption in this set ships a constant empty
 # "<think>\n\n</think>\n\n" prefix (4 tokens). 57% of captions are only

@@ -1,6 +1,6 @@
 defaults:
-    - sft-unified-bee-mix-warmstem
-    - _self_
+  - sft-unified-bee-mix-warmstem
+  - _self_
 
 # 1000-step catch-up matrix (2026-06-22) — delta-vs-joint test for the warm
 # tokenizer. Identical to sft-unified-bee-mix-warmstem (SigLIP conv transplant +
@@ -16,4 +16,4 @@ defaults:
 #     --mem=320G --time=8:00:00 train_l40s.slurm
 
 trainer:
-    run_name: warmstem-joint-1k
+  run_name: warmstem-joint-1k
