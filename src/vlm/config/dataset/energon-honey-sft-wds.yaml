@@ -1,0 +1,70 @@
+# Honey-Data-1M instruction SFT as a PREPARED energon CrudeWebdataset (in-tar
+# images), streamed from Azure — the Stage-2 twin of energon-bee-stage2-wds
+# (which is Stage-1 caption). vlm.data.energon_wds owns this `wds_path` branch.
+#
+# ~1M high-quality multi-turn instruction records (the captain confirmed SFT
+# needs quality not quantity) across 108 tar shards (~4.5GB each) + a .nv-meta/
+# dir, at msc://azure/data/yiming/Honey-Data-1M/train-wds. Each record is an
+# image-grounded multi-turn chat: messages[0] = user(image + question), then
+# assistant/user follow-up turns about the SAME image (verified turn counts
+# range 2..58; ~65% are 2-turn, the rest multi-turn). This is INSTRUCT data, so
+# it pairs with a chat template (trainer.version=qwen_2_5 for the Qwen3 ChatML
+# backbone) — NOT the 2-turn plain caption template, which would drop every
+# human turn but the last (validate_dataset_config #5 fail-fasts that pairing).
+#
+# vs. energon-honey-sft (loose-file `folders` + train.jsonl, the older layout):
+# the prepared WDS bundles image bytes IN the tar, so one sequential GET streams
+# ~9k samples instead of one GET per image — far fewer fat-tail stragglers and
+# no spurious watchdog "PicklingError" dumps (data/datapipe-rootcause-m6).
+#
+# Credentials: AZURE_SAS_TOKEN (env or .env). Nothing is downloaded — energon
+# reads the .nv-meta dir and streams shards lazily through the MSC range cache.
+# REQUIRED with this dataset type: trainer.max_steps > 0.
+
+name: energon-honey-sft-wds
+type: energon
+task: understanding # image -> text instruct chat (NOT generation)
+
+# Prepared CrudeWebdataset dir (tar shards + .nv-meta). A container-relative
+# path resolves through the MSC default profile/container ("azure"/"data") ->
+# msc://azure/data/yiming/Honey-Data-1M/train-wds. A full msc://... URL also
+# works. Mutually exclusive with `folders`.
+wds_path: yiming/Honey-Data-1M/train-wds
+
+# Multi-turn instruct data: declared so validate_dataset_config (#5) REJECTS an
+# accidental plain-template pairing and allows only a chat template.
+conversation_kind: instruct
+
+# Every Honey assistant turn is prefixed with an EMPTY reasoning block
+# "<think>\n\n</think>\n\n" (verified: 1168/1168 assistant turns in a 400-sample
+# scan carry it, all whitespace-bodied). strip_empty_think drops the empty
+# boilerplate at the messages->conversations bridge so it never enters the loss;
+# it preserves any block with real reasoning text (whitespace-bodied only).
+strip_empty_think: true
+
+# Per-worker shuffle buffer mixed before the first yield. A prepared WDS reads
+# whole shards sequentially (max_samples_per_sequence runs), so this trades
+# startup latency for cross-shard mixing. 108 large shards (~9k samples each).
+shuffle_buffer_size: 2000
+# Bucket edges over the post-splice effective length (text tokens + ~256-280
+# per image + sep). Multi-turn SFT sits higher and longer-tailed than caption
+# (turn counts to 58); the top edge == model.max_seq_length (4096). Samples
+# past the last edge land in an overflow bucket and are clipped to
+# model.max_seq_length at the splice (modeling_vlm), not dropped — long
+# many-turn chats lose their tail turns. Conservative start; probe + retune the
+# edges against the live stream (effective_sample_length distribution).
+length_buckets: [512, 768, 1024, 1536, 2304, 4096]
+# ~constant effective tokens per micro-batch (bucket bs = budget // edge).
+# EMPIRICAL (A100 80GB, grad-ckpt OFF, full-param finetune): 32000 OOMs (the
+# unfrozen 0.6B LM's grads + fused-AdamW state leave far less room than the
+# connector-only Stage-1); 20000 peaks ~56GB (safe headroom for 6-way DDP
+# grad buckets), 16000 ~42GB. 20000 is the Stage-2 default (vs Stage-1's 32000
+# connector-only). Same value for BOTH encoder groups -> equal tokens/step.
+batch_token_budget: 20000
+max_samples_per_sequence: 100 # randomness vs. sequential-read efficiency
+# Azure fetch latency is fat-tailed; a high worker count amortizes stragglers.
+# The "PicklingError" is a phantom (data/datapipe-rootcause-m6: an energon
+# watchdog stack dump on the cold fill, not a real pickle error — fork never
+# pickles) — workers>0 is correct and required for compute/data overlap; do NOT
+# set num_workers=0 (it ~halves throughput).
+num_workers: 12

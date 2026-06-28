@@ -140,6 +140,34 @@ def _patch_msc_poisoned_file_hang() -> None:
     ObjectFile.closed = property(closed)
 
 
+def _patch_msc_cold_lock_path() -> None:
+    """multi-storage-client (<= 0.49.0): CacheManager.acquire_lock builds the
+    download lock path as ``os.path.dirname(os.path.join(cache_dir, key))`` where
+    ``key`` is the ABSOLUTE remote object path (e.g. ``/data/yiming/.../.nv-meta/
+    .info.json``). ``os.path.join`` DROPS the cache-dir prefix when the second
+    arg is absolute, so the lock lands at ``/<container>/...`` — a root path — and
+    a COLD cache-miss download fails with PermissionError (``/data`` is a
+    root-owned mount). Cache HITS use a slash-stripped key, so only the cold
+    download breaks; this bites every fresh run that streams a prepared
+    CrudeWebdataset (``dataset.wds_path``) whose ``.nv-meta`` is read in text mode
+    by energon's ``get_dataset_info`` (data/ds-config-2stage). Strip the leading
+    slash so the lock lands under the cache dir, mirroring the cached-file path."""
+    try:
+        import os.path as osp
+
+        from filelock import FileLock
+        from multistorageclient.cache import CacheManager
+    except ImportError:  # streaming extras not installed; nothing to patch
+        return
+
+    def acquire_lock(self: Any, key: str) -> Any:
+        file_dir = osp.dirname(osp.join(self._get_cache_dir(), key.lstrip("/")))
+        lock_file = osp.join(file_dir, f".{osp.basename(key)}.lock")
+        return FileLock(lock_file, timeout=self.DEFAULT_FILE_LOCK_TIMEOUT)
+
+    CacheManager.acquire_lock = acquire_lock
+
+
 def _bootstrap_env() -> None:
     """Derive MSC/Azure env vars from AZURE_SAS_TOKEN (a full SAS URL). Never
     overwrites existing variables, so a cluster can provide them externally.
@@ -152,6 +180,7 @@ def _bootstrap_env() -> None:
     # (and log at WARNING+), so nothing actionable is lost.
     logging.getLogger("azure").setLevel(logging.WARNING)
     _patch_msc_poisoned_file_hang()
+    _patch_msc_cold_lock_path()
     cache_dir = os.environ.setdefault(
         "MSC_CACHE_DIR", str(Path.home() / ".cache" / "vlm" / "msc-cache")
     )

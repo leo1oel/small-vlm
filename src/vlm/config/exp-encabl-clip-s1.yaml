@@ -1,0 +1,65 @@
+defaults:
+  - cfg
+  - model: qwen3-0.6b-clip
+  - trainer: pretrain # version=plain + unfreeze=connector-only (caption pretrain)
+  - inference: default
+  - dataset: energon-bee-stage2-wds
+  - override hydra/job_logging: rich
+  - _self_
+
+# ENCODER ABLATION — Group G1 (pretrained CLIP-ViT-L/14-336 tower), STAGE 1.
+# Caption pretrain on bee_stage2 (~12M; we run ~10M). Freeze BOTH the Qwen3-0.6B
+# backbone AND the CLIP tower (pretrain unfreeze = connector-only), train only
+# the MLP connector on "<image> -> caption". Symmetric with G2 (native) — the
+# ONLY difference is this CLIP tower vs encoder-free raw patches. CLIP stays
+# frozen throughout (canonical LLaVA-1.5; the ablation varies the encoder's
+# IDENTITY, not whether it trains). Visual experts OFF, BREEN OFF.
+#
+# Stage 2 resumes from this run's checkpoint via exp-encabl-clip-s2
+# (VLM_S1_CKPT=<this run's checkpoint dir>).
+
+trainer:
+  # --- max-speed (0.6B + frozen CLIP on A100; bottleneck is Azure data) ---
+  deepspeed: null
+  bf16: true
+  tf32: true
+  gradient_checkpointing: false
+  attn_implementation: flash_attention_2 # LM mask -> FA2 (CLIP uses its own attn)
+  optim: adamw_torch_fused
+  loss_chunk_size: 1024
+  torch_compile: false # graph-breaks + recompiles -> ~20x slower (report.md)
+  ddp_timeout: 7200
+  include_num_input_tokens_seen: non_padding # wandb logs total tokens seen
+
+  per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
+  gradient_accumulation_steps: 1
+
+  # EQUAL-TOKEN fairness: SAME budget (32000) + SAME max_steps as G2/native.
+  # CLIP-B/16 = 196 tokens/img (< native's <=280) so it covers slightly MORE
+  # samples (~10.8M) at the identical token budget. max_steps set by the binding
+  # native group (47.8 samples/microbatch @ 32000 -> 286.8/step -> 35000 ≈ 10M).
+  max_steps: 35000
+  save_steps: 2500
+  save_total_limit: null
+  save_only_model: false
+  warmup_steps: 350
+
+  learning_rate:
+    language_model_learning_rate: 8e-4 # no-op: backbone frozen
+    connector_learning_rate: 8e-4 # random-init MLP connector
+    visual_encoder_learning_rate: 8e-4 # no-op: CLIP frozen
+    default_lr: 8e-4
+
+  run_name: encabl-clip-s1
+
+hydra:
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: INFO
+  run:
+    dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

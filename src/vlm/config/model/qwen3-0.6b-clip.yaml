@@ -1,0 +1,33 @@
+defaults:
+  - _self_
+
+# Encoder-ablation arm G1: pretrained CLIP-ViT-B/16 tower + MLP connector on the
+# Qwen3-0.6B backbone — the symmetric twin of qwen3-0.6b-unified (G2, native
+# encoder-free raw patches). The ONLY intended difference between G1 and G2 is
+# the visual pathway; backbone, data, template, schedule and batch shape match.
+#
+# CLIP-ViT-B/16 @ 224px -> 196 patch tokens/image (224^2 / 16^2, CLS dropped),
+# tapped at the penultimate layer (standard LLaVA tap). CLIP hidden 768 -> the
+# mlp_2_gelu connector maps 768 -> Qwen3-0.6B hidden 1024. (Captain's choice:
+# clip-vit-base-patch16, not -large; mirrors qwen3-1.7b-clip.)
+#
+# Visual experts OFF, BREEN/learnable_query OFF (both default-disabled; not
+# enabled here) — a plain VLM, exactly like G2.
+
+language_model:
+  hf_name: Qwen/Qwen3-0.6B
+  max_seq_length: 4096
+
+visual_encoder:
+  hf_name: openai/clip-vit-base-patch16
+  output_layer: -2 # penultimate-layer features (standard LLaVA tap)
+  use_cls_token: false # drop CLS -> 196 patch tokens spliced per image
+
+connector:
+  name: mlp_2_gelu
+  type: mlp
+
+audio:
+  enabled: false # vision-only ablation; symmetric with the unified arm
+
+name: qwen3-0.6b-clip
