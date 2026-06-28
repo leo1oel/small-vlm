@@ -1,14 +1,14 @@
 defaults:
   - cfg
-  - model: qwen3-0.6b-clip
+  - model: qwen3-1.7b-clip
   - trainer: pretrain # version=plain + unfreeze=connector-only (caption pretrain)
   - inference: default
   - dataset: energon-bee-stage2-wds
   - override hydra/job_logging: rich
   - _self_
 
-# ENCODER ABLATION — Group G1 (pretrained CLIP-ViT-L/14-336 tower), STAGE 1.
-# Caption pretrain on bee_stage2 (~12M; we run ~10M). Freeze BOTH the Qwen3-0.6B
+# ENCODER ABLATION — Group G1 (pretrained CLIP-ViT-B/16 tower), STAGE 1.
+# Caption pretrain on bee_stage2 (~12M; we run ~7.5M). Freeze BOTH the Qwen3-1.7B
 # backbone AND the CLIP tower (pretrain unfreeze = connector-only), train only
 # the MLP connector on "<image> -> caption". Symmetric with G2 (native) — the
 # ONLY difference is this CLIP tower vs encoder-free raw patches. CLIP stays
@@ -34,17 +34,16 @@ trainer:
   per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
   gradient_accumulation_steps: 1
 
-  # EQUAL-TOKEN fairness: SAME budget (32000) + SAME max_steps as native-G2.
-  # Target 5e9 non-padding input tokens (anchored on the measured native rate:
-  # ~82.6k tok/step -> 60500 steps). CLIP-B/16 = 196 img tokens (< native's
-  # ~280) so at the identical budget+steps it covers slightly MORE samples and
-  # its own non-pad total runs a touch below 5e9 -- inherent to the encoder
-  # ablation; budget+steps are held identical, which is the fair control.
-  max_steps: 60500
+  # EQUAL-TOKEN fairness: SAME budget (24000) + SAME max_steps as native-G2.
+  # 5e9 EFFECTIVE tokens (budget × steps × world) = 5e9 / (24000 × 6) = 34722.
+  # budget+steps held identical to native; CLIP-B/16 = 196 img tokens (< native's
+  # ~280) so it covers slightly MORE samples per step -- inherent to the encoder
+  # ablation, which is exactly the variable under test. (CLIP @24000 peaks ~64GB.)
+  max_steps: 34722
   save_steps: 2500
   save_total_limit: null
   save_only_model: false
-  warmup_steps: 605
+  warmup_steps: 347
 
   learning_rate:
     language_model_learning_rate: 8e-4 # no-op: backbone frozen

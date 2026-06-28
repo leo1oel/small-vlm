@@ -1,6 +1,6 @@
 defaults:
   - cfg
-  - model: qwen3-0.6b-unified
+  - model: qwen3-1.7b-unified
   - trainer: finetune # unfreeze=LM+connector (vision tower stays frozen: n/a here)
   - inference: default
   - dataset: energon-honey-sft-wds
@@ -36,12 +36,12 @@ trainer:
   per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
   gradient_accumulation_steps: 1
 
-  # Target 1e9 non-padding input tokens (canonical metric). Measured @ budget
-  # 20000 (6xA100, full local Honey): 59.4k non-pad tok/s, 0.787 steps/s ->
-  # ~75.4k tok/step (~38 samples/step x ~1960 tok/sample). 1e9 / 75.4k = 13250
-  # steps ≈ 0.51M samples ≈ 0.48 epochs of Honey (1.072M) -- UNDER 1 epoch.
-  # EQUAL-TOKEN fairness: CLIP-G1 uses the IDENTICAL budget 20000 + max_steps.
-  max_steps: 13250
+  # 1e9 EFFECTIVE tokens (budget × steps × world). max_steps = 1e9 / (14000 × 6)
+  # = 11905 @ budget 14000 -> ~0.41M samples ≈ 0.38 epochs of Honey (1.072M) --
+  # UNDER 1 epoch (captain accepted: S2 stays at 1e9 effective, no full pass).
+  # budget=14000 (was 20000; 1.7B full-param OOMs there; 14000 peaks ~65GB and
+  # is faster than 10000). EQUAL-TOKEN fairness: CLIP-G1 uses IDENTICAL budget+steps.
+  max_steps: 11905
   save_steps: 2500 # ~5 checkpoints
   save_total_limit: null
   save_only_model: false

@@ -1,6 +1,6 @@
 defaults:
   - cfg
-  - model: qwen3-0.6b-unified
+  - model: qwen3-1.7b-unified
   - trainer: pretrain # version=plain + unfreeze=connector-only (caption pretrain)
   - inference: default
   - dataset: energon-bee-stage2-wds
@@ -8,9 +8,9 @@ defaults:
   - _self_
 
 # ENCODER ABLATION — Group G2 (native encoder-free raw patches), STAGE 1.
-# Caption pretrain on bee_stage2 (~12M; we run ~10M). Freeze the Qwen3-0.6B
+# Caption pretrain on bee_stage2 (~12M; we run ~7.5M). Freeze the Qwen3-1.7B
 # backbone, train only the raw-patch connector on "<image> -> caption" (plain
-# template supervises the whole caption). Identical to G1 (qwen3-0.6b-clip)
+# template supervises the whole caption). Identical to G1 (qwen3-1.7b-clip)
 # except the visual pathway. Visual experts OFF, BREEN OFF (both default off).
 #
 # Stage 2 resumes from this run's checkpoint via exp-encabl-native-s2
@@ -42,16 +42,16 @@ trainer:
   per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
   gradient_accumulation_steps: 1
 
-  # --- schedule: target 5e9 non-padding input tokens (canonical metric).
-  # Measured @ budget 32000 (6xA100, full local bee): 63.7k non-pad tok/s,
-  # 0.771 steps/s -> ~82.6k tok/step (~293 samples/step x ~282 tok/sample).
-  # 5e9 / 82.6k = 60500 steps ≈ 17.7M samples ≈ 1.41 epochs of bee (12.60M).
-  # EQUAL-TOKEN fairness: CLIP-G1 uses the IDENTICAL budget 32000 + max_steps. ---
-  max_steps: 60500
-  save_steps: 2500 # 24 checkpoints; frequent enough for safe preemption-resume
+  # --- schedule: 5e9 EFFECTIVE tokens (budget × steps × world_size).
+  # max_steps = 5e9 / (24000 × 6) = 34722 @ budget 24000 -> ~7.4M samples
+  # ≈ 0.59 epochs of bee (12.60M). On 6xA100, Qwen3-1.7B connector-only
+  # (~130 samples/s, ~1.60 s/step) ≈ 15.4 h. budget=24000 (was 32000; 1.7B
+  # OOMs there). EQUAL-TOKEN fairness: CLIP-G1 uses the IDENTICAL budget+steps. ---
+  max_steps: 34722
+  save_steps: 2500 # ~14 checkpoints; frequent enough for safe preemption-resume
   save_total_limit: null
   save_only_model: false # resume needs optimizer + energon stream state
-  warmup_steps: 605 # ~1% of max_steps
+  warmup_steps: 347 # ~1% of max_steps
 
   learning_rate:
     language_model_learning_rate: 8e-4 # no-op: backbone frozen in pretrain

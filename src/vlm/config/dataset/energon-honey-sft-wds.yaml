@@ -55,12 +55,13 @@ shuffle_buffer_size: 2000
 # edges against the live stream (effective_sample_length distribution).
 length_buckets: [512, 768, 1024, 1536, 2304, 4096]
 # ~constant effective tokens per micro-batch (bucket bs = budget // edge).
-# EMPIRICAL (A100 80GB, grad-ckpt OFF, full-param finetune): 32000 OOMs (the
-# unfrozen 0.6B LM's grads + fused-AdamW state leave far less room than the
-# connector-only Stage-1); 20000 peaks ~56GB (safe headroom for 6-way DDP
-# grad buckets), 16000 ~42GB. 20000 is the Stage-2 default (vs Stage-1's 32000
-# connector-only). Same value for BOTH encoder groups -> equal tokens/step.
-batch_token_budget: 20000
+# EMPIRICAL (A100 80GB, grad-ckpt OFF, Qwen3-1.7B FULL-PARAM finetune): the
+# unfrozen 1.7B LM's grads + fused-AdamW state are heavy -- 20000 OOMs (peak
+# >81GB), 14000 peaks ~65GB native / ~65GB CLIP (~16GB headroom), 10000 ~50GB.
+# 14000 is the Stage-2 default: it also runs FASTER than 10000 (tflops 42 vs 33
+# -- bigger batch amortizes the fixed full-param overhead). Same value for BOTH
+# encoder groups -> equal tokens/step.
+batch_token_budget: 14000
 max_samples_per_sequence: 100 # randomness vs. sequential-read efficiency
 # Azure fetch latency is fat-tailed; a high worker count amortizes stragglers.
 # The "PicklingError" is a phantom (data/datapipe-rootcause-m6: an energon
