@@ -620,9 +620,9 @@ def vlm(cfg: AppConfig) -> None:
         # leave it None there (prefix-from-labels is already correct). Serialized
         # (flat name) so a resume re-reads the same skip set.
         skip_ids: list[int] | None = None
-        if str(cfg.model.cross_modal_mask.mode) != "none" and str(
-            cfg.trainer.version
-        ).startswith("qwen"):
+        if str(cfg.model.cross_modal_mask.mode) != "none" and str(cfg.trainer.version).startswith(
+            "qwen"
+        ):
             tok = processor.tokenizer
             unk = tok.unk_token_id
             cand = [
@@ -630,9 +630,7 @@ def vlm(cfg: AppConfig) -> None:
                 tok.convert_tokens_to_ids("<|im_end|>"),
                 *tok.encode("\n", add_special_tokens=False),
             ]
-            skip_ids = [
-                int(t) for t in cand if isinstance(t, int) and t >= 0 and t != unk
-            ] or None
+            skip_ids = [int(t) for t in cand if isinstance(t, int) and t >= 0 and t != unk] or None
         model.config.cross_modal_prefix_skip_ids = skip_ids
         # Image-grounding margin loss dials (spec 2026-06-18). Pure training
         # loss, no module to build -> set here on model.config like the

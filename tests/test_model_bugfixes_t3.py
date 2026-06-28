@@ -22,7 +22,7 @@ torch = pytest.importorskip("torch")
 try:
     from vlm.data.data_arguments import DataArguments
     from vlm.data.dataset import preprocess_qwen, tokenizer_multimodal_token
-    from vlm.models import VLMProcessor, get_dynamic_vlm
+    from vlm.models import get_dynamic_vlm
     from vlm.models.image_processing_raw import RawImageProcessor
     from vlm.vlm import require_generation_modules
 except ModuleNotFoundError as e:  # pragma: no cover - slim envs

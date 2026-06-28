@@ -343,16 +343,12 @@ def test_prefix_skip_ids_under_qwen_delimiter_unmasking():
 
     # FIX: skip the delimiters -> first answer = pos 5 -> prefix = {0,1,2,3,4}.
     skip = [IM_START, IM_END]
-    fixed = build_cross_modal_mask(
-        attn, blocks, labels, mode="img2q_window", prefix_skip_ids=skip
-    )
+    fixed = build_cross_modal_mask(attn, blocks, labels, mode="img2q_window", prefix_skip_ids=skip)
     assert allowed(fixed, 1, 2)  # image row -> question key (non-causal edge)
     assert allowed(fixed, 1, 0)  # image row -> system prefix key (prefix kept)
     assert not allowed(fixed, 1, 5)  # answer content key still blocked
 
-    fixed_p = build_cross_modal_mask(
-        attn, None, labels, mode="prefix_lm", prefix_skip_ids=skip
-    )
+    fixed_p = build_cross_modal_mask(attn, None, labels, mode="prefix_lm", prefix_skip_ids=skip)
     assert allowed(fixed_p, 1, 2) and allowed(fixed_p, 2, 1)  # bidirectional img<->q
     assert not allowed(fixed_p, 1, 5)  # answer not in the prefix
 
