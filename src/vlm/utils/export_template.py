@@ -36,6 +36,9 @@ Refresh the committed template after editing the live model::
 from __future__ import annotations
 
 import ast
+import builtins
+import re
+import symtable
 import textwrap
 from pathlib import Path
 
@@ -198,6 +201,70 @@ def _emit_class(
     return "\n".join(lines)
 
 
+# Module globals Python always provides plus the implicit ``__class__`` cell a
+# zero-arg ``super()`` introduces — never imported, never flagged as drift.
+_IMPLICIT_GLOBALS = frozenset(
+    {"__name__", "__file__", "__doc__", "__builtins__", "__spec__", "__loader__", "__package__", "__class__"}
+)
+_PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}", flags=re.DOTALL)
+
+
+def _render_for_analysis(template_text: str) -> str:
+    """Replace each Jinja ``{{ expr }}`` placeholder with a bare identifier so the
+    template parses as real Python. The same ``expr`` maps to the same name, so a
+    placeholder used as both an import binding and a base class stays consistent."""
+    return _PLACEHOLDER_RE.sub(lambda m: re.sub(r"\W", "_", m.group(1).strip()), template_text)
+
+
+def _module_bound_names(tree: ast.Module) -> set[str]:
+    """Names bound at module scope of the emitted file: header imports, the
+    emitted helpers/classes, and module-level assignments (e.g. ``log``)."""
+    bound: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            bound.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            bound.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, ast.Assign):
+            bound.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            bound.add(node.target.id)
+    return bound
+
+
+def _global_loads(table: symtable.SymbolTable) -> set[str]:
+    """Every name resolved via a global (module-scope) lookup anywhere in the
+    file. ``symtable`` does the real scope analysis, so method locals, args,
+    comprehension targets, closure/free vars and attribute names are excluded —
+    only genuinely free global ``Name`` loads remain."""
+    names = {sym.get_name() for sym in table.get_symbols() if sym.is_global()}
+    for child in table.get_children():
+        names |= _global_loads(child)
+    return names
+
+
+def _assert_all_names_bound(template_text: str) -> None:
+    """Fail generation if any global name the emitted bodies reference is not
+    bound by the ``_HEADER`` imports, an emitted helper/class, a builtin, or an
+    implicit module global. This pins the hand-maintained ``_HEADER`` import
+    block to the names the live model actually uses: adding a top-level import to
+    modeling_vlm.py that ``_HEADER`` lacks now fails here (and in the in-sync
+    test) instead of shipping a NameError in the exported model."""
+    source = _render_for_analysis(template_text)
+    tree = ast.parse(source)
+    bound = _module_bound_names(tree) | set(dir(builtins)) | _IMPLICIT_GLOBALS
+    unbound = sorted(_global_loads(symtable.symtable(source, "<export_template>", "exec")) - bound)
+    if unbound:
+        raise AssertionError(
+            "export template references unbound global name(s): "
+            + ", ".join(unbound)
+            + " — the exported model would raise NameError. Add the missing "
+            "import(s) to export_template._HEADER to mirror modeling_vlm.py."
+        )
+
+
 def build_modeling_template(modeling_source: str | None = None) -> str:
     """Return the rendered-to-Jinja text of the static export modeling file."""
     src = modeling_source if modeling_source is not None else MODELING_PATH.read_text()
@@ -235,7 +302,9 @@ def build_modeling_template(modeling_source: str | None = None) -> str:
     )
 
     parts = [_HEADER.rstrip(), "", "", helper_text, "", "", vlm_class, "", "", causal_class, _FOOTER]
-    return "\n".join(parts).rstrip() + "\n"
+    text = "\n".join(parts).rstrip() + "\n"
+    _assert_all_names_bound(text)
+    return text
 
 
 def regenerate(write: bool = True) -> str:

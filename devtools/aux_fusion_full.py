@@ -142,10 +142,12 @@ class FullProbe:
     # ---- input builders --------------------------------------------------
     def _embed_with_image(self, doc, image):
         text = self.da.image_token + "\n" + doc_to_prompt(doc)
-        # BREEN: inject one <query> per image at the trained placement, mirroring
-        # generate_response, so the probe matches the trained/live input contract
-        # (the splice expands <query> into the learnable query block). No-op for
-        # non-BREEN checkpoints.
+        # BREEN: inject one <query> per image via inject_query_placeholders (the
+        # splice expands <query> into the learnable query block), mirroring that
+        # one piece of generate_response's input contract. No-op for non-BREEN
+        # checkpoints. NOTE: apply_image_position is NOT mirrored, so this fixed
+        # front-image layout assumes image_position='keep'; for question_first/
+        # sandwich/random checkpoints it diverges from live inference.
         if self.da.learnable_query_enabled:
             _turns = [{"from": "human", "value": text}]
             inject_query_placeholders(_turns, n_images=1, data_args=self.da)
