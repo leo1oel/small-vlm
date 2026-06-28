@@ -1133,7 +1133,7 @@ def build_energon_train_loader(
     # Dataset-only config validation (#27 etc.) — guards direct callers/tests,
     # in addition to the fail-fast validate_config(cfg) at the CLI entry.
     validate_dataset_config(dataset_config)
-    # The cold Azure shuffle-buffer fill (~90 s loose-file / ~42 s WDS) exceeds
+    # The cold Azure shuffle-buffer fill (~90 s loose-file / ~111 s WDS) exceeds
     # energon's 60 s watchdog default on EVERY startup, producing a spurious
     # all-thread stack dump that has been repeatedly misread as a PicklingError
     # (it is not — fork never pickles; data/datapipe-rootcause-m6). Raise the

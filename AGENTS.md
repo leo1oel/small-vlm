@@ -165,7 +165,8 @@ Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
     audio item — prepared-WDS audio is unsupported), and `get_train_dataset` reads
     the `.nv-meta` dir directly — no jsonl download / index / metadataset. One
     sequential GET streams ~10k samples, so no per-image round-trip and far fewer
-    fat-tail stragglers. Example config:
+    fat-tail stragglers (the cold shuffle-buffer fill itself remains — see sharp
+    edge 1). Example config:
     `config/dataset/energon-bee-stage2-wds.yaml` →
     `msc://azure/data/yiming/bee_stage2/train-wds`. The WDS task encoders subclass
     the jsonl ones and override ONLY `cookers`, so

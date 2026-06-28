@@ -366,6 +366,7 @@ class DatasetConfig:
     # --- streaming dials (type: "energon" only) ---
     # blob folder -> blend weight; a single entry means no blending. Each folder
     # must contain a prepared <jsonl_name> (auto-prepared on first use).
+    # Mutually exclusive with `wds_path` (the prepared-WebDataset layout below).
     folders: dict[str, float] | None = None
     jsonl_name: str = "train.jsonl"
     # Prepared-WebDataset layout (type "energon" only; mutually exclusive with
@@ -394,7 +395,8 @@ class DatasetConfig:
     num_workers: int = 4
     # Length-grouped batching (type "energon" only): upper edges of the
     # effective-length buckets (post-splice tokens: text + per-image patches
-    # + per-audio frames). Samples batch only within their bucket, so padding
+    # + per-audio frames + per-query BREEN rows when learnable_query is on).
+    # Samples batch only within their bucket, so padding
     # is bounded by bucket width. None = no bucketing. Buckets are
     # worker-local — keep them few and wide so each fills promptly.
     length_buckets: list[int] | None = None

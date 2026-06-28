@@ -11,8 +11,11 @@ Two layouts exist on the blob:
   ``energon prepare`` — ``{00000..NNNNN}.tar`` shards (image bytes bundled IN the
   tar) + a ``.nv-meta/`` dir (``dataset.yaml`` with ``__class__:
   CrudeWebdataset``, ``split.yaml``, ``index.sqlite`` …). One sequential GET
-  streams ~10k samples, so there is no per-image round-trip, no ~90 s cold-start
-  fill, and far fewer fat-tail stragglers (data/datapipe-rootcause-m6).
+  streams ~10k samples, so there is no per-image round-trip and far fewer
+  fat-tail stragglers (data/datapipe-rootcause-m6). The cold shuffle-buffer fill
+  itself remains (~111 s for bee_stage2/train-wds, vs ~90 s on the loose path),
+  covered by the raised ``watchdog_initial_timeout_seconds`` (see
+  ``build_energon_train_loader``).
 
 The only structural difference is the cooker: a prepared CrudeWebdataset hands
 the cooker a raw sample dict whose fields ARE the in-tar members

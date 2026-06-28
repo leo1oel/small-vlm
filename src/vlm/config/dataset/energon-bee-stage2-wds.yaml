@@ -8,10 +8,10 @@
 #
 # vs. energon-bee-caption (loose-file jsonl, Stage-1, ~998k): the prepared WDS
 # bundles image bytes IN the tar, so one sequential GET streams ~10k samples
-# instead of one GET per image — no ~90s cold-start fill, far fewer fat-tail
-# stragglers, and no spurious watchdog "PicklingError" dumps
-# (data/datapipe-rootcause-m6). Stream with workers>0: the loader raises the
-# watchdog INITIAL timeout so the cold fill no longer trips the 60s default.
+# instead of one GET per image — far fewer fat-tail stragglers and no spurious
+# watchdog "PicklingError" dumps (data/datapipe-rootcause-m6). Stream with
+# workers>0: the cold shuffle-buffer fill (~111s) trips energon's 60s watchdog
+# default, so the loader raises the watchdog INITIAL timeout to cover it.
 #
 # Credentials: AZURE_SAS_TOKEN (env or .env). Nothing is downloaded — energon
 # reads the .nv-meta dir and streams shards lazily through the MSC range cache.
