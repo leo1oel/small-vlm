@@ -633,16 +633,21 @@ class VLMForCausalLM({{ causal_parent_class }}):
         self.learnable_query = self._build_learnable_query(config)
         self._build_generation_modules(config)
         # S1 caption-token dropout (exp10): rank-identical optimizer-step mirror
-        # for the input-word-dropout ramp. Registered ONLY when enabled, so the
-        # baseline state_dict is unchanged (audio / visual_aux pattern).
-        # Non-persistent: it is a transient mirror of state.global_step (re-synced
-        # every step by VLMTrainer._sync_caption_dropout_step), not trained state
-        # — so it stays out of checkpoints and never collides across stages (S2
-        # disables the dropout and so never registers it).
-        if bool(getattr(config, "caption_token_dropout_enabled", False)):
-            self.register_buffer(
-                "_caption_dropout_step", torch.zeros((), dtype=torch.long), persistent=False
-            )
+        # for the input-word-dropout ramp, re-synced every step by
+        # VLMTrainer._sync_caption_dropout_step. Registered UNCONDITIONALLY: it is
+        # a NON-PERSISTENT transient mirror of state.global_step (never trained
+        # state), so it stays out of the state_dict / checkpoints and the
+        # disabled-arm baseline is bit-identical regardless. The forward gates on
+        # caption_token_dropout_prob(), which returns 0.0 when disabled, so the
+        # buffer is inert unless an arm opts in. Gating registration on the
+        # enabled flag would be unsound: vlm.vlm() flattens that flag onto
+        # model.config AFTER load_model() has already run __init__, so on a fresh
+        # build the gate would never fire and the mirrored step would be stuck at 0
+        # (the ramp pinned at p_start) while a resume — which reads the flag from
+        # checkpoint config.json at construction — would register it and diverge.
+        self.register_buffer(
+            "_caption_dropout_step", torch.zeros((), dtype=torch.long), persistent=False
+        )
         self.post_init()
         log.info(f"DynamicCausalVLM class {self.__class__.__name__} initialized.")
 

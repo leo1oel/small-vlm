@@ -209,14 +209,45 @@ def _image_batch(n_patches: int = 4) -> dict[str, Any]:
     )
 
 
-def test_buffer_registered_only_when_enabled() -> None:
-    """The rank-identical step buffer (mirrored by VLMTrainer) is registered ONLY
-    when enabled, so a disabled / baseline checkpoint's state_dict is unchanged
-    and is non-persistent (never serialized)."""
-    assert not hasattr(_build_vlm(enabled=False), "_caption_dropout_step")
-    on = _build_vlm(enabled=True)
-    assert hasattr(on, "_caption_dropout_step")
-    assert "_caption_dropout_step" not in on.state_dict()  # non-persistent
+def test_buffer_registered_unconditionally_and_non_persistent() -> None:
+    """The rank-identical step buffer (mirrored by VLMTrainer) is registered
+    UNCONDITIONALLY — it must exist on a fresh build BEFORE vlm.vlm flattens the
+    enabled flag onto model.config (which only happens after construction), so the
+    ramp is never stuck at step 0. It stays NON-PERSISTENT whether enabled or not,
+    so a disabled / baseline checkpoint's state_dict is unchanged (bit-identical
+    baseline preserved) and the step is never serialized."""
+    for enabled in (False, True):
+        model = _build_vlm(enabled=enabled)
+        assert hasattr(model, "_caption_dropout_step")
+        assert "_caption_dropout_step" not in model.state_dict()  # non-persistent
+
+
+def test_production_ordering_enabled_after_construction() -> None:
+    """Reproduces the real vlm.vlm wiring (the bug this guards): load_model()
+    constructs the model BEFORE the caption_token_dropout_* dials are flattened
+    onto model.config, so the build must NOT depend on the flag being present at
+    __init__. Build with the dropout disabled (flag False at construction, like
+    the fresh-build path), THEN enable it on the already-built model exactly as
+    vlm.vlm does — the buffer must still be present and the ramp must advance
+    p_start -> p_end off the mirrored optimizer step (not be pinned at p_start)."""
+    model = _build_vlm(enabled=False)
+    model.config.caption_token_dropout_enabled = True
+    model.config.caption_token_dropout_p_start = 0.10
+    model.config.caption_token_dropout_p_end = 0.30
+    model.config.caption_token_dropout_max_steps = 100
+    assert hasattr(model, "_caption_dropout_step"), "buffer missing on fresh-build path"
+
+    # Resolve the rate from the buffer the forward reads (filling it as the trainer
+    # would each optimizer step), so a missing/ignored buffer fails here.
+    model._caption_dropout_step.fill_(0)
+    p_lo = caption_token_dropout_prob(model.config, int(model._caption_dropout_step))
+    model._caption_dropout_step.fill_(50)
+    p_mid = caption_token_dropout_prob(model.config, int(model._caption_dropout_step))
+    model._caption_dropout_step.fill_(100)
+    p_hi = caption_token_dropout_prob(model.config, int(model._caption_dropout_step))
+    assert p_lo == pytest.approx(0.10)
+    assert p_hi == pytest.approx(0.30)
+    assert p_lo < p_mid < p_hi, "ramp pinned at p_start (buffer not advancing)"
 
 
 def test_forward_enabled_runs_and_changes_loss() -> None:

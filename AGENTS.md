@@ -437,7 +437,11 @@ bit-identical baseline** (the forward never touches `inputs_embeds`). Mechanics:
     OFF); ③ `modeling_vlm.py` module-level `caption_token_dropout_rate` /
     `caption_token_dropout_prob` / `apply_caption_token_dropout` helpers + the
     `_apply_caption_token_dropout` method + the `_caption_dropout_step` buffer
-    (registered ONLY when enabled → baseline state_dict unchanged); ④
+    (registered **unconditionally** but **non-persistent**, so the baseline
+    state_dict is unchanged regardless — gating registration on the enabled flag
+    is unsound because `vlm.py` flattens that flag onto `model.config` *after*
+    `__init__` has already run, so a fresh build would never register it and the
+    ramp would be pinned at `p_start`); ④
     `vlm_trainer.py` `_sync_caption_dropout_step`. Regenerate the hub export
     template after the `modeling_vlm.py` edit. **S1 only** — the `-s2` config is
     the native S2 unchanged (the regularizer targets caption pretraining). Test:
