@@ -736,6 +736,17 @@ def vlm(cfg: AppConfig) -> None:
         model.config.caption_token_dropout_p_start = float(ctd.p_start)
         model.config.caption_token_dropout_p_end = float(ctd.p_end)
         model.config.caption_token_dropout_max_steps = int(cfg.trainer.max_steps)
+        if bool(ctd.enabled) and int(cfg.trainer.max_steps) <= 0:
+            log.warning(
+                "caption_token_dropout is enabled but trainer.max_steps=%d (<= 0, e.g. "
+                "epoch-based training): the rate-ramp denominator is unresolved, so the "
+                "dropout rate is held CONSTANT at p_end (%.3f) from step 0 instead of "
+                "ramping p_start (%.3f) -> p_end. Set trainer.max_steps explicitly to get "
+                "the intended ramp.",
+                int(cfg.trainer.max_steps),
+                float(ctd.p_end),
+                float(ctd.p_start),
+            )
         log.info("Creating data module")
         if cfg.dataset.type == "energon":
             # lazy import: needs megatron-energon + multistorageclient, which

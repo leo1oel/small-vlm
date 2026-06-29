@@ -811,7 +811,7 @@ def create_dynamic_causal_vlm_class(
             return inputs_embeds
         if not bool(getattr(self.config, "caption_token_dropout_enabled", False)):
             return inputs_embeds
-        step = int(self._caption_dropout_step) if hasattr(self, "_caption_dropout_step") else 0
+        step = int(self._caption_dropout_step)
         p = caption_token_dropout_prob(self.config, step)
         return apply_caption_token_dropout(
             inputs_embeds,
