@@ -170,7 +170,13 @@ def main() -> None:
         "retrieval_top1_centered": m["retrieval_top1_centered"],
     }
 
-    learning = res["self_minus_cross"] > 0.10 and res["retrieval_top1"] > 3.0 / N
+    top1_threshold = 3.0 / N
+    top1_ok = (
+        res["retrieval_top1"] >= 1.0
+        if top1_threshold >= 1.0
+        else res["retrieval_top1"] > top1_threshold
+    )
+    learning = res["self_minus_cross"] > 0.10 and top1_ok
     res["verdict"] = "LEARNING" if learning else "COLLAPSED/WEAK"
 
     print(json.dumps(res, indent=2))
