@@ -10,7 +10,8 @@ defaults:
 # visual FFN experts (mlp_visual + gates), the learnable queries, and the
 # CLIP->LLM distill head (set_trainable force-trains these even with the LM
 # frozen; the build-item-8 fix). The frozen CLIP-L/14-336 teacher distills the
-# 100 queries to its dual-pooled grid (method=breen). Placement = after_image
+# 100 queries to its single-pooled grid (method=breen, single-pool since ST-3:
+# ONE 10x10 adaptive pool of the 24x24 CLIP grid). Placement = after_image
 # (image then queries), the plain caption template.
 #
 # Launch (from THIS worktree — devtools/breen_train.slurm, NOT train_l40s.slurm
