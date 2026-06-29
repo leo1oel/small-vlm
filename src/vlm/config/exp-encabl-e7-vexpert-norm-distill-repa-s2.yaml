@@ -1,0 +1,29 @@
+defaults:
+  - exp-encabl-native-s2
+  - _self_
+
+# 10-EXP ablation — Exp 7 (+ visual expert + visual norm + distill CLIP MID), STAGE 2.
+# Base = exp-encabl-native-s2. Carries the FFN + EVEv2 norm experts + mid-layer
+# REPA CLIP distillation (anti-collapse A+B) through SFT with the LM UNFROZEN.
+# The repa layer + distill head + debias EMA buffers serialize into the S1
+# checkpoint and rebuild on the from_pretrained S2 build (trained buffers
+# loaded). Pair VLM_S1_CKPT with the Exp-7 Stage-1 checkpoint.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true
+  visual_distill:
+    enabled: true
+    method: repa
+    teacher_kind: clip
+    teacher_name: openai/clip-vit-base-patch16
+    layers: [8]
+    debias_target: true
+    debias_momentum: 0.9
+    rkd_dist_weight: 1.0
+
+trainer:
+  visual_distill_weight: 1.0
+  run_name: encabl-e7-vexpert-norm-distill-repa-s2

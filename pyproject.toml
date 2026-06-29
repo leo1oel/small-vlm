@@ -281,6 +281,8 @@ ignore-words-list = "afile,ans,arange,ist,mot,nd,oce,strat,te"
 # "correct" it to `arrange`, breaking the exported model — see tests/test_inference.py).
 # `mis` is the prefix typos splits off `mis-splice`/`mis-trained`/`mis-assignment` in the
 # energon data-path comments.
+# `meaned` is part of `de-meaned`/`DE-MEANED` (mean-subtracted) in the anti-collapse
+# distill comments; typos would "correct" it to `meant`.
 oce = "oce"
 Nd = "Nd"
 pn = "pn"
@@ -290,6 +292,7 @@ consol = "consol"
 PN = "PN"
 arange = "arange"
 mis = "mis"
+meaned = "meaned"
 
 [tool.pytest.ini_options]
 python_files = ["*.py"]

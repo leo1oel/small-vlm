@@ -1,0 +1,30 @@
+defaults:
+  - exp-encabl-native-s1
+  - _self_
+
+# 10-EXP ablation — Exp 8 (+ visual expert + visual norm + distill CLIP SOFTMAX), STAGE 1.
+# Base = exp-encabl-native-s1. Same as Exp 5 (FFN + EVEv2 norm experts + CLIP
+# distill, anti-collapse A+B) EXCEPT the distill site is SELF-SELECTED: softdepth
+# (OURS) learns a softmax over a pool of layers [4,8,12,16,20,24] to pick WHICH
+# depth serves as the internal encoder, instead of pinning eve(final)/repa(mid).
+# The mechanism is byte-identical to main's clean softdepth, gaining anti-collapse
+# only via the §4 dispatch. Teacher = CLIP-base (fair comparison).
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true
+  visual_distill:
+    enabled: true
+    method: softdepth
+    teacher_kind: clip
+    teacher_name: openai/clip-vit-base-patch16
+    layers: [4, 8, 12, 16, 20, 24] # layer pool the softmax self-selects among
+    debias_target: true # (A) EMA per-channel target debias
+    debias_momentum: 0.9
+    rkd_dist_weight: 1.0 # (B) bounded Gram relational
+
+trainer:
+  visual_distill_weight: 1.0
+  run_name: encabl-e8-vexpert-norm-distill-softdepth-s1

@@ -1,0 +1,32 @@
+defaults:
+  - exp-encabl-native-s2
+  - _self_
+
+# 10-EXP ablation — Exp 4 (+ visual expert + distill CLIP), STAGE 2.
+# Base = exp-encabl-native-s2. Carries the FFN visual expert + CLIP distillation
+# (method=eve, anti-collapse A+B) through instruction SFT with the LM UNFROZEN
+# (finetune) — the stage where the anti-collapse feature win can finally
+# translate to grounded generation (the core hypothesis these arms test).
+#
+# All visual_distill_* + visual_expert_* fields serialize into the S1 checkpoint
+# config.json; the from_pretrained S2 build rebuilds the head and LOADS the
+# trained debias EMA buffers (persistent) — init_visual_distill_buffers runs only
+# on the fresh-build (S1) path, so S2 resumes the running estimate rather than
+# resetting it. Pair VLM_S1_CKPT with the Exp-4 Stage-1 checkpoint.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+  visual_distill:
+    enabled: true
+    method: eve
+    teacher_kind: clip
+    teacher_name: openai/clip-vit-base-patch16
+    debias_target: true
+    debias_momentum: 0.9
+    rkd_dist_weight: 1.0
+
+trainer:
+  visual_distill_weight: 1.0
+  run_name: encabl-e4-vexpert-distill-eve-s2

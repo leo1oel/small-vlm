@@ -244,6 +244,54 @@ class VisualDistillConfig:
     # Per-token alignment: "cosine" (neg cosine, CLIP) or "smoothl1" (huber, vae).
     # "" = method default (cosine for clip, smoothl1 for vae).
     loss: str = ""
+    # --- Anti-collapse recipe (see AGENTS.md "Anti-collapse distill port (ST-2)") ---
+    # All default OFF -> bit-identical to the plain per-patch cosine distill.
+    # Applied (eve/repa/softdepth/vae single-projector path) in compute().
+    # (A) debias_target: subtract a running EMA per-CHANNEL mean (across the
+    # batch's images x patches) from the frozen TEACHER target before the cosine,
+    # removing the shared "mean-image" constant the plain cosine collapses onto.
+    # debias_std also divides by the EMA per-channel std (standardize). This is
+    # ACROSS-SAMPLE per-channel centering (an EMA over training), NOT the within-
+    # vector centering cosine already does.
+    debias_target: bool = False
+    debias_momentum: float = 0.9
+    debias_std: bool = False
+    # (B) RKD relational (1904.05068) on per-image POOLED features over the batch:
+    # distance-wise (rkd_dist) + angle-wise (rkd_angle) structure match. Shift/
+    # scale-invariant -> a mean-collapsed student structurally cannot satisfy it.
+    # 0 = off; paper's RKD-only weights are dist=1, angle=2.
+    rkd_dist_weight: float = 0.0
+    rkd_angle_weight: float = 0.0
+    rkd_angle_triplets: int = 512
+    # (C) VICReg variance+covariance floor on the STUDENT projected per-patch
+    # features (over the patch axis). Backstop against dimensional collapse. 0=off.
+    vicreg_var_weight: float = 0.0
+    vicreg_cov_weight: float = 0.0
+    vicreg_gamma: float = 1.0
+    # Linear warmup (in optimizer steps) for the RKD + VICReg weights, ramped
+    # 0 -> full. The relational/variance terms are ill-conditioned on the
+    # untrained connector (random pooled features -> huge early gradients that
+    # diverge the connector in a few steps at the connector LR); the warmup lets
+    # the cosine+debias establish a sane connector first. 0 = no warmup.
+    ac_warmup_steps: int = 0
+    # --- Round-2 anti-collapse levers (see AGENTS.md "Anti-collapse distill port (ST-2)"), each on TOP of
+    # A+B (debias + RKD). All default OFF. ---
+    # MGD (masked generative distillation): per-patch channel-mask the projected
+    # student, regenerate the DEBIASED teacher target through a tiny train-only
+    # decoder (Linear->GELU->Linear, no output bias -> denies mean-coasting),
+    # cosine to the target. Forces the student to encode enough to reconstruct.
+    # mgd_weight = lambda on L_mgd (target ~0.1-0.3x the A-cosine); 0 = off.
+    mgd_weight: float = 0.0
+    mgd_beta: float = 0.5  # channel drop prob (keep = 1 - beta)
+    # SIGReg (sliced isotropy regularizer, "C done right"): a sliced Epps-Pulley
+    # characteristic-function test pushing the student per-patch features toward
+    # N(0, I) over M random unit directions (resampled each step), bounded
+    # gradient. Small weight + long warmup so it does NOT starve alignment the
+    # way VICReg (round-1 arm C) did. 0 = off.
+    sigreg_weight: float = 0.0
+    sigreg_dirs: int = 256  # M random projection directions per step
+    sigreg_knots: int = 17  # quadrature knots on [-5, 5]
+    sigreg_warmup_steps: int = 0  # linear 0->full ramp (separate from ac_warmup)
 
 
 @dataclass

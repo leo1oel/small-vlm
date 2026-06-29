@@ -244,6 +244,22 @@ class VisualDistillHead(nn.Module):
         loss_type: str,
         num_fine: int = 64,
         num_coarse: int = 36,
+        debias_target: bool = False,
+        debias_momentum: float = 0.9,
+        debias_std: bool = False,
+        rkd_dist_weight: float = 0.0,
+        rkd_angle_weight: float = 0.0,
+        rkd_angle_triplets: int = 512,
+        vicreg_var_weight: float = 0.0,
+        vicreg_cov_weight: float = 0.0,
+        vicreg_gamma: float = 1.0,
+        ac_warmup_steps: int = 0,
+        mgd_weight: float = 0.0,
+        mgd_beta: float = 0.5,
+        sigreg_weight: float = 0.0,
+        sigreg_dirs: int = 256,
+        sigreg_knots: int = 17,
+        sigreg_warmup_steps: int = 0,
     ) -> None:
         super().__init__()
         self.method: str = method
@@ -252,6 +268,32 @@ class VisualDistillHead(nn.Module):
         self.teacher_dim: int = teacher_dim
         self.num_fine: int = num_fine
         self.num_coarse: int = num_coarse
+        # Anti-collapse recipe (see AGENTS.md "Anti-collapse distill port (ST-2)"); all default off.
+        self.debias_target: bool = debias_target
+        self.debias_momentum: float = debias_momentum
+        self.debias_std: bool = debias_std
+        self.rkd_dist_weight: float = rkd_dist_weight
+        self.rkd_angle_weight: float = rkd_angle_weight
+        self.rkd_angle_triplets: int = rkd_angle_triplets
+        self.vicreg_var_weight: float = vicreg_var_weight
+        self.vicreg_cov_weight: float = vicreg_cov_weight
+        self.vicreg_gamma: float = vicreg_gamma
+        self.ac_warmup_steps: int = ac_warmup_steps
+        # Round-2 levers (see AGENTS.md "Anti-collapse distill port (ST-2)").
+        self.mgd_weight: float = mgd_weight
+        self.mgd_beta: float = mgd_beta
+        self.sigreg_weight: float = sigreg_weight
+        self.sigreg_dirs: int = sigreg_dirs
+        self.sigreg_knots: int = sigreg_knots
+        self.sigreg_warmup_steps: int = sigreg_warmup_steps
+        if ac_warmup_steps > 0 or sigreg_warmup_steps > 0:
+            # Optimizer-step counter for the RKD/VICReg AND SIGReg warmups. The
+            # trainer mirrors its (rank-identical) global_step into this buffer
+            # once per optimizer.step() (VLMTrainer._sync_distill_warmup_step);
+            # _compute_anticollapse only READS it for the ramp. Persisted so a
+            # resume keeps ramping; registered only when some warmup is on, so
+            # non-warmup checkpoints are unchanged.
+            self.register_buffer("_ac_step", torch.zeros((), dtype=torch.long))
         hidden = head_hidden if head_hidden > 0 else llm_dim
         if method == "breen":
             # BREEN `norm_layer`: project the CLIP target UP to LLM-hidden
@@ -280,6 +322,25 @@ class VisualDistillHead(nn.Module):
                     "a length-1 softmax is constant (no gradient to depth_logits)"
                 )
             self.depth_logits = nn.Parameter(torch.zeros(len(layers)))
+        # Anti-collapse (A): EMA per-channel mean/var of the teacher target (the
+        # shared "mean-image" constant). Buffers (no grad, persisted) so a reload
+        # resumes the running estimate. Registered iff debias_target (serialized).
+        if self.debias_target:
+            self.register_buffer("debias_mean", torch.zeros(teacher_dim))
+            self.register_buffer("debias_var", torch.ones(teacher_dim))
+            self.register_buffer("debias_inited", torch.zeros((), dtype=torch.bool))
+        # Round-2 MGD (masked generative): a TRAINING-ONLY decoder that regenerates
+        # the debiased teacher target from the channel-masked projected student.
+        # Linear -> GELU -> Linear with NO OUTPUT BIAS (so it cannot emit a pure
+        # constant = the mean target, "mean-coasting"). Lives on the head (trains
+        # with it; unused at inference -> the L_mgd term simply isn't computed).
+        self.mgd_decoder: nn.Module | None = None
+        if self.mgd_weight > 0.0:
+            self.mgd_decoder = nn.Sequential(
+                nn.Linear(teacher_dim, teacher_dim),
+                nn.GELU(),
+                nn.Linear(teacher_dim, teacher_dim, bias=False),
+            )
 
     def _align(self, pred: Tensor, target: Tensor) -> tuple[Tensor, Tensor]:
         """Per-token alignment loss + the bare cosine (for logging). pred/target
@@ -289,8 +350,22 @@ class VisualDistillHead(nn.Module):
         if self.loss_type == "smoothl1":
             cos = F.cosine_similarity(pred, target, dim=-1).mean()
             return F.smooth_l1_loss(pred, target), cos
-        p = F.normalize(pred, dim=-1)
-        t = F.normalize(target, dim=-1)
+        if self.loss_type == "mse":
+            # PHI-S (round-2 arm 3): MSE in the STANDARDIZED target space (debias +
+            # per-channel var-equalize upstream). MSE — unlike scale-blind cosine —
+            # forces the residual structure, not just the dominant direction. cos
+            # is still returned for the logged/probed discrimination metric.
+            cos = F.cosine_similarity(pred, target, dim=-1).mean()
+            return F.mse_loss(pred, target), cos
+        # Eps-INSIDE-sqrt normalize (RMSNorm-style): x*rsqrt(sum(x^2)+eps). A
+        # near-zero row (de-meaned target near the EMA mean, or a tiny projected
+        # patch) makes F.normalize / .norm() — both sqrt(sum x^2) — have a 1/||x||
+        # backward that explodes to NaN (anomaly-traced to this Mul). Putting eps
+        # under the sqrt gives a finite backward EVERYWHERE; identical for
+        # unit-scale rows. (Additive eps AFTER the norm does NOT fix it: the
+        # sqrt inside .norm() still has the inf backward at zero.)
+        p = pred * torch.rsqrt(pred.pow(2).sum(dim=-1, keepdim=True) + 1e-12)
+        t = target * torch.rsqrt(target.pow(2).sum(dim=-1, keepdim=True) + 1e-12)
         cos = (p * t).sum(dim=-1)
         return (1.0 - cos).mean(), cos.mean()
 
@@ -303,6 +378,8 @@ class VisualDistillHead(nn.Module):
             'target_blocks': (vora) dict[layer_idx -> (m, teacher_dim)].
         Returns (loss, components). Token-weighted mean across images.
         """
+        if self._anticollapse_on() and self.method in ("eve", "repa", "softdepth", "vae"):
+            return self._compute_anticollapse(samples)
         device = samples[0]["target"].device
         loss_sum = torch.zeros((), dtype=torch.float32, device=device)
         cos_sum = torch.zeros((), dtype=torch.float32, device=device)
@@ -401,6 +478,361 @@ class VisualDistillHead(nn.Module):
         loss = F.mse_loss(gram_h, gram_t)
         # "cos" here = mean off-diagonal agreement, a comparable monitor.
         return loss, (1.0 - (gram_h - gram_t).abs().mean())
+
+    # ---- Anti-collapse recipe (see AGENTS.md "Anti-collapse distill port (ST-2)") ----
+    def _anticollapse_on(self) -> bool:
+        return bool(
+            self.debias_target
+            or self.rkd_dist_weight > 0.0
+            or self.rkd_angle_weight > 0.0
+            or self.vicreg_var_weight > 0.0
+            or self.vicreg_cov_weight > 0.0
+            or self.mgd_weight > 0.0
+            or self.sigreg_weight > 0.0
+        )
+
+    def anticollapse_keys(self) -> list[str]:
+        """The weight-gated anti-collapse component keys this head emits, beyond
+        the always-present distill/distill_cos (and softdepth sel keys). SINGLE
+        SOURCE OF TRUTH shared by _compute_anticollapse (which fills them) and the
+        no-image anchor in modeling_vlm.compute_distill_loss (which zeros them), so
+        an image-free microbatch and an image-bearing one produce identical key
+        sets — required by the trainer's cross-rank all_reduce(sorted(comps))."""
+        keys: list[str] = []
+        if self.rkd_dist_weight > 0.0:
+            keys.append("distill_rkd_d")
+        if self.rkd_angle_weight > 0.0:
+            keys.append("distill_rkd_a")
+        if self.vicreg_var_weight > 0.0:
+            keys.append("distill_vic_var")
+        if self.vicreg_cov_weight > 0.0:
+            keys.append("distill_vic_cov")
+        if self.mgd_weight > 0.0:
+            keys.append("distill_mgd")
+        if self.sigreg_weight > 0.0:
+            keys.append("distill_sigreg")
+        return keys
+
+    def _warmup_factors(self) -> tuple[float, float]:
+        """(wf, wf_sig): the linear 0->1 warmup multipliers for the RKD/VICReg and
+        SIGReg aux weights at the current optimizer step. `_ac_step` is mirrored
+        from the trainer's global_step once per optimizer.step() (READ-only here),
+        so the ramp is rank-identical and advances per OPTIMIZER step, not per
+        image-bearing microbatch forward. Both factors are 1.0 when their warmup is
+        disabled (every shipped arm: ac_warmup_steps == sigreg_warmup_steps == 0),
+        so the aux weights apply at full strength with no ramp regardless of
+        `_ac_step`."""
+        step = float(self._ac_step) if hasattr(self, "_ac_step") else 0.0
+        wf = min(1.0, step / float(self.ac_warmup_steps)) if self.ac_warmup_steps > 0 else 1.0
+        wf_sig = (
+            min(1.0, step / float(self.sigreg_warmup_steps))
+            if self.sigreg_warmup_steps > 0
+            else 1.0
+        )
+        return wf, wf_sig
+
+    def _pred_for(self, s: dict[str, Any]) -> Tensor:
+        """Projected-student per-patch features (m, teacher_dim) for the single-
+        projector methods — same selection compute() / _softdepth use."""
+        if self.method == "eve":
+            return self.proj(s["native"][0])
+        if self.method == "softdepth":
+            stack = torch.stack([s["native"][k] for k in self.layers], dim=0)  # (L,m,d)
+            stack = F.normalize(stack.float(), dim=-1) * (stack.shape[-1] ** 0.5)
+            w = torch.softmax(self.depth_logits, dim=0).view(-1, 1, 1)
+            mixed = (w * stack).sum(dim=0).to(s["native"][self.layers[0]].dtype)
+            return self.proj(mixed)
+        return self.proj(s["native"][self.layers[0]])  # repa / vae
+
+    def _compute_anticollapse(
+        self, samples: list[dict[str, Any]]
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        """Per-patch cosine on a (optionally) DE-MEANED target [A], plus an
+        inter-image RKD relational term over per-image POOLED features [B], plus a
+        VICReg variance/covariance floor on the student patches [C]. Each term is
+        gated by its weight; all-off would be the plain cosine (but compute() only
+        dispatches here when at least one is on)."""
+        device = samples[0]["target"].device
+        z = torch.zeros((), dtype=torch.float32, device=device)
+        preds = [self._pred_for(s).float() for s in samples]  # list of (m_i, d)
+        targets = [s["target"].float() for s in samples]  # list of (m_i, d)
+        # Sanitize the cosine-path inputs the SAME way _relational_gram sanitizes
+        # its Gram inputs. The frozen-LM bf16 forward can emit a non-finite patch
+        # hidden on an occasional microbatch (overflow); proj() then carries the
+        # inf into _align, whose rsqrt(inf^2) -> NaN poisons BOTH the cosine loss
+        # (-> the whole microbatch is non-finite -> the trainer skips it, losing
+        # ~10-20% of data) AND the logged distill_cos metric (NaN reduces across
+        # ranks -> unreadable). nan_to_num here clamps inf->0 with a 0 gradient at
+        # those elements (finite gradient elsewhere), so the cosine is finite, the
+        # metric is readable, and no microbatch is dropped. MUST precede the debias
+        # EMA update below (an inf target would otherwise poison the running mean).
+        preds = [torch.nan_to_num(p, nan=0.0, posinf=0.0, neginf=0.0) for p in preds]
+        targets = [torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0) for t in targets]
+
+        # (A) debias: subtract the EMA per-channel mean (across images x patches)
+        # from the frozen target. Update the running estimate in training only.
+        if self.debias_target:
+            allt = torch.cat(targets, dim=0)  # (N, d)
+            if self.training:
+                bmean = allt.mean(dim=0).detach()
+                bvar = allt.var(dim=0, unbiased=False).detach()
+                # Re-init on first step OR if the running stats are non-finite
+                # (defense-in-depth against an uninitialized `to_empty` buffer that
+                # init_visual_distill_buffers somehow missed: a garbage-Inf mean
+                # would subtract to NaN and skip every microbatch forever).
+                if not bool(self.debias_inited) or not torch.isfinite(self.debias_mean).all():
+                    self.debias_mean.copy_(bmean)
+                    self.debias_var.copy_(bvar)
+                    self.debias_inited.fill_(True)  # type: ignore[arg-type]
+                else:
+                    m = self.debias_momentum
+                    self.debias_mean.mul_(m).add_(bmean * (1.0 - m))
+                    self.debias_var.mul_(m).add_(bvar * (1.0 - m))
+            c = self.debias_mean.to(device=device, dtype=torch.float32)
+            targets = [t - c for t in targets]
+            if self.debias_std:
+                sd = (self.debias_var.to(device=device, dtype=torch.float32) + 1e-6).sqrt()
+                targets = [t / sd for t in targets]
+
+        # Per-patch cosine (token-weighted), the base distill.
+        loss_sum = z.clone()
+        cos_sum = z.clone()
+        n_tok = 0
+        for p, t in zip(preds, targets, strict=True):
+            li, ci = self._align(p, t)
+            m = t.shape[0]
+            loss_sum = loss_sum + li * m
+            cos_sum = cos_sum + ci * m
+            n_tok += m
+        cos_loss = loss_sum / max(n_tok, 1)
+        total = cos_loss
+        comps: dict[str, Tensor] = {
+            "distill": cos_loss.detach(),
+            "distill_cos": (cos_sum / max(n_tok, 1)).detach(),
+        }
+        # Initialize the weight-gated anti-collapse keys to 0 (cross-rank key set
+        # must be step-deterministic; the no-image anchor in compute_distill_loss
+        # zeros this SAME key list via anticollapse_keys()).
+        for k in self.anticollapse_keys():
+            comps[k] = z.clone()
+
+        # nan_to_num insurance: any non-finite auxiliary term is zeroed (value AND
+        # gradient) so one pathological batch can't poison the weights over a long
+        # unattended run — on top of the cdist-backward root-cause fix below.
+        def _safe(x: Tensor) -> Tensor:
+            return torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Linear warmup of the aux weights (0 -> 1). The RKD/VICReg gradients are
+        # ill-conditioned on the untrained connector and diverge it in a few steps;
+        # ramp them in after the cosine+debias has shaped a sane connector. SIGReg
+        # gets its OWN (typically longer) ramp. Both factors track the trainer's
+        # optimizer step (see _warmup_factors / _sync_distill_warmup_step).
+        wf, wf_sig = self._warmup_factors()
+
+        # (B) RKD relational over per-image POOLED features (B = #images >= 3).
+        if (self.rkd_dist_weight > 0.0 or self.rkd_angle_weight > 0.0) and len(preds) >= 3:
+            # EPS-FLOORED unit normalization of the pooled mean. With a random
+            # connector the projected patches average toward ~0, and F.normalize's
+            # backward (1/||x||) -> inf at a near-zero mean -> NaN gradient (the
+            # actual root cause; arm A never pools, so it is unaffected). The
+            # clamp_min makes the denominator constant where small -> finite grad.
+            def _unit(v: Tensor) -> Tensor:
+                # Eps-INSIDE-sqrt (RMSNorm-style): finite backward everywhere,
+                # including ||v||->0. (clamp_min and additive-after-norm both leave
+                # the sqrt-at-zero inf backward intact.)
+                return v * torch.rsqrt(v.pow(2).sum() + 1e-12)
+
+            sp = torch.stack([_unit(p.mean(dim=0)) for p in preds])  # (B,d)
+            tp = torch.stack([_unit(t.mean(dim=0)) for t in targets])  # (B,d)
+            if self.rkd_dist_weight > 0.0:
+                # Bounded Gram relational (RKD distance/angle have inf gradients
+                # that diverge the connector — see _relational_gram).
+                ld = _safe(self._relational_gram(sp, tp))
+                comps["distill_rkd_d"] = ld.detach()
+                total = total + (wf * self.rkd_dist_weight) * ld
+            if self.rkd_angle_weight > 0.0:
+                la = _safe(self._rkd_angle(sp, tp))
+                comps["distill_rkd_a"] = la.detach()
+                total = total + (wf * self.rkd_angle_weight) * la
+
+        # (C) VICReg variance + covariance on the student projected patches.
+        if self.vicreg_var_weight > 0.0 or self.vicreg_cov_weight > 0.0:
+            zc = torch.cat(preds, dim=0)  # (N, d)
+            lv, lc = self._vicreg(zc)
+            if self.vicreg_var_weight > 0.0:
+                lv = _safe(lv)
+                comps["distill_vic_var"] = lv.detach()
+                total = total + (wf * self.vicreg_var_weight) * lv
+            if self.vicreg_cov_weight > 0.0:
+                lc = _safe(lc)
+                comps["distill_vic_cov"] = lc.detach()
+                total = total + (wf * self.vicreg_cov_weight) * lc
+
+        # Round-2 MGD (masked generative): channel-mask each projected-student
+        # patch, regenerate the DEBIASED target through the train-only decoder,
+        # 1 - cos(G(p*mask), t̃). Forces the student to carry reconstructable info.
+        if self.mgd_weight > 0.0 and self.mgd_decoder is not None:
+            keep = 1.0 - self.mgd_beta
+            # The decoder is a real (bf16) submodule, but preds are fp32 (_pred_for
+            # .float()) and this trainer forward is NOT under autocast — feed the
+            # decoder its own param dtype to avoid a Float/BFloat16 matmul error.
+            mgd_dtype = self.mgd_decoder[0].weight.dtype
+            mgd_sum = z.clone()
+            mtok = 0
+            for p, t in zip(preds, targets, strict=True):
+                mask = (torch.rand_like(p) < keep).to(p.dtype)  # per-patch channel mask
+                g = self.mgd_decoder((p * mask).to(mgd_dtype))
+                gl, _ = self._align(g, t)
+                mm = t.shape[0]
+                mgd_sum = mgd_sum + gl * mm
+                mtok += mm
+            l_mgd = _safe(mgd_sum / max(mtok, 1))
+            comps["distill_mgd"] = l_mgd.detach()
+            total = total + self.mgd_weight * l_mgd
+
+        # Round-2 SIGReg (sliced Epps-Pulley isotropy): push the student per-patch
+        # features toward N(0, I). Bounded gradient + small weight + long warmup so
+        # it regularizes WITHOUT starving the alignment (the round-1 VICReg failure).
+        if self.sigreg_weight > 0.0:
+            ls = _safe(self._sigreg(torch.cat(preds, dim=0)))
+            comps["distill_sigreg"] = ls.detach()
+            total = total + (wf_sig * self.sigreg_weight) * ls
+
+        if self.method == "softdepth":
+            w = torch.softmax(self.depth_logits.detach().float(), dim=0)
+            layer_idx = torch.tensor([float(x) for x in self.layers], device=w.device)
+            comps["distill_sel_depth"] = torch.tensor(float((w * layer_idx).sum()), device=device)
+            comps["distill_sel_max"] = w.max().to(device)
+        return total, comps
+
+    def _relational_gram(self, s: Tensor, t: Tensor) -> Tensor:
+        """Inter-image relational via the Manifold/Gram (2107.01378) cosine-
+        structure: match the B×B cosine-similarity matrix of the pooled STUDENT to
+        the pooled TEACHER's, MSE over the off-diagonal. s, t are L2-normalized
+        (B, d), so the Gram is the cosine matrix in [-1, 1] — BOUNDED, no sqrt /
+        no division, so gradients stay finite (unlike RKD distance/angle, whose
+        1/||edge|| terms produce inf gradients that diverge the untrained
+        connector — 0*inf=NaN even under a warmup). A mean-collapsed student has a
+        near-all-ones Gram it cannot match to the teacher's diverse one, so the
+        term still penalizes collapse — the property we need."""
+        # Sanitize the Gram INPUTS (a pathological pooled mean can still slip a
+        # non-finite row through _unit; nan_to_num here gives finite forward AND
+        # zero-gradient at those rows, so the MSE backward 2*(gs-gt)/N can never be
+        # NaN — guarding the OUTPUT alone doesn't, since the NaN is born inside the
+        # MSE backward). clamp keeps gs/gt in the valid cosine range.
+        s = torch.nan_to_num(s, nan=0.0, posinf=0.0, neginf=0.0)
+        t = torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
+        mask = ~torch.eye(s.shape[0], dtype=torch.bool, device=s.device)
+        gs = (s @ s.t()).clamp(-1.0, 1.0)
+        gt = (t @ t.t()).clamp(-1.0, 1.0)
+        return F.mse_loss(gs[mask], gt[mask])
+
+    def _rkd_distance(self, s: Tensor, t: Tensor) -> Tensor:
+        """RKD distance-wise (1904.05068): match pairwise L2 distances, each side
+        normalized by its OWN batch-mean pairwise distance (cancels the shared
+        constant exactly), Huber loss over the off-diagonal. (Superseded by
+        _relational_gram for stability; kept for reference.)"""
+        mask = ~torch.eye(s.shape[0], dtype=torch.bool, device=s.device)
+
+        def norm_pdist(x: Tensor) -> Tensor:
+            # Gram-based squared distance + EPS-FLOORED sqrt. torch.cdist's
+            # backward is NaN at coincident rows (||xi-xj||=0 -> grad/0); in the
+            # early-collapse regime many pooled features are near-identical, so
+            # that singularity fires and poisons the connector weights. The
+            # clamp_min before sqrt keeps the gradient finite at d=0.
+            g = x @ x.t()
+            diag = g.diagonal()
+            sq = (diag.unsqueeze(0) + diag.unsqueeze(1) - 2.0 * g).clamp_min(1e-8)
+            d = sq.sqrt()
+            mu = d[mask].mean().clamp_min(1e-6)
+            return d / mu
+
+        return F.smooth_l1_loss(norm_pdist(s)[mask], norm_pdist(t)[mask])
+
+    def _rkd_angle(self, s: Tensor, t: Tensor) -> Tensor:
+        """RKD angle-wise (1904.05068): match the angle potential cos(e_ij, e_kj)
+        over sampled triplets (j the vertex), Huber. Scale-invariant. Subsampled
+        to bound the O(B^3) cost."""
+        b = s.shape[0]
+        n = min(self.rkd_angle_triplets, b * b * b)
+        # Sample triplets; vary per call by drawing fresh indices (no global RNG
+        # dependence on Math.random — torch.randint is fine here).
+        idx = torch.randint(0, b, (n, 3), device=s.device)
+        i, j, k = idx[:, 0], idx[:, 1], idx[:, 2]
+
+        def edge(a: Tensor, b: Tensor) -> Tensor:
+            # eps-FLOOR the edge norm (not F.normalize's 1e-12): near-collapsed /
+            # duplicate in-batch images give ~0-length edges whose normalize
+            # Jacobian (~1/||edge||) would explode the gradient to ~1e11.
+            d = a - b
+            return d / d.norm(dim=-1, keepdim=True).clamp_min(1e-4)
+
+        def angle(x: Tensor) -> Tensor:
+            return (edge(x[i], x[j]) * edge(x[k], x[j])).sum(dim=-1)
+
+        return F.smooth_l1_loss(angle(s), angle(t))
+
+    def _vicreg(self, z: Tensor) -> tuple[Tensor, Tensor]:
+        """VICReg variance hinge + off-diagonal covariance penalty on the student
+        projected per-patch features z (N, d)."""
+        z = z.float()
+        # RMS-normalize each patch feature to O(1) components BEFORE the variance/
+        # covariance. The cosine base loss constrains only DIRECTION (it is scale-
+        # invariant), so the projected-feature MAGNITUDE is an unconstrained gauge;
+        # a raw variance hinge `max(0, gamma - std)` keeps pushing that magnitude up
+        # every step until the bf16 forward overflows (-> inf features -> NaN loss
+        # -> the step is skipped -> the connector is frozen mid-divergence; this is
+        # exactly how the +C arm got stuck). RMS-normalization bounds the features
+        # (no overflow), keeps gamma=1 meaningful (components are O(1)), uses the
+        # eps-inside-sqrt rsqrt for a finite backward at ||z||->0, and aligns the
+        # variance/covariance floor with the DIRECTIONAL structure the cosine cares
+        # about (anti-collapse on directions, not on the irrelevant magnitude).
+        z = z * torch.rsqrt(z.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
+        std = torch.sqrt(z.var(dim=0, unbiased=False) + 1e-4)
+        var_loss = torch.clamp(self.vicreg_gamma - std, min=0.0).mean()
+        n, d = z.shape
+        zc = z - z.mean(dim=0, keepdim=True)
+        cov = (zc.t() @ zc) / max(n - 1, 1)  # (d, d)
+        off = cov - torch.diag(torch.diagonal(cov))
+        cov_loss = (off.pow(2).sum()) / d
+        return var_loss, cov_loss
+
+    def _sigreg(self, z: Tensor) -> Tensor:
+        """Sliced Epps-Pulley isotropy regularizer (round-2 arm 2). Push the
+        student per-patch features z (N, d) toward an isotropic standard normal
+        N(0, I) by a characteristic-function (CF) goodness-of-fit test along M
+        random unit directions (resampled each step). For direction u and the 1-D
+        projection x = z·u, the empirical CF phi_emp(t) = mean_n exp(i t x_n) is
+        compared to the N(0,1) CF phi_ref(t) = exp(-t^2/2) at K quadrature knots on
+        [-5, 5] under a Gaussian window w(t) = exp(-t^2/2):
+            stat = mean_u  sum_k w_k [ (Re phi_emp - phi_ref)^2 + (Im phi_emp)^2 ].
+        Do NOT standardize x first — the scale/shape deviation IS the signal, so
+        the gradient drives mean->0, var->1, and decorrelates. CF values are
+        bounded and the gradient magnitude is O(t_max/N), so this cannot blow up
+        the way an unbounded variance hinge can — the whole point of choosing it
+        over VICReg."""
+        z = z.float()
+        n, d = z.shape
+        # Subsample patches: the CF statistic needs only a few thousand samples,
+        # and the (N, M, K) intermediate below would otherwise scale with the full
+        # batch's patch count (OOM at large batch). Resampled each step (stochastic).
+        cap = 8192
+        if n > cap:
+            idx = torch.randint(0, n, (cap,), device=z.device)
+            z = z[idx]
+            n = cap
+        # Random unit directions, resampled every call (no global RNG state; the
+        # stochasticity is the slicing, like sliced-Wasserstein). (d, M)
+        dirs = torch.randn(d, self.sigreg_dirs, device=z.device, dtype=z.dtype)
+        dirs = dirs * torch.rsqrt(dirs.pow(2).sum(dim=0, keepdim=True) + 1e-12)
+        proj = z @ dirs  # (N, M) — 1-D projections
+        t = torch.linspace(-5.0, 5.0, self.sigreg_knots, device=z.device, dtype=z.dtype)  # (K,)
+        arg = proj.unsqueeze(-1) * t  # (N, M, K)
+        cos_e = arg.cos().mean(dim=0)  # (M, K) Re phi_emp
+        sin_e = arg.sin().mean(dim=0)  # (M, K) Im phi_emp
+        ref = torch.exp(-0.5 * t * t)  # (K,) phi_ref = window w (both = exp(-t^2/2))
+        stat = (ref * ((cos_e - ref) ** 2 + sin_e**2)).sum(dim=-1)  # (M,)
+        return stat.mean()
 
 
 __all__ = [
