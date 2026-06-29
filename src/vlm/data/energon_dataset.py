@@ -35,6 +35,15 @@ Local state:
     jsonl copies + indexes   $VLM_ENERGON_DATA_DIR, else $VLM_DATA_ROOT/energon-jsonl,
                              else ~/.cache/vlm/energon-jsonl
     MSC range cache          $MSC_CACHE_DIR, else ~/.cache/vlm/msc-cache
+
+Resilience:
+    A per-sample encode failure (corrupt/undecodable image, bad json, any
+    exception) is SKIPPED rather than fatal: encode_sample is wrapped with
+    @skip_corrupt_samples, which turns the failure into energon's SkipSample
+    (logged once with a running per-worker drop count) so one bad sample can't
+    kill an unattended run. A SYSTEMATIC failure still fails fast — after
+    $VLM_MAX_CONSECUTIVE_SKIPS consecutive skips with no successful encode in
+    between (default 100, 0 = disabled) the wrapper raises FatalSampleError.
 """
 
 import bisect
