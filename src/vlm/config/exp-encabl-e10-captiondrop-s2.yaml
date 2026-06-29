@@ -1,0 +1,16 @@
+defaults:
+  - exp-encabl-native-s2
+  - _self_
+
+# 10-EXP ablation — Exp 10, STAGE 2.
+# Base = exp-encabl-native-s2 (instruction SFT on Honey-Data-1M, Qwen3 ChatML
+# template, LM + connector unfreeze, 1e9 effective tokens @ budget 14000 ->
+# max_steps 11905, lr 6e-5). Caption-token dropout is a STAGE-1-ONLY regularizer
+# (it targets caption pretraining's language-prior trap on `plain` 2-turn
+# captions), so S2 is IDENTICAL to the native S2 baseline — the dropout stays
+# disabled (its default). This config exists only to chain SFT from the Exp-10
+# Stage-1 checkpoint (VLM_S1_CKPT, inherited from the native-s2 base). No model
+# delta vs native S2.
+
+trainer:
+  run_name: encabl-e10-captiondrop-s2

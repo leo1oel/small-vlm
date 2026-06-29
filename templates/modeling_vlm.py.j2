@@ -436,6 +436,60 @@ def init_visual_expert_gates(model: Any) -> None:
         log.info(f"Initialized {count} visual-expert sigmoid gates to near-identity.")
 
 
+def caption_token_dropout_rate(step: int, max_steps: int, p_start: float, p_end: float) -> float:
+    """Linear ramp p_start -> p_end over the optimizer-step budget (exp10 S1
+    caption-token dropout). ``step`` is the rank-identical HF Trainer
+    ``state.global_step`` (mirrored into the model buffer by
+    ``VLMTrainer._sync_caption_dropout_step``), NOT a per-microbatch forward
+    counter — a microbatch counter advances at grad_accum x the rate and
+    diverges across DDP ranks whose per-step batch counts differ. The fraction
+    is clamped to [0, 1]; max_steps <= 0 -> full ramp (frac = 1)."""
+    frac = min(1.0, max(0.0, step / max_steps)) if max_steps > 0 else 1.0
+    return p_start + (p_end - p_start) * frac
+
+
+def caption_token_dropout_prob(config: Any, step: int) -> float:
+    """Resolve the current drop probability from the (flattened) model config +
+    the mirrored optimizer step. Returns 0.0 when disabled, so
+    ``apply_caption_token_dropout`` no-ops and the forward is bit-identical to
+    the baseline."""
+    if not bool(getattr(config, "caption_token_dropout_enabled", False)):
+        return 0.0
+    return caption_token_dropout_rate(
+        int(step),
+        int(getattr(config, "caption_token_dropout_max_steps", 0) or 0),
+        float(getattr(config, "caption_token_dropout_p_start", 0.0)),
+        float(getattr(config, "caption_token_dropout_p_end", 0.0)),
+    )
+
+
+def apply_caption_token_dropout(
+    inputs_embeds: Tensor,
+    labels: Tensor,
+    *,
+    p: float,
+    ignore_index: int,
+    generator: "torch.Generator | None" = None,
+) -> Tensor:
+    """Blank (zero) a Bernoulli(p) fraction of the INPUT caption-content
+    embeddings — the supervised positions where ``labels != ignore_index`` —
+    leaving ``labels`` untouched, so every position stays supervised while the
+    model is blinded to a fraction of its own preceding caption words (exp10).
+
+    INPUT side only and out-of-place: kept positions retain their autograd
+    graph, dropped positions become zero constants (zero gradient) — the repo's
+    "blank" idiom, identical to the grounding ``corruption="blank"`` ablation,
+    so there are no new parameters and no tokenizer dependency. Image / audio /
+    query / BOS / prompt tokens carry ``ignore_index`` labels, so they are never
+    eligible to drop. p <= 0 -> returns ``inputs_embeds`` unchanged."""
+    if p <= 0.0:
+        return inputs_embeds
+    supervised = labels != ignore_index
+    rand = torch.rand(labels.shape, device=inputs_embeds.device, generator=generator)
+    drop = supervised & (rand < p)
+    return inputs_embeds.masked_fill(drop.unsqueeze(-1), 0.0)
+
+
 class VLM({{ parent_class }}):
     config_class = VLMConfig
 
@@ -578,6 +632,22 @@ class VLMForCausalLM({{ causal_parent_class }}):
         # so this randn init survives; reloads overwrite it from the checkpoint.
         self.learnable_query = self._build_learnable_query(config)
         self._build_generation_modules(config)
+        # S1 caption-token dropout (exp10): rank-identical optimizer-step mirror
+        # for the input-word-dropout ramp, re-synced every step by
+        # VLMTrainer._sync_caption_dropout_step. Registered UNCONDITIONALLY: it is
+        # a NON-PERSISTENT transient mirror of state.global_step (never trained
+        # state), so it stays out of the state_dict / checkpoints and the
+        # disabled-arm baseline is bit-identical regardless. The forward gates on
+        # caption_token_dropout_prob(), which returns 0.0 when disabled, so the
+        # buffer is inert unless an arm opts in. Gating registration on the
+        # enabled flag would be unsound: vlm.vlm() flattens that flag onto
+        # model.config AFTER load_model() has already run __init__, so on a fresh
+        # build the gate would never fire and the mirrored step would be stuck at 0
+        # (the ramp pinned at p_start) while a resume — which reads the flag from
+        # checkpoint config.json at construction — would register it and diverge.
+        self.register_buffer(
+            "_caption_dropout_step", torch.zeros((), dtype=torch.long), persistent=False
+        )
         self.post_init()
         log.info(f"DynamicCausalVLM class {self.__class__.__name__} initialized.")
 
@@ -1256,6 +1326,32 @@ class VLMForCausalLM({{ causal_parent_class }}):
             for module in modules:
                 module._visual_mask = mask
 
+    def _apply_caption_token_dropout(
+        self: Any, inputs_embeds: Tensor | None, labels: Tensor | None
+    ) -> Tensor | None:
+        """Stage-1 caption-token (input word) dropout (exp10). Applies only on
+        the training-loss path (``self.training`` and ``labels`` present), after
+        the multimodal splice, so it sees the FINAL teacher-forcing inputs +
+        labels. Blanks a Bernoulli(p) fraction of the supervised caption INPUT
+        embeddings (labels != ignore_index) at the rate ramped from the
+        rank-identical mirrored optimizer step; labels are untouched. Disabled /
+        non-training / p<=0 -> returns ``inputs_embeds`` unchanged (bit-identical
+        baseline). The enabled gate is checked BEFORE reading the step buffer so
+        disabled arms short-circuit on a cheap CPU config read and never incur the
+        ``int(self._caption_dropout_step)`` GPU->CPU device sync."""
+        if not (self.training and inputs_embeds is not None and labels is not None):
+            return inputs_embeds
+        if not bool(getattr(self.config, "caption_token_dropout_enabled", False)):
+            return inputs_embeds
+        step = int(self._caption_dropout_step)
+        p = caption_token_dropout_prob(self.config, step)
+        return apply_caption_token_dropout(
+            inputs_embeds,
+            labels,
+            p=p,
+            ignore_index=int(getattr(self.config, "ignore_index", -100)),
+        )
+
     def forward(
         self: Any,
         input_ids: Tensor | None = None,
@@ -1410,6 +1506,13 @@ class VLMForCausalLM({{ causal_parent_class }}):
             else:
                 vmask = None
             self._set_visual_mask(vmask)
+        # S1 caption-token (input word) dropout (exp10): blank a ramped fraction
+        # of the model's own supervised caption INPUT embeddings (labels intact)
+        # so it must read the image. Applied at the single chokepoint AFTER the
+        # splice / mask / expert-routing setup and BEFORE both loss-path
+        # dispatches (chunked-CE and the parent forward), and a no-op outside
+        # training / when disabled (bit-identical baseline).
+        inputs_embeds = self._apply_caption_token_dropout(inputs_embeds, labels)
         loss_chunk_size = getattr(self.config, "loss_chunk_size", 0) or 0
         if (
             loss_chunk_size > 0
