@@ -558,6 +558,36 @@ Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
     silently pointing the loader at the wrong (remote) location. energon's EPath
     wants the bare absolute path, NOT a `file://` URL. Covered by
     `test_resolve_wds_path`.
+1. **Corrupt images are SKIPPED, not fatal — `encode_sample` is wrapped with
+    `@skip_corrupt_samples` (`energon_dataset.py`).** Honey-Data-1M (and likely
+    bee_stage2) carry occasional corrupt images: a truncated/broken PNG makes PIL
+    raise `SyntaxError`, which energon classes as a `SYSTEM_EXCEPTION` and
+    re-raises as `FatalSampleError` — killing the DataLoader worker → the rank →
+    torch-elastic SIGTERMs the whole job. ONE bad image at shard `00059.tar`
+    sample `0000599478` killed `encabl-native-s2` at step ~5000/11905. The wrapper
+    converts ANY per-sample encode exception into energon's `SkipSample` (log ONE
+    warning with key+shard + a running per-worker drop count, then continue), the
+    only signal energon treats as non-fatal — a configured error *handler* can't
+    rescue a `SyntaxError` because `SYSTEM_EXCEPTIONS` bypasses it. The WDS
+    encoders (`energon_wds.py`) inherit the wrapped `encode_sample` unchanged, so
+    the prepared-shard path (where the crash hit) is covered too; if you ever
+    override `encode_sample` in a subclass, re-apply `@skip_corrupt_samples`.
+    Because `SkipSample` bypasses energon's consecutive-failure tolerance, the
+    wrapper keeps its OWN per-worker CONSECUTIVE-skip counter (resets to 0 on any
+    successful encode): once it hits `VLM_MAX_CONSECUTIVE_SKIPS` (default 100,
+    `0` = disabled) it raises `FatalSampleError` instead of skipping. Because the
+    count is per-worker and resets on ANY success, this targets only a SYSTEMATIC
+    ~TOTAL failure — essentially every sample failing so there is no successful
+    encode to reset the counter (a code bug like `NameError`/`ImportError`, a
+    total misconfig such as the audio-off `ValueError`, or data so corrupt that
+    nothing decodes) — which would otherwise silently drop every sample and hang
+    the run at zero throughput; that silent hang is the danger the backstop
+    exists to prevent. It does NOT detect partial corruption: an isolated bad
+    sample, or even a single fully-corrupt shard whose failures are INTERLEAVED
+    with good samples from other shards/datasets (the shuffle buffer and
+    blended-dataset mixing share one task encoder), rarely reaches N consecutive,
+    so it is skipped+logged+continued — we do not want an unattended multi-day
+    run dying over one bad shard. Covered by `test_energon_skip_corrupt.py`.
 
 ## Cross-modal 4D mask correctness (xmodal_mask.py / install_xmodal_masks)
 

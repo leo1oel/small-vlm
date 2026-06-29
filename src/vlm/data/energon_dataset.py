@@ -35,11 +35,21 @@ Local state:
     jsonl copies + indexes   $VLM_ENERGON_DATA_DIR, else $VLM_DATA_ROOT/energon-jsonl,
                              else ~/.cache/vlm/energon-jsonl
     MSC range cache          $MSC_CACHE_DIR, else ~/.cache/vlm/msc-cache
+
+Resilience:
+    A per-sample encode failure (corrupt/undecodable image, bad json, any
+    exception) is SKIPPED rather than fatal: encode_sample is wrapped with
+    @skip_corrupt_samples, which turns the failure into energon's SkipSample
+    (logged once with a running per-worker drop count) so one bad sample can't
+    kill an unattended run. A SYSTEMATIC failure still fails fast — after
+    $VLM_MAX_CONSECUTIVE_SKIPS consecutive skips with no successful encode in
+    between (default 100, 0 = disabled) the wrapper raises FatalSampleError.
 """
 
 import bisect
 import concurrent.futures
 import fcntl
+import functools
 import hashlib
 import io
 import logging
@@ -227,6 +237,7 @@ if TYPE_CHECKING:
         Cooker,
         FileStore,
         Sample,
+        SkipSample,
         TaskEncoder,
         WorkerConfig,
         basic_sample_keys,
@@ -237,11 +248,17 @@ if TYPE_CHECKING:
     from megatron.energon.epathlib import (  # noqa: E402  # pyright: ignore[reportMissingImports]
         EPath,
     )
+    from megatron.energon.errors import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+        FatalSampleError,
+    )
     from megatron.energon.flavors.jsonl.ijsonl import (  # noqa: E402  # pyright: ignore[reportMissingImports]
         IJsonlIndexWriter,
     )
     from megatron.energon.savable_loader import (  # noqa: E402  # pyright: ignore[reportMissingImports]
         SavableDataLoader,
+    )
+    from megatron.energon.source_info import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+        get_source_info,
     )
 
     _streaming_import_error: ImportError | None = None
@@ -252,6 +269,7 @@ else:
             Cooker,
             FileStore,
             Sample,
+            SkipSample,
             TaskEncoder,
             WorkerConfig,
             basic_sample_keys,
@@ -260,8 +278,10 @@ else:
             stateless,
         )
         from megatron.energon.epathlib import EPath  # noqa: E402
+        from megatron.energon.errors import FatalSampleError  # noqa: E402
         from megatron.energon.flavors.jsonl.ijsonl import IJsonlIndexWriter  # noqa: E402
         from megatron.energon.savable_loader import SavableDataLoader  # noqa: E402
+        from megatron.energon.source_info import get_source_info  # noqa: E402
 
         _streaming_import_error = None
     except ImportError as _import_error:  # pragma: no cover - only without the extras
@@ -279,6 +299,15 @@ else:
 
         class TaskEncoder:
             pass
+
+        class SkipSample(Exception):  # mirrors energon's skip-this-sample signal
+            pass
+
+        class FatalSampleError(Exception):  # mirrors energon's fatal-sample signal
+            pass
+
+        def get_source_info(_sample):
+            return None
 
         def Cooker(*args, **kwargs):  # noqa: N802  (mirrors energon's name)
             return None
@@ -623,6 +652,122 @@ def download_jsonl(
 # 3. Sample type, cooker, task encoder
 # ---------------------------------------------------------------------------
 
+#: Per-worker running tally of samples dropped by @skip_corrupt_samples. Each
+#: DataLoader worker is its own process, so this counts that worker's drops; the
+#: count rides along in every warning so total data loss stays visible in logs.
+_skipped_samples = 0
+
+#: Per-worker count of CONSECUTIVE skips with no successful encode in between.
+#: Resets to 0 on every successful encode; once it reaches _MAX_CONSECUTIVE_SKIPS
+#: the wrapper fatalizes instead of skipping, so a systematic failure (code bug,
+#: fully-corrupt shard, misconfig) still fails fast instead of silently dropping
+#: every sample and hanging at zero throughput.
+_consecutive_skipped = 0
+
+#: Consecutive-skip tolerance before @skip_corrupt_samples escalates to a fatal
+#: error. Default 100 mirrors energon's ErrorContext default tolerance; 0 means
+#: disabled (skip forever, matching energon's tolerance==0 convention). Read at
+#: call time so tests can monkeypatch the module global.
+_MAX_CONSECUTIVE_SKIPS = int(os.environ.get("VLM_MAX_CONSECUTIVE_SKIPS", "100") or "100")
+
+
+def _note_skipped_sample(sample: Any, exc: Exception) -> "SkipSample":
+    """Log ONE warning for a per-sample failure and return energon's SkipSample.
+
+    Honey-Data-1M (and likely bee_stage2) carry occasional corrupt images
+    (e.g. a truncated/broken PNG -> PIL ``SyntaxError``). Dropping the one bad
+    sample keeps unattended multi-day runs alive; the running per-worker count
+    in the message keeps the data loss visible rather than silent."""
+    global _skipped_samples
+    _skipped_samples += 1
+    key = getattr(sample, "__key__", "?")
+    sources = get_source_info(sample)
+    shard = ", ".join(f"{s.shard_name}[{s.index}]" for s in sources) if sources else "?"
+    log.warning(
+        "energon: skipping unencodable sample (key=%s shard=%s) — %d skipped so "
+        "far in this worker: %s: %s",
+        key,
+        shard,
+        _skipped_samples,
+        type(exc).__name__,
+        exc,
+    )
+    return SkipSample(f"skipped sample {key}: {type(exc).__name__}: {exc}")
+
+
+def skip_corrupt_samples(fn: Any) -> Any:
+    """Wrap a ``TaskEncoder.encode_sample`` so a per-sample failure (corrupt
+    image, bad json, any encode exception) is logged once and turned into
+    energon's :class:`SkipSample` — the MapDataset error handler then drops that
+    one sample and training continues, instead of energon re-raising it as a
+    ``FatalSampleError`` that kills the DataLoader worker -> the rank ->
+    torch-elastic SIGTERMs the whole (multi-day) job.
+
+    Why convert at the source and not configure an energon error *handler*: PIL
+    raises ``SyntaxError`` for a broken PNG, and ``SyntaxError`` is in energon's
+    ``SYSTEM_EXCEPTIONS``, which ``handle_errors`` *always* re-raises as
+    ``FatalSampleError`` regardless of the configured handler. Raising
+    ``SkipSample`` from inside ``encode_sample`` is the only thing energon
+    treats as non-fatal (see ``megatron.energon.errors.handle_errors``).
+
+    Backstop for SYSTEMATIC ~total failures: because ``SkipSample`` bypasses
+    energon's consecutive-failure tolerance entirely, an unconditional skip would
+    mask a near-total breakage — a real code bug (``NameError``/``ImportError``/
+    typo), a total misconfig (e.g. the audio-off ``ValueError``), or data so
+    corrupt that essentially every sample fails — where there is no successful
+    encode to reset the counter, so the loader would consume-and-skip forever and
+    silently hang at zero throughput, burning multi-day GPU time. That silent
+    hang is the danger this backstop exists to prevent. The wrapper tracks a
+    per-worker CONSECUTIVE-skip counter that RESETS to 0 on every successful
+    encode; once it reaches ``_MAX_CONSECUTIVE_SKIPS`` (env
+    ``VLM_MAX_CONSECUTIVE_SKIPS``, default 100, 0 = disabled) it raises
+    ``FatalSampleError`` — itself a ``SYSTEM_EXCEPTION`` energon always
+    re-fatalizes — so near-total breakage dies loud and fast.
+
+    Because the count is per-worker and resets on ANY success, the threshold
+    targets near-total failure, NOT partial corruption. An isolated bad sample —
+    or even a single fully-corrupt shard whose failures are INTERLEAVED with good
+    samples from other shards/datasets (the shuffle buffer and blended-dataset
+    mixing share one task encoder) — rarely reaches N consecutive, so it is
+    intentionally skipped+logged+continued rather than fatalized: we do not want
+    an unattended multi-day run dying over one bad shard.
+
+    Apply it BELOW ``@stateless`` so ``@stateless`` marks the returned wrapper."""
+
+    @functools.wraps(fn)
+    def wrapper(self: Any, sample: Any) -> Any:
+        global _consecutive_skipped
+        try:
+            result = fn(self, sample)
+        except SkipSample:
+            raise  # already a deliberate skip — don't double-wrap, re-count, or reset
+        except Exception as exc:
+            _consecutive_skipped += 1
+            if 0 < _MAX_CONSECUTIVE_SKIPS <= _consecutive_skipped:
+                key = getattr(sample, "__key__", "?")
+                log.error(
+                    "energon: %d consecutive samples failed to encode "
+                    "(>= VLM_MAX_CONSECUTIVE_SKIPS=%d) — treating as a systematic "
+                    "failure (code bug, fully-corrupt shard, or misconfig) and "
+                    "fatalizing on key=%s: %s: %s",
+                    _consecutive_skipped,
+                    _MAX_CONSECUTIVE_SKIPS,
+                    key,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise FatalSampleError(
+                    f"{_consecutive_skipped} consecutive samples failed to encode "
+                    f"(>= VLM_MAX_CONSECUTIVE_SKIPS={_MAX_CONSECUTIVE_SKIPS}); likely a "
+                    f"code bug or fully-corrupt shard rather than isolated bad data"
+                ) from exc
+            raise _note_skipped_sample(sample, exc) from exc
+        else:
+            _consecutive_skipped = 0
+            return result
+
+    return wrapper
+
 
 @dataclass
 class MMChatRawSample(Sample):  # pyright: ignore[reportUntypedBaseClass]
@@ -787,6 +932,7 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
         return [process_classic_image(im, self.image_processor, aspect) for im in pil_images]
 
     @stateless  # pyright: ignore[reportUntypedFunctionDecorator]
+    @skip_corrupt_samples
     def encode_sample(self, sample: MMChatRawSample) -> dict:
         # Decode AFTER the shuffle buffer (the buffer holds compressed bytes).
         images = self._process_images(sample.image_bytes)
@@ -1075,6 +1221,7 @@ class VLMGenTaskEncoder(VLMChatTaskEncoder):  # pyright: ignore[reportUntypedBas
         return text
 
     @stateless  # pyright: ignore[reportUntypedFunctionDecorator]
+    @skip_corrupt_samples
     def encode_sample(self, sample: MMChatRawSample) -> dict:
         if not sample.image_bytes:
             raise ValueError(f"generation sample {sample.__key__} has no image")
