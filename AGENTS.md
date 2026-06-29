@@ -511,14 +511,21 @@ Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
     the prepared-shard path (where the crash hit) is covered too; if you ever
     override `encode_sample` in a subclass, re-apply `@skip_corrupt_samples`.
     Because `SkipSample` bypasses energon's consecutive-failure tolerance, the
-    wrapper keeps its OWN per-worker CONSECUTIVE-skip counter (resets on any
+    wrapper keeps its OWN per-worker CONSECUTIVE-skip counter (resets to 0 on any
     successful encode): once it hits `VLM_MAX_CONSECUTIVE_SKIPS` (default 100,
-    `0` = disabled) it raises `FatalSampleError` instead of skipping, so a
-    SYSTEMATIC failure (a code bug like `NameError`/`ImportError`, a fully-corrupt
-    shard, or a misconfig such as the audio-off `ValueError`) that fails 100% of
-    samples dies loud+fast instead of silently dropping every sample and hanging
-    at zero throughput. Isolated/interspersed corruption never trips it. Covered
-    by `test_energon_skip_corrupt.py`.
+    `0` = disabled) it raises `FatalSampleError` instead of skipping. Because the
+    count is per-worker and resets on ANY success, this targets only a SYSTEMATIC
+    ~TOTAL failure — essentially every sample failing so there is no successful
+    encode to reset the counter (a code bug like `NameError`/`ImportError`, a
+    total misconfig such as the audio-off `ValueError`, or data so corrupt that
+    nothing decodes) — which would otherwise silently drop every sample and hang
+    the run at zero throughput; that silent hang is the danger the backstop
+    exists to prevent. It does NOT detect partial corruption: an isolated bad
+    sample, or even a single fully-corrupt shard whose failures are INTERLEAVED
+    with good samples from other shards/datasets (the shuffle buffer and
+    blended-dataset mixing share one task encoder), rarely reaches N consecutive,
+    so it is skipped+logged+continued — we do not want an unattended multi-day
+    run dying over one bad shard. Covered by `test_energon_skip_corrupt.py`.
 
 ## Cross-modal 4D mask correctness (xmodal_mask.py / install_xmodal_masks)
 

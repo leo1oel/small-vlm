@@ -659,7 +659,7 @@ _consecutive_skipped = 0
 #: error. Default 100 mirrors energon's ErrorContext default tolerance; 0 means
 #: disabled (skip forever, matching energon's tolerance==0 convention). Read at
 #: call time so tests can monkeypatch the module global.
-_MAX_CONSECUTIVE_SKIPS = int(os.environ.get("VLM_MAX_CONSECUTIVE_SKIPS", "100"))
+_MAX_CONSECUTIVE_SKIPS = int(os.environ.get("VLM_MAX_CONSECUTIVE_SKIPS", "100") or "100")
 
 
 def _note_skipped_sample(sample: Any, exc: Exception) -> "SkipSample":
@@ -701,17 +701,27 @@ def skip_corrupt_samples(fn: Any) -> Any:
     ``SkipSample`` from inside ``encode_sample`` is the only thing energon
     treats as non-fatal (see ``megatron.energon.errors.handle_errors``).
 
-    Backstop for SYSTEMATIC failures: because ``SkipSample`` bypasses energon's
-    consecutive-failure tolerance entirely, an unconditional skip would mask a
-    real code bug (``NameError``/``ImportError``/typo), a fully-corrupt shard, or
-    a misconfig (e.g. the audio-off ``ValueError``) that fails 100% of samples —
-    the loader would consume-and-skip forever and silently hang at zero
-    throughput, burning multi-day GPU time. So the wrapper tracks a per-worker
-    CONSECUTIVE-skip counter that resets on every successful encode; once it
-    reaches ``_MAX_CONSECUTIVE_SKIPS`` (env ``VLM_MAX_CONSECUTIVE_SKIPS``,
-    default 100, 0 = disabled) it raises ``FatalSampleError`` — itself a
-    ``SYSTEM_EXCEPTION`` energon always re-fatalizes — so genuine breakage dies
-    loud and fast while isolated corrupt samples are still skipped.
+    Backstop for SYSTEMATIC ~total failures: because ``SkipSample`` bypasses
+    energon's consecutive-failure tolerance entirely, an unconditional skip would
+    mask a near-total breakage — a real code bug (``NameError``/``ImportError``/
+    typo), a total misconfig (e.g. the audio-off ``ValueError``), or data so
+    corrupt that essentially every sample fails — where there is no successful
+    encode to reset the counter, so the loader would consume-and-skip forever and
+    silently hang at zero throughput, burning multi-day GPU time. That silent
+    hang is the danger this backstop exists to prevent. The wrapper tracks a
+    per-worker CONSECUTIVE-skip counter that RESETS to 0 on every successful
+    encode; once it reaches ``_MAX_CONSECUTIVE_SKIPS`` (env
+    ``VLM_MAX_CONSECUTIVE_SKIPS``, default 100, 0 = disabled) it raises
+    ``FatalSampleError`` — itself a ``SYSTEM_EXCEPTION`` energon always
+    re-fatalizes — so near-total breakage dies loud and fast.
+
+    Because the count is per-worker and resets on ANY success, the threshold
+    targets near-total failure, NOT partial corruption. An isolated bad sample —
+    or even a single fully-corrupt shard whose failures are INTERLEAVED with good
+    samples from other shards/datasets (the shuffle buffer and blended-dataset
+    mixing share one task encoder) — rarely reaches N consecutive, so it is
+    intentionally skipped+logged+continued rather than fatalized: we do not want
+    an unattended multi-day run dying over one bad shard.
 
     Apply it BELOW ``@stateless`` so ``@stateless`` marks the returned wrapper."""
 
