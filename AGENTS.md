@@ -252,16 +252,16 @@ overrides + a distinctive `trainer.run_name`) — so budgets/steps/seed/data str
 are identical and arms stay directly comparable. Toggle → flattened `VLMConfig`
 (set in `vlm.py` load_model, read by `getattr` in `modeling_vlm.py`):
 
-| Arm                                     | `model.*` toggles                                                 | flattened keys                       |
-| --------------------------------------- | ----------------------------------------------------------------- | ------------------------------------ |
-| Exp 1 `exp-encabl-e1-nepa`              | `visual_aux.objective: nepa` (+ `trainer.visual_aux_weight: 0.5`) | `visual_aux_objective`               |
-| Exp 2 `exp-encabl-e2-vexpert`           | `visual_expert: {enabled, ffn}`                                   | `visual_expert`, `visual_expert_ffn` |
-| Exp 3 `exp-encabl-e3-vexpert-norm`      | `visual_expert: {enabled, ffn, norm}`                             | `+ visual_expert_norm`               |
-| Exp 6 `exp-encabl-e6-vexpert-norm-nepa` | Exp 3 toggles + `visual_aux.objective: nepa` (+ weight 0.5)       | union of above                       |
-| Exp 4 `exp-encabl-e4-vexpert-distill-eve` | `visual_expert: {enabled, ffn}` + `visual_distill: {enabled, method: eve, teacher_kind: clip, teacher_name: openai/clip-vit-base-patch16, debias_target: true, debias_momentum: 0.9, rkd_dist_weight: 1.0}` (+ `trainer.visual_distill_weight: 1.0`) | `visual_distill*` + `visual_expert*` |
-| Exp 5 `exp-encabl-e5-vexpert-norm-distill-eve` | Exp 4 + `visual_expert.norm: true`                          | `+ visual_expert_norm`               |
-| Exp 7 `exp-encabl-e7-vexpert-norm-distill-repa` | Exp 5 but `visual_distill.method: repa`, `layers: [8]` (mid) | `visual_distill_method/layers`       |
-| Exp 8 `exp-encabl-e8-vexpert-norm-distill-softdepth` | Exp 5 but `method: softdepth`, `layers: [4,8,12,16,20,24]` | `visual_distill_method/layers`       |
+| Arm                                                  | `model.*` toggles                                                                                                                                                                                                                                    | flattened keys                       |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Exp 1 `exp-encabl-e1-nepa`                           | `visual_aux.objective: nepa` (+ `trainer.visual_aux_weight: 0.5`)                                                                                                                                                                                    | `visual_aux_objective`               |
+| Exp 2 `exp-encabl-e2-vexpert`                        | `visual_expert: {enabled, ffn}`                                                                                                                                                                                                                      | `visual_expert`, `visual_expert_ffn` |
+| Exp 3 `exp-encabl-e3-vexpert-norm`                   | `visual_expert: {enabled, ffn, norm}`                                                                                                                                                                                                                | `+ visual_expert_norm`               |
+| Exp 6 `exp-encabl-e6-vexpert-norm-nepa`              | Exp 3 toggles + `visual_aux.objective: nepa` (+ weight 0.5)                                                                                                                                                                                          | union of above                       |
+| Exp 4 `exp-encabl-e4-vexpert-distill-eve`            | `visual_expert: {enabled, ffn}` + `visual_distill: {enabled, method: eve, teacher_kind: clip, teacher_name: openai/clip-vit-base-patch16, debias_target: true, debias_momentum: 0.9, rkd_dist_weight: 1.0}` (+ `trainer.visual_distill_weight: 1.0`) | `visual_distill*` + `visual_expert*` |
+| Exp 5 `exp-encabl-e5-vexpert-norm-distill-eve`       | Exp 4 + `visual_expert.norm: true`                                                                                                                                                                                                                   | `+ visual_expert_norm`               |
+| Exp 7 `exp-encabl-e7-vexpert-norm-distill-repa`      | Exp 5 but `visual_distill.method: repa`, `layers: [8]` (mid)                                                                                                                                                                                         | `visual_distill_method/layers`       |
+| Exp 8 `exp-encabl-e8-vexpert-norm-distill-softdepth` | Exp 5 but `method: softdepth`, `layers: [4,8,12,16,20,24]`                                                                                                                                                                                           | `visual_distill_method/layers`       |
 
 Each arm is a `-s1`/`-s2` pair. `visual_expert.ffn` defaults True, `norm`/
 `attention` default False, `visual_aux.objective` defaults `none`, so the listed
@@ -306,31 +306,31 @@ touches registered buffers). A garbage-truthy `debias_inited` makes the EMA
 subtract an uninitialized (often Inf) mean → NaN cosine → **every microbatch
 skipped, non-deterministically per run**. Fix = `init_visual_distill_buffers()`
 (mirrors `init_learnable_query`), called from `vlm.py`'s **fresh-build branch
-only** (the `else:` that builds from the base LM) — so **S2 `from_pretrained:
-${VLM_S1_CKPT}` (the reload branch at the top of `load_model`) does NOT reset the
+only** (the `else:` that builds from the base LM) — so **S2 `from_pretrained: ${VLM_S1_CKPT}` (the reload branch at the top of `load_model`) does NOT reset the
 trained EMA**; it carries it (buffers are `persistent=True`). Defense-in-depth: an
 in-loss `isfinite` re-init guard re-warms the EMA if a non-finite mean ever slips
 through, plus eps-inside-sqrt RMSNorm in `_align`, `nan_to_num`, and Gram
 sanitize/clamp (port these NaN guards together — they are load-bearing).
 
 **Six touch-points (all four files).** ① `visual_distill.py` `_compute_anticollapse`
-+ helpers; ② `config_schema.py` 16 `VisualDistillConfig` fields; ③
-`modeling_vlm.py` `_build_visual_distill_head` reads them via `getattr` +
-`init_visual_distill_buffers`; ④ `vlm.py` fresh-build init call; ⑤ `vlm.py`
-**flattens the 16 fields onto `VLMConfig`** — miss ⑤ and the `getattr` reads
-silently default OFF (the dials no-op); ⑥ `modeling_vlm.py` `compute_distill_loss`
-**no-image anchor** must emit the SAME weight-gated component-key set as
-`_compute_anticollapse` (single source of truth: `head.anticollapse_keys()`) — miss
-⑥ and an image-free microbatch yields fewer keys than an image-bearing one, so the
-trainer's cross-rank `all_reduce(stack(sorted(comps)))` size-mismatches and
-NCCL-hangs every multi-GPU run. The warmup counter `_ac_step` is likewise the
-trainer's `global_step` (mirrored once per optimizer step via
-`VLMTrainer._sync_distill_warmup_step`), never a per-forward count, so the ramp is
-rank-identical under gradient accumulation. Regression test:
-`tests/test_visual_distill_anticollapse.py` (gated-off == plain cosine; buffer
-trap + step-0 finite). Teacher for these arms = **CLIP-base**
-(`openai/clip-vit-base-patch16`, default `teacher_out_size: 224`) for a fair
-comparison vs the CLIP-encoder run — captain's call, NOT CLIP-L/14-336.
+
+- helpers; ② `config_schema.py` 16 `VisualDistillConfig` fields; ③
+    `modeling_vlm.py` `_build_visual_distill_head` reads them via `getattr` +
+    `init_visual_distill_buffers`; ④ `vlm.py` fresh-build init call; ⑤ `vlm.py`
+    **flattens the 16 fields onto `VLMConfig`** — miss ⑤ and the `getattr` reads
+    silently default OFF (the dials no-op); ⑥ `modeling_vlm.py` `compute_distill_loss`
+    **no-image anchor** must emit the SAME weight-gated component-key set as
+    `_compute_anticollapse` (single source of truth: `head.anticollapse_keys()`) — miss
+    ⑥ and an image-free microbatch yields fewer keys than an image-bearing one, so the
+    trainer's cross-rank `all_reduce(stack(sorted(comps)))` size-mismatches and
+    NCCL-hangs every multi-GPU run. The warmup counter `_ac_step` is likewise the
+    trainer's `global_step` (mirrored once per optimizer step via
+    `VLMTrainer._sync_distill_warmup_step`), never a per-forward count, so the ramp is
+    rank-identical under gradient accumulation. Regression test:
+    `tests/test_visual_distill_anticollapse.py` (gated-off == plain cosine; buffer
+    trap + step-0 finite). Teacher for these arms = **CLIP-base**
+    (`openai/clip-vit-base-patch16`, default `teacher_out_size: 224`) for a fair
+    comparison vs the CLIP-encoder run — captain's call, NOT CLIP-L/14-336.
 
 ## Energon train-loader layouts (`build_energon_train_loader`)
 
