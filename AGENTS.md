@@ -291,7 +291,7 @@ landed in ST-3 (single-pool breen + debias-on-query — see "Single-pool query
 distill (ST-3)"); exp 10 (caption-token dropout) now landed — see "S1 caption-token
 (input word) dropout" below. The `data/tenexp-audit/report.md` audit mis-scoped exp
 10 as `attention_dropout` (a 1-line decoder dial); the captain re-specced it as
-output-side caption-token dropout (the mechanism actually documented below).
+input-side caption-token dropout (the mechanism actually documented below).
 
 ### Anti-collapse distill port (ST-2) — `visual_distill` trick A + B
 
