@@ -235,8 +235,7 @@ The shared base for the native (encoder-free, raw-patch) ablation family is a
 - **S2 `exp-encabl-native-s2.yaml`** — instruction SFT on
     `dataset/energon-honey-sft-wds` (new WDS twin of bee-stage2; `wds_path`,
     `conversation_kind: instruct`, `strip_empty_think`), `trainer: finetune`
-    (LM+connector unfreeze), `version: qwen_2_5` ChatML, `batch_token_budget:
-    14000`, `max_steps: 11905`, LR 6e-5, `from_pretrained: ${oc.env:VLM_S1_CKPT}`.
+    (LM+connector unfreeze), `version: qwen_2_5` ChatML, `batch_token_budget: 14000`, `max_steps: 11905`, LR 6e-5, `from_pretrained: ${oc.env:VLM_S1_CKPT}`.
 
 **Effective-token budget convention (hold this constant across every arm):**
 `max_steps = effective_tokens / (batch_token_budget × world_size)`, world_size=6.
@@ -253,12 +252,12 @@ overrides + a distinctive `trainer.run_name`) — so budgets/steps/seed/data str
 are identical and arms stay directly comparable. Toggle → flattened `VLMConfig`
 (set in `vlm.py` load_model, read by `getattr` in `modeling_vlm.py`):
 
-| Arm | `model.*` toggles | flattened keys |
-|---|---|---|
-| Exp 1 `exp-encabl-e1-nepa` | `visual_aux.objective: nepa` (+ `trainer.visual_aux_weight: 0.5`) | `visual_aux_objective` |
-| Exp 2 `exp-encabl-e2-vexpert` | `visual_expert: {enabled, ffn}` | `visual_expert`, `visual_expert_ffn` |
-| Exp 3 `exp-encabl-e3-vexpert-norm` | `visual_expert: {enabled, ffn, norm}` | `+ visual_expert_norm` |
-| Exp 6 `exp-encabl-e6-vexpert-norm-nepa` | Exp 3 toggles + `visual_aux.objective: nepa` (+ weight 0.5) | union of above |
+| Arm                                     | `model.*` toggles                                                 | flattened keys                       |
+| --------------------------------------- | ----------------------------------------------------------------- | ------------------------------------ |
+| Exp 1 `exp-encabl-e1-nepa`              | `visual_aux.objective: nepa` (+ `trainer.visual_aux_weight: 0.5`) | `visual_aux_objective`               |
+| Exp 2 `exp-encabl-e2-vexpert`           | `visual_expert: {enabled, ffn}`                                   | `visual_expert`, `visual_expert_ffn` |
+| Exp 3 `exp-encabl-e3-vexpert-norm`      | `visual_expert: {enabled, ffn, norm}`                             | `+ visual_expert_norm`               |
+| Exp 6 `exp-encabl-e6-vexpert-norm-nepa` | Exp 3 toggles + `visual_aux.objective: nepa` (+ weight 0.5)       | union of above                       |
 
 Each arm is a `-s1`/`-s2` pair. `visual_expert.ffn` defaults True, `norm`/
 `attention` default False, `visual_aux.objective` defaults `none`, so the listed
