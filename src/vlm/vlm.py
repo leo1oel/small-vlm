@@ -477,7 +477,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         config.visual_distill_head_hidden = int(model_cfg.visual_distill.head_hidden)
         config.visual_distill_loss = str(model_cfg.visual_distill.loss)
         config.visual_distill_teacher_out_size = int(model_cfg.visual_distill.teacher_out_size)
-        # Anti-collapse dials (spec anticollapse-ablation.md): flattened onto the
+        # Anti-collapse dials (see AGENTS.md "Anti-collapse distill port (ST-2)"): flattened onto the
         # config so the head reads them via getattr at build (visual_aux pattern).
         # All default OFF -> bit-identical to the plain per-patch cosine distill.
         config.visual_distill_debias_target = bool(model_cfg.visual_distill.debias_target)

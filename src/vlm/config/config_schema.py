@@ -244,7 +244,7 @@ class VisualDistillConfig:
     # Per-token alignment: "cosine" (neg cosine, CLIP) or "smoothl1" (huber, vae).
     # "" = method default (cosine for clip, smoothl1 for vae).
     loss: str = ""
-    # --- Anti-collapse recipe (spec anticollapse-ablation.md) ---
+    # --- Anti-collapse recipe (see AGENTS.md "Anti-collapse distill port (ST-2)") ---
     # All default OFF -> bit-identical to the plain per-patch cosine distill.
     # Applied (eve/repa/softdepth/vae single-projector path) in compute().
     # (A) debias_target: subtract a running EMA per-CHANNEL mean (across the
@@ -274,7 +274,7 @@ class VisualDistillConfig:
     # diverge the connector in a few steps at the connector LR); the warmup lets
     # the cosine+debias establish a sane connector first. 0 = no warmup.
     ac_warmup_steps: int = 0
-    # --- Round-2 anti-collapse levers (spec round2-ablation.md), each on TOP of
+    # --- Round-2 anti-collapse levers (see AGENTS.md "Anti-collapse distill port (ST-2)"), each on TOP of
     # A+B (debias + RKD). All default OFF. ---
     # MGD (masked generative distillation): per-patch channel-mask the projected
     # student, regenerate the DEBIASED teacher target through a tiny train-only

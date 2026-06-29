@@ -268,7 +268,7 @@ class VisualDistillHead(nn.Module):
         self.teacher_dim: int = teacher_dim
         self.num_fine: int = num_fine
         self.num_coarse: int = num_coarse
-        # Anti-collapse recipe (spec anticollapse-ablation.md); all default off.
+        # Anti-collapse recipe (see AGENTS.md "Anti-collapse distill port (ST-2)"); all default off.
         self.debias_target: bool = debias_target
         self.debias_momentum: float = debias_momentum
         self.debias_std: bool = debias_std
@@ -279,7 +279,7 @@ class VisualDistillHead(nn.Module):
         self.vicreg_cov_weight: float = vicreg_cov_weight
         self.vicreg_gamma: float = vicreg_gamma
         self.ac_warmup_steps: int = ac_warmup_steps
-        # Round-2 levers (spec round2-ablation.md).
+        # Round-2 levers (see AGENTS.md "Anti-collapse distill port (ST-2)").
         self.mgd_weight: float = mgd_weight
         self.mgd_beta: float = mgd_beta
         self.sigreg_weight: float = sigreg_weight
@@ -479,7 +479,7 @@ class VisualDistillHead(nn.Module):
         # "cos" here = mean off-diagonal agreement, a comparable monitor.
         return loss, (1.0 - (gram_h - gram_t).abs().mean())
 
-    # ---- Anti-collapse recipe (spec anticollapse-ablation.md) ----------------
+    # ---- Anti-collapse recipe (see AGENTS.md "Anti-collapse distill port (ST-2)") ----
     def _anticollapse_on(self) -> bool:
         return bool(
             self.debias_target
