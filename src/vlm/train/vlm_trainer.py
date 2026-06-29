@@ -90,6 +90,7 @@ class VLMTrainer(Trainer):
         if model.training and isinstance(inputs.get("input_ids"), torch.Tensor):
             self._local_samples += int(inputs["input_ids"].shape[0])
         self._sync_distill_warmup_step(model)
+        self._sync_caption_dropout_step(model)
         return super().compute_loss(
             model, inputs, return_outputs=return_outputs, num_items_in_batch=num_items_in_batch
         )
@@ -108,6 +109,21 @@ class VLMTrainer(Trainer):
         weight)."""
         head = getattr(self.accelerator.unwrap_model(model), "visual_distill_head", None)
         step_buf = getattr(head, "_ac_step", None) if head is not None else None
+        if step_buf is not None:
+            step_buf.fill_(int(self.state.global_step))
+
+    def _sync_caption_dropout_step(self, model: torch.nn.Module) -> None:
+        """Mirror the rank-identical optimizer-step counter (HF Trainer
+        ``state.global_step``, +1 per ``optimizer.step()``) into the model's
+        ``_caption_dropout_step`` buffer, so the Stage-1 caption-token dropout
+        rate ramps once per OPTIMIZER step — rank-identical and
+        gradient-accumulation-invariant — instead of once per image-bearing
+        microbatch forward (which advances at ``grad_accum`` x the intended rate
+        and diverges across ranks). Idempotent within a step: every micro-batch
+        writes the same ``global_step``. No-op unless caption-token dropout is
+        enabled — the ``_caption_dropout_step`` buffer is registered only then
+        (so shipped arms with the dropout off stay bit-identical)."""
+        step_buf = getattr(self.accelerator.unwrap_model(model), "_caption_dropout_step", None)
         if step_buf is not None:
             step_buf.fill_(int(self.state.global_step))
 

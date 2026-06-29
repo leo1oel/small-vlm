@@ -335,6 +335,34 @@ class CrossModalMaskConfig:
 
 
 @dataclass
+class CaptionTokenDropoutConfig:
+    """S1 caption-token (input word) dropout regularizer (exp10). During Stage-1
+    caption pretraining the model can lower the loss by predicting the next
+    caption word from the previous words and ignoring the image (the
+    language-prior trap). This blanks a random fraction of the model's OWN
+    teacher-forcing caption INPUT tokens — the supervised caption positions
+    (labels != ignore_index; in the `plain` recipe the whole caption is
+    supervised) — so it cannot lean on its own preceding words and must read the
+    image. INPUT side only: the dropped positions' input embeddings are zeroed
+    (the repo's "blank" idiom, == grounding corruption — no new params, no
+    tokenizer dependency, trivially bit-identical when off); `labels` are NEVER
+    touched, so every position stays supervised. Image / audio / query / BOS /
+    prompt tokens are all ignore_index already, so they are never dropped. The
+    rate ramps linearly p_start -> p_end across the optimizer-step budget
+    (max_steps), computed from the rank-identical HF Trainer global_step (NOT a
+    per-microbatch counter, which would diverge under grad-accum/DDP). Pure
+    forward-time loss with no module to build, so the dials flatten onto
+    VLMConfig in vlm.vlm (grounding/cross_modal pattern). enabled=False =
+    bit-identical baseline (the forward never touches the embeddings)."""
+
+    enabled: bool = False
+    # Drop probability at step 0.
+    p_start: float = 0.10
+    # Drop probability at/after the final optimizer step (max_steps).
+    p_end: float = 0.30
+
+
+@dataclass
 class GenerationConfig:
     """Text->image generation pathway: continuous flow matching in patch space
     (Transfusion / minit2i MM-JiT style; spec 2026-06-20). Structural dials size
@@ -420,6 +448,9 @@ class ModelConfig:
     grounding: GroundingConfig = field(default_factory=GroundingConfig)
     visual_distill: VisualDistillConfig = field(default_factory=VisualDistillConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
+    caption_token_dropout: CaptionTokenDropoutConfig = field(
+        default_factory=CaptionTokenDropoutConfig
+    )
 
 
 @dataclass

@@ -722,6 +722,20 @@ def vlm(cfg: AppConfig) -> None:
             if bool(cfg.model.visual_distill.enabled)
             else 0.0
         )
+        # S1 caption-token (input word) dropout (exp10). A forward-time
+        # regularizer with no module to build, so its dials flatten onto
+        # model.config (grounding/cross_modal pattern) and serialize into
+        # checkpoint config.json so a resume / inference self-describes the ramp.
+        # The ramp denominator is the trainer's step budget (max_steps) — the
+        # SAME schedule the LR warmup ramps over — and the rate is recomputed
+        # each step from the rank-identical optimizer step mirrored by
+        # VLMTrainer._sync_caption_dropout_step (never a microbatch counter).
+        # enabled=False -> the forward never touches inputs_embeds (bit-identical).
+        ctd = cfg.model.caption_token_dropout
+        model.config.caption_token_dropout_enabled = bool(ctd.enabled)
+        model.config.caption_token_dropout_p_start = float(ctd.p_start)
+        model.config.caption_token_dropout_p_end = float(ctd.p_end)
+        model.config.caption_token_dropout_max_steps = int(cfg.trainer.max_steps)
         log.info("Creating data module")
         if cfg.dataset.type == "energon":
             # lazy import: needs megatron-energon + multistorageclient, which

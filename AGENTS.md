@@ -279,6 +279,7 @@ are identical and arms stay directly comparable. Toggle → flattened `VLMConfig
 | Exp 7 `exp-encabl-e7-vexpert-norm-distill-repa`        | Exp 5 but `visual_distill.method: repa`, `layers: [8]` (mid)                                                                                                                                                                                                                                                                                                      | `visual_distill_method/layers`         |
 | Exp 8 `exp-encabl-e8-vexpert-norm-distill-softdepth`   | Exp 5 but `method: softdepth`, `layers: [4,8,12,16,20,24]`                                                                                                                                                                                                                                                                                                        | `visual_distill_method/layers`         |
 | Exp 9 `exp-encabl-e9-vexpert-norm-query-distill-breen` | `visual_expert: {enabled, ffn, norm}` + `learnable_query: {enabled, num_query: 64}` + `visual_distill: {enabled, method: breen, teacher_kind: clip, teacher_name: openai/clip-vit-base-patch16, teacher_out_size: 224, debias_target: true, debias_momentum: 0.9}` (+ `trainer.visual_distill_weight: 1.0`). NO `rkd_dist_weight`/B — breen routes only A debias. | `learnable_query*` + `visual_distill*` |
+| Exp 10 `exp-encabl-e10-captiondrop`                  | `caption_token_dropout: {enabled, p_start: 0.10, p_end: 0.30}` (**S1 only**; the `-s2` pair inherits native-s2 unchanged — dropout default OFF)                                                                                                       | `caption_token_dropout_*`            |
 
 Each arm is a `-s1`/`-s2` pair. `visual_expert.ffn` defaults True, `norm`/
 `attention` default False, `visual_aux.objective` defaults `none`, so the listed
@@ -287,7 +288,10 @@ keys are the full minimal delta. Verify any new arm with
 the structured schema at compose, not at train launch). Exps 4/5/7/8 (distill)
 add the anti-collapse port (ST-2, now landed — see below); exp 9 (query distill)
 landed in ST-3 (single-pool breen + debias-on-query — see "Single-pool query
-distill (ST-3)"); exp 10 (dropout) deferred — see `data/tenexp-audit/report.md`.
+distill (ST-3)"); exp 10 (caption-token dropout) now landed — see "S1 caption-token
+(input word) dropout" below. The `data/tenexp-audit/report.md` audit mis-scoped exp
+10 as `attention_dropout` (a 1-line decoder dial); the captain re-specced it as
+output-side caption-token dropout (the mechanism actually documented below).
 
 ### Anti-collapse distill port (ST-2) — `visual_distill` trick A + B
 
@@ -390,6 +394,55 @@ files:
     once per image, so the existing spy captures it cleanly; the captured pair is in
     LLM-hidden space (query_hidden vs projected debiased target) — `discrimination_metrics`
     is dimension-agnostic.
+
+### S1 caption-token (input word) dropout — `caption_token_dropout` (exp 10)
+
+The language-prior trap: in S1 caption pretrain the model can lower the loss by
+predicting the next caption word from the *previous words* and ignoring the
+image (blandly "This is an image of a dog"). Exp 10 forces grounding by applying
+**dropout to the model's OWN teacher-forcing caption INPUT tokens** — it blanks a
+random fraction of the supervised caption-content input embeddings, so the model
+cannot lean on its preceding words and must read the image. Lives entirely behind
+`CaptionTokenDropoutConfig` (`enabled`/`p_start`/`p_end`), **default OFF →
+bit-identical baseline** (the forward never touches `inputs_embeds`). Mechanics:
+
+- **Where:** a single chokepoint in the ForCausalLM `forward`, AFTER the
+    multimodal splice produces final `inputs_embeds`+`labels` and BEFORE both
+    loss dispatches (chunked-CE and the parent forward) — so it sees the real
+    teacher-forcing inputs and covers both paths. It only fires once the splice
+    *materializes* `inputs_embeds`, i.e. when **media is present** (text-only
+    batches return `inputs_embeds=None` and no-op) — which is exactly the S1
+    caption regime (every sample is `<image> → caption`).
+- **What is dropped:** positions where `labels != ignore_index` (the supervised
+    caption span; under `plain` the whole caption is supervised). Image / audio /
+    query / BOS / prompt / padding tokens all carry `ignore_index`, so they are
+    **never** eligible. The selected input embeddings are **zeroed** (the repo's
+    "blank" idiom — identical to grounding `corruption="blank"`; no new params, no
+    tokenizer dependency, trivially bit-identical when off). `masked_fill` is
+    out-of-place: kept positions keep their autograd graph, dropped ones become
+    zero constants (zero gradient).
+- **Labels are NEVER touched** — every position stays supervised; the model is
+    only blinded to a fraction of its own preceding caption *inputs*.
+- **Rate ramp:** linear `p(step) = p_start + (p_end - p_start)·min(1, step/max_steps)`,
+    `p_start=0.10 → p_end=0.30` over the S1 step budget. `step` is the
+    rank-identical HF Trainer `global_step` mirrored into a non-persistent
+    `_caption_dropout_step` buffer once per optimizer step
+    (`VLMTrainer._sync_caption_dropout_step`, mirroring the `_ac_step` pattern) —
+    **NOT a per-microbatch counter** (that advances at grad_accum× the rate and
+    diverges across DDP ranks; this is the exact bug class that bit ST-2's warmup).
+- **Touch-points:** ① `config_schema.py` `CaptionTokenDropoutConfig` on
+    `ModelConfig`; ② `vlm.py` **flattens** `caption_token_dropout_{enabled,p_start,
+    p_end}` + `caption_token_dropout_max_steps` (= `trainer.max_steps`) onto
+    `VLMConfig` (grounding/cross_modal pattern; miss this and `getattr` defaults
+    OFF); ③ `modeling_vlm.py` module-level `caption_token_dropout_rate` /
+    `caption_token_dropout_prob` / `apply_caption_token_dropout` helpers + the
+    `_apply_caption_token_dropout` method + the `_caption_dropout_step` buffer
+    (registered ONLY when enabled → baseline state_dict unchanged); ④
+    `vlm_trainer.py` `_sync_caption_dropout_step`. Regenerate the hub export
+    template after the `modeling_vlm.py` edit. **S1 only** — the `-s2` config is
+    the native S2 unchanged (the regularizer targets caption pretraining). Test:
+    `tests/test_caption_token_dropout.py` (ramp formula; input-only/labels-intact;
+    image/structural never dropped; bit-identical when off).
 
 ### S1 representation-eval harness (`devtools/` probes)
 
