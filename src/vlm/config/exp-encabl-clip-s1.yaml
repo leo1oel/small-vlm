@@ -19,7 +19,7 @@ defaults:
 # (VLM_S1_CKPT=<this run's checkpoint dir>).
 
 trainer:
-  # --- max-speed (0.6B + frozen CLIP on A100; bottleneck is Azure data) ---
+  # --- max-speed (1.7B + frozen CLIP on A100; bottleneck is Azure data) ---
   deepspeed: null
   bf16: true
   tf32: true

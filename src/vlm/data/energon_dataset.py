@@ -151,7 +151,10 @@ def _patch_msc_cold_lock_path() -> None:
     download breaks; this bites every fresh run that streams a prepared
     CrudeWebdataset (``dataset.wds_path``) whose ``.nv-meta`` is read in text mode
     by energon's ``get_dataset_info`` (data/ds-config-2stage). Strip the leading
-    slash so the lock lands under the cache dir, mirroring the cached-file path."""
+    slash so the lock lands under the cache dir, mirroring the cached-file path.
+    Only REMOTE keys are stripped: the chunk-download caller (cache.py) passes an
+    absolute LOCAL cache path already under ``_get_cache_dir()``, which must be
+    left byte-identical to upstream so ``_cleanup_lock_file`` still finds it."""
     try:
         import os.path as osp
 
@@ -161,7 +164,8 @@ def _patch_msc_cold_lock_path() -> None:
         return
 
     def acquire_lock(self: Any, key: str) -> Any:
-        file_dir = osp.dirname(osp.join(self._get_cache_dir(), key.lstrip("/")))
+        lock_key = key if key.startswith(self._get_cache_dir()) else key.lstrip("/")
+        file_dir = osp.dirname(osp.join(self._get_cache_dir(), lock_key))
         lock_file = osp.join(file_dir, f".{osp.basename(key)}.lock")
         return FileLock(lock_file, timeout=self.DEFAULT_FILE_LOCK_TIMEOUT)
 
