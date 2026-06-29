@@ -477,6 +477,27 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         config.visual_distill_head_hidden = int(model_cfg.visual_distill.head_hidden)
         config.visual_distill_loss = str(model_cfg.visual_distill.loss)
         config.visual_distill_teacher_out_size = int(model_cfg.visual_distill.teacher_out_size)
+        # Anti-collapse dials (spec anticollapse-ablation.md): flattened onto the
+        # config so the head reads them via getattr at build (visual_aux pattern).
+        # All default OFF -> bit-identical to the plain per-patch cosine distill.
+        config.visual_distill_debias_target = bool(model_cfg.visual_distill.debias_target)
+        config.visual_distill_debias_momentum = float(model_cfg.visual_distill.debias_momentum)
+        config.visual_distill_debias_std = bool(model_cfg.visual_distill.debias_std)
+        config.visual_distill_rkd_dist_weight = float(model_cfg.visual_distill.rkd_dist_weight)
+        config.visual_distill_rkd_angle_weight = float(model_cfg.visual_distill.rkd_angle_weight)
+        config.visual_distill_rkd_angle_triplets = int(model_cfg.visual_distill.rkd_angle_triplets)
+        config.visual_distill_vicreg_var_weight = float(model_cfg.visual_distill.vicreg_var_weight)
+        config.visual_distill_vicreg_cov_weight = float(model_cfg.visual_distill.vicreg_cov_weight)
+        config.visual_distill_vicreg_gamma = float(model_cfg.visual_distill.vicreg_gamma)
+        config.visual_distill_ac_warmup_steps = int(model_cfg.visual_distill.ac_warmup_steps)
+        config.visual_distill_mgd_weight = float(model_cfg.visual_distill.mgd_weight)
+        config.visual_distill_mgd_beta = float(model_cfg.visual_distill.mgd_beta)
+        config.visual_distill_sigreg_weight = float(model_cfg.visual_distill.sigreg_weight)
+        config.visual_distill_sigreg_dirs = int(model_cfg.visual_distill.sigreg_dirs)
+        config.visual_distill_sigreg_knots = int(model_cfg.visual_distill.sigreg_knots)
+        config.visual_distill_sigreg_warmup_steps = int(
+            model_cfg.visual_distill.sigreg_warmup_steps
+        )
         # Learnable-query structural fields (BREEN port, spec 2026-06-24): on the
         # config BEFORE construction so the causal __init__ builds the query
         # Parameter from them; serialized into checkpoint config.json (visual_aux
@@ -542,6 +563,16 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
             from .models.modeling_vlm import init_learnable_query
 
             init_learnable_query(model)
+        # Fresh-build only: re-init the visual-distill head's anti-collapse EMA
+        # buffers (debias_mean/var/inited, _ac_step). from_pretrained leaves these
+        # buffers as `to_empty` garbage (missing keys; _init_weights never touches
+        # buffers) — a garbage-truthy `debias_inited` makes the EMA subtract an
+        # uninitialized (Inf) mean -> NaN cosine -> every microbatch skipped.
+        # Reloads carry the trained buffers and skip this. No-op when off.
+        if getattr(config, "visual_distill", False):
+            from .models.modeling_vlm import init_visual_distill_buffers
+
+            init_visual_distill_buffers(model)
         # Fresh-build only: transplant a pretrained ViT conv patch-embed into the
         # connector's "warm tokenizer" stem (spec 2026-06-22, encoder-free
         # catch-up). Reloads skip this — the checkpoint carries the trained stem.

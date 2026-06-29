@@ -1,0 +1,29 @@
+defaults:
+  - exp-encabl-native-s1
+  - _self_
+
+# 10-EXP ablation — Exp 5 (+ visual expert + visual norm + distill CLIP), STAGE 1.
+# Base = exp-encabl-native-s1. Delta vs Exp 4 = the EVEv2 modality-norm expert
+# (visual_expert.norm) ON TOP of the FFN expert + CLIP distillation (eve,
+# anti-collapse A+B). This is the Round-5A "vision-specific LayerNorm" direction
+# that first beat the A+B baseline, now combined with the distill objective and
+# (in S2) an unfrozen LM. Teacher = CLIP-base (fair vs the CLIP-encoder run).
+# Same budget / steps / seed / data as base; teacher memory -> OOM-tune at launch.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true # EVEv2 modality norm (attention stays default false)
+  visual_distill:
+    enabled: true
+    method: eve
+    teacher_kind: clip
+    teacher_name: openai/clip-vit-base-patch16
+    debias_target: true # (A) EMA per-channel target debias
+    debias_momentum: 0.9
+    rkd_dist_weight: 1.0 # (B) bounded Gram relational
+
+trainer:
+  visual_distill_weight: 1.0
+  run_name: encabl-e5-vexpert-norm-distill-eve-s1

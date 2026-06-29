@@ -527,6 +527,48 @@ def init_learnable_query(model: Any) -> None:
     log.info(f"Initialized learnable_query {tuple(new.shape)} (randn x {std:.3g}).")
 
 
+def init_visual_distill_buffers(model: Any) -> None:
+    """Fresh-build only: re-materialize the visual-distill head's anti-collapse
+    EMA / step buffers (debias_mean, debias_var, debias_inited, _ac_step).
+
+    SAME trap as init_learnable_query, for BUFFERS: a `from_pretrained` build
+    leaves these as `to_empty` garbage — they are MISSING KEYS in the base-LM
+    checkpoint, and the backbone `_init_weights` only initializes recognized
+    module TYPES (Linear/Embedding/RMSNorm), never a registered buffer. A
+    garbage-truthy `debias_inited` makes the EMA skip its lazy init and subtract
+    an uninitialized (often Inf) running mean from the target -> NaN per-patch
+    cosine -> the microbatch is skipped EVERY step. It is NON-DETERMINISTIC per
+    run: it fires only when the uninitialized `debias_inited` byte happens to be
+    truthy (which is why sibling arms with identical loss code die or survive at
+    random). Reset the buffers to their definitions (mean 0, var 1, inited False,
+    step 0); the EMA re-warms within a step. Reloads carry the trained buffers
+    (persistent) and skip this fresh-build path. No-op when the head is absent."""
+    head = getattr(model, "visual_distill_head", None)
+    if head is None:
+        return
+    dev = next(
+        (p.device for p in model.parameters() if p.device.type != "meta"),
+        torch.device("cpu"),
+    )
+    reset = []
+    for name, fill, dtype in (
+        ("debias_mean", 0.0, None),
+        ("debias_var", 1.0, None),
+        ("debias_inited", 0.0, torch.bool),
+        ("_ac_step", 0.0, torch.long),
+    ):
+        b = getattr(head, name, None)
+        if b is None:
+            continue
+        dt = b.dtype if dtype is None else dtype
+        head.register_buffer(
+            name, torch.full(tuple(b.shape), fill, dtype=dt, device=dev), persistent=True
+        )
+        reset.append(name)
+    if reset:
+        log.info(f"Re-initialized visual-distill anti-collapse buffers: {reset}.")
+
+
 def init_visual_expert_gates(model: Any) -> None:
     """Fresh-build only: initialize each per-expert sigmoid gate (on EVERY routed
     sublayer — FFN/norm/attention) to near-identity (zero weight, bias 4.0 ->
@@ -619,6 +661,22 @@ def create_dynamic_causal_vlm_class(
             loss_type=loss_type,
             num_fine=int(getattr(config, "learnable_query_num_fine", 64)),
             num_coarse=int(getattr(config, "learnable_query_num_coarse", 36)),
+            debias_target=bool(getattr(config, "visual_distill_debias_target", False)),
+            debias_momentum=float(getattr(config, "visual_distill_debias_momentum", 0.9)),
+            debias_std=bool(getattr(config, "visual_distill_debias_std", False)),
+            rkd_dist_weight=float(getattr(config, "visual_distill_rkd_dist_weight", 0.0)),
+            rkd_angle_weight=float(getattr(config, "visual_distill_rkd_angle_weight", 0.0)),
+            rkd_angle_triplets=int(getattr(config, "visual_distill_rkd_angle_triplets", 512)),
+            vicreg_var_weight=float(getattr(config, "visual_distill_vicreg_var_weight", 0.0)),
+            vicreg_cov_weight=float(getattr(config, "visual_distill_vicreg_cov_weight", 0.0)),
+            vicreg_gamma=float(getattr(config, "visual_distill_vicreg_gamma", 1.0)),
+            ac_warmup_steps=int(getattr(config, "visual_distill_ac_warmup_steps", 0)),
+            mgd_weight=float(getattr(config, "visual_distill_mgd_weight", 0.0)),
+            mgd_beta=float(getattr(config, "visual_distill_mgd_beta", 0.5)),
+            sigreg_weight=float(getattr(config, "visual_distill_sigreg_weight", 0.0)),
+            sigreg_dirs=int(getattr(config, "visual_distill_sigreg_dirs", 256)),
+            sigreg_knots=int(getattr(config, "visual_distill_sigreg_knots", 17)),
+            sigreg_warmup_steps=int(getattr(config, "visual_distill_sigreg_warmup_steps", 0)),
         )
 
     def _build_learnable_query(self: Any, config: Any) -> "nn.Parameter | None":

@@ -1,0 +1,30 @@
+defaults:
+  - exp-encabl-native-s1
+  - _self_
+
+# 10-EXP ablation — Exp 7 (+ visual expert + visual norm + distill CLIP MID), STAGE 1.
+# Base = exp-encabl-native-s1. Same as Exp 5 (FFN + EVEv2 norm experts + CLIP
+# distill, anti-collapse A+B) EXCEPT the distill site = a MID layer (REPA,
+# arXiv:2410.06940) instead of the final hidden (eve). layers: [8] pins the
+# alignment to ~0.3 depth of the 28-layer Qwen3-1.7B (REPA's mid-layer
+# alignment); the mechanism is byte-identical to main's clean repa, gaining
+# anti-collapse only via the §4 dispatch. Teacher = CLIP-base (fair comparison).
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true
+  visual_distill:
+    enabled: true
+    method: repa
+    teacher_kind: clip
+    teacher_name: openai/clip-vit-base-patch16
+    layers: [8] # mid-layer (~0.3 depth) alignment site
+    debias_target: true # (A) EMA per-channel target debias
+    debias_momentum: 0.9
+    rkd_dist_weight: 1.0 # (B) bounded Gram relational
+
+trainer:
+  visual_distill_weight: 1.0
+  run_name: encabl-e7-vexpert-norm-distill-repa-s1

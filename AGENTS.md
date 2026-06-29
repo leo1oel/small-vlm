@@ -258,14 +258,71 @@ are identical and arms stay directly comparable. Toggle → flattened `VLMConfig
 | Exp 2 `exp-encabl-e2-vexpert`           | `visual_expert: {enabled, ffn}`                                   | `visual_expert`, `visual_expert_ffn` |
 | Exp 3 `exp-encabl-e3-vexpert-norm`      | `visual_expert: {enabled, ffn, norm}`                             | `+ visual_expert_norm`               |
 | Exp 6 `exp-encabl-e6-vexpert-norm-nepa` | Exp 3 toggles + `visual_aux.objective: nepa` (+ weight 0.5)       | union of above                       |
+| Exp 4 `exp-encabl-e4-vexpert-distill-eve` | `visual_expert: {enabled, ffn}` + `visual_distill: {enabled, method: eve, teacher_kind: clip, teacher_name: openai/clip-vit-base-patch16, debias_target: true, debias_momentum: 0.9, rkd_dist_weight: 1.0}` (+ `trainer.visual_distill_weight: 1.0`) | `visual_distill*` + `visual_expert*` |
+| Exp 5 `exp-encabl-e5-vexpert-norm-distill-eve` | Exp 4 + `visual_expert.norm: true`                          | `+ visual_expert_norm`               |
+| Exp 7 `exp-encabl-e7-vexpert-norm-distill-repa` | Exp 5 but `visual_distill.method: repa`, `layers: [8]` (mid) | `visual_distill_method/layers`       |
+| Exp 8 `exp-encabl-e8-vexpert-norm-distill-softdepth` | Exp 5 but `method: softdepth`, `layers: [4,8,12,16,20,24]` | `visual_distill_method/layers`       |
 
 Each arm is a `-s1`/`-s2` pair. `visual_expert.ffn` defaults True, `norm`/
 `attention` default False, `visual_aux.objective` defaults `none`, so the listed
 keys are the full minimal delta. Verify any new arm with
 `uv run python -m vlm -cn <config> --cfg job` (a misspelled toggle fails against
 the structured schema at compose, not at train launch). Exps 4/5/7/8 (distill)
-need the anti-collapse port (ST-2); exp 9 (query distill) ST-3; exp 10 (dropout)
-deferred — see `data/tenexp-audit/report.md`.
+add the anti-collapse port (ST-2, now landed — see below); exp 9 (query distill)
+ST-3; exp 10 (dropout) deferred — see `data/tenexp-audit/report.md`.
+
+### Anti-collapse distill port (ST-2) — `visual_distill` trick A + B
+
+Distillation alone makes every image's per-patch CLIP target collapse onto a
+shared "mean-image" constant (cross-image cosine ~0.98, retrieval at chance), so
+the LM ignores the visual pathway. The anti-collapse recipe (ported from
+`fm/breen-exp` commit `633c89c` as a **clean port, NOT a branch merge** — that
+branch forked pre-#20 and a merge regresses the norm/attention experts) breaks
+the collapse. It lives entirely behind `VisualDistillConfig`'s 16 new dials, all
+**default OFF**, so `eve`/`repa`/`softdepth`/`vae` stay byte-identical to the
+clean core until a dial is set:
+
+- **Trick A — `debias_target`** (`debias_momentum`, `debias_std`): subtract a
+    running **EMA per-channel mean** of the teacher target before the cosine —
+    removes the shared constant. This is the lever that breaks collapse.
+- **Trick B — `rkd_dist_weight`**: a **bounded Gram relational** term over
+    per-image pooled features (cosine-matrix MSE, in [-1,1] → finite gradients,
+    unlike raw RKD distance/angle whose `1/‖edge‖` blows up the untrained
+    connector). `rkd_angle_weight`/`_rkd_distance` are dead reference code.
+- **Trick C — VICReg** (`vicreg_var_weight`/`vicreg_cov_weight`) **HURTS**
+    (over-regularizes, retrieval back to ~chance) → **shipped but default 0; the
+    distill arms keep it 0.** SIGReg/PHI-S/MGD are optional extras, also default 0.
+- The recipe routes through `_compute_anticollapse` via a dispatch at the top of
+    `compute()` that fires **only** when `_anticollapse_on()` (any dial on) AND
+    `method ∈ {eve, repa, softdepth, vae}` (`breen`/`vora` bypass it).
+- **Dial recipe the distill arms use = A+B:** `debias_target: true`,
+    `debias_momentum: 0.9`, `rkd_dist_weight: 1.0`, everything else default.
+
+**The `to_empty` buffer trap (why "identical loss code died at random").** The
+debias EMA buffers (`debias_mean`/`debias_var`/`debias_inited`, registered only
+when `debias_target`) are MISSING KEYS in the base-LM checkpoint; a fresh
+`from_pretrained` build leaves them as `to_empty` garbage (`_init_weights` never
+touches registered buffers). A garbage-truthy `debias_inited` makes the EMA
+subtract an uninitialized (often Inf) mean → NaN cosine → **every microbatch
+skipped, non-deterministically per run**. Fix = `init_visual_distill_buffers()`
+(mirrors `init_learnable_query`), called from `vlm.py`'s **fresh-build branch
+only** (the `else:` that builds from the base LM) — so **S2 `from_pretrained:
+${VLM_S1_CKPT}` (the reload branch at the top of `load_model`) does NOT reset the
+trained EMA**; it carries it (buffers are `persistent=True`). Defense-in-depth: an
+in-loss `isfinite` re-init guard re-warms the EMA if a non-finite mean ever slips
+through, plus eps-inside-sqrt RMSNorm in `_align`, `nan_to_num`, and Gram
+sanitize/clamp (port these NaN guards together — they are load-bearing).
+
+**Five touch-points (all four files).** ① `visual_distill.py` `_compute_anticollapse`
++ helpers; ② `config_schema.py` 16 `VisualDistillConfig` fields; ③
+`modeling_vlm.py` `_build_visual_distill_head` reads them via `getattr` +
+`init_visual_distill_buffers`; ④ `vlm.py` fresh-build init call; ⑤ `vlm.py`
+**flattens the 16 fields onto `VLMConfig`** — miss ⑤ and the `getattr` reads
+silently default OFF (the dials no-op). Regression test:
+`tests/test_visual_distill_anticollapse.py` (gated-off == plain cosine; buffer
+trap + step-0 finite). Teacher for these arms = **CLIP-base**
+(`openai/clip-vit-base-patch16`, default `teacher_out_size: 224`) for a fair
+comparison vs the CLIP-encoder run — captain's call, NOT CLIP-L/14-336.
 
 ## Energon train-loader layouts (`build_energon_train_loader`)
 

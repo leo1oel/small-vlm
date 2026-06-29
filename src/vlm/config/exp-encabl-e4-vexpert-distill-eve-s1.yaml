@@ -1,0 +1,35 @@
+defaults:
+  - exp-encabl-native-s1
+  - _self_
+
+# 10-EXP ablation — Exp 4 (+ visual expert + distill CLIP), STAGE 1.
+# Base = exp-encabl-native-s1. Delta vs base = the FFN visual expert PLUS
+# CLIP-encoder distillation on the LLM's image-position hidden states, with the
+# BREEN anti-collapse recipe A+B (audit §4): EMA per-channel target debias
+# (debias_target) + bounded Gram relational (rkd_dist_weight). method=eve aligns
+# the FINAL post-norm hidden to CLIP-B/16's per-patch features (EVE PAL,
+# last-layer). VICReg (C) is OFF — the campaign showed it regresses retrieval.
+#
+# Teacher = CLIP-base (openai/clip-vit-base-patch16, teacher_out_size default
+# 224) — captain's call, for a FAIR comparison against the CLIP-encoder run
+# (NOT CLIP-L/14-336). The frozen teacher is held off the module tree and adds
+# resident memory: per-config OOM/batch verification is deferred to launch
+# (audit §10). Identical budget / steps / seed / data as the base recipe.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true # attention/norm stay at their dataclass defaults (false)
+  visual_distill:
+    enabled: true
+    method: eve
+    teacher_kind: clip
+    teacher_name: openai/clip-vit-base-patch16
+    # --- anti-collapse A+B (drop C: all vicreg weights stay 0; rkd_angle 0) ---
+    debias_target: true # (A) subtract the EMA per-channel "mean image" constant
+    debias_momentum: 0.9
+    rkd_dist_weight: 1.0 # (B) bounded Gram relational over per-image pooled feats
+
+trainer:
+  visual_distill_weight: 1.0
+  run_name: encabl-e4-vexpert-distill-eve-s1
