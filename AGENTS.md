@@ -430,6 +430,10 @@ bit-identical baseline** (the forward never touches `inputs_embeds`). Mechanics:
     (`VLMTrainer._sync_caption_dropout_step`, mirroring the `_ac_step` pattern) —
     **NOT a per-microbatch counter** (that advances at grad_accum× the rate and
     diverges across DDP ranks; this is the exact bug class that bit ST-2's warmup).
+    `max_steps` is `trainer.max_steps`; if it is `<= 0` (epoch-based training) the
+    ramp denominator is unresolved, so the rate is **held constant at `p_end`**
+    from step 0 and `vlm.py` emits a non-fatal load-time `log.warning` — the
+    shipped configs set `max_steps=34722` explicitly to get the intended ramp.
 - **Touch-points:** ① `config_schema.py` `CaptionTokenDropoutConfig` on
     `ModelConfig`; ② `vlm.py` **flattens**
     `caption_token_dropout_{enabled,p_start, p_end}` +
