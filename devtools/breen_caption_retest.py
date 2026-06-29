@@ -57,6 +57,8 @@ def main() -> None:
                 if proc.tokenizer.pad_token_id is not None
                 else proc.tokenizer.eos_token_id
             )
+        gc_.repetition_penalty = 1.3
+        gc_.no_repeat_ngram_size = 3
         caps = []
         for im in pil:
             try:
@@ -66,8 +68,6 @@ def main() -> None:
                     query="<image>",
                     images=im,
                     max_new_tokens=args.max_new,
-                    repetition_penalty=1.3,
-                    no_repeat_ngram_size=3,
                 )
             except Exception as e:  # noqa: BLE001
                 c = f"<failed: {type(e).__name__}: {e}>"

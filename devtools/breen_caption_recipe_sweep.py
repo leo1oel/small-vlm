@@ -67,6 +67,8 @@ def main() -> None:
             if processor.tokenizer.pad_token_id is not None
             else processor.tokenizer.eos_token_id
         )
+    default_rp = getattr(gc, "repetition_penalty", None)
+    default_ng = getattr(gc, "no_repeat_ngram_size", None)
 
     imgs = sorted(Path(args.qual_dir).glob("*.png"))[: args.n]
     pil = [Image.open(f).convert("RGB") for f in imgs]
@@ -74,6 +76,8 @@ def main() -> None:
     print(f"=== recipe sweep: {args.ckpt} | {len(imgs)} images ===\n")
 
     for rp, ng, mx in RECIPES:
+        gc.repetition_penalty = rp if rp is not None else default_rp
+        gc.no_repeat_ngram_size = ng if ng is not None else default_ng
         caps = []
         for im in pil:
             try:
@@ -83,8 +87,6 @@ def main() -> None:
                     query="<image>\nDescribe this image.",
                     images=im,
                     max_new_tokens=mx,
-                    repetition_penalty=rp,
-                    no_repeat_ngram_size=ng,
                 )
             except Exception as e:  # noqa: BLE001
                 cap = f"<gen failed: {type(e).__name__}: {e}>"

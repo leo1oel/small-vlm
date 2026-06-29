@@ -37,7 +37,7 @@ def _offdiag_mean(M: torch.Tensor) -> float:
     n = M.shape[0]
     if n < 2:
         return float("nan")
-    return float(M[~torch.eye(n, dtype=torch.bool)].mean())
+    return float(M[~torch.eye(n, dtype=torch.bool, device=M.device)].mean())
 
 
 def load_probe_images(
@@ -122,7 +122,7 @@ def discrimination_metrics(Q: torch.Tensor, K: torch.Tensor) -> dict[str, float]
     S = Q @ K.t()  # cos(Q_i, K_j)
     self_pooled = float(S.diag().mean())
     cross_pooled = _offdiag_mean(S)
-    top1 = float((S.argmax(1) == torch.arange(N)).float().mean())
+    top1 = float((S.argmax(1) == torch.arange(N, device=S.device)).float().mean())
     ranks = (S >= S.diag().unsqueeze(1)).sum(1).float()  # 1 = own match ranked best
     med_rank = float(ranks.median())
 
@@ -143,5 +143,7 @@ def discrimination_metrics(Q: torch.Tensor, K: torch.Tensor) -> dict[str, float]
         "k_spread_offdiag": _offdiag_mean(K @ K.t()),
         "self_centered": float(Sc.diag().mean()),
         "cross_centered": _offdiag_mean(Sc),
-        "retrieval_top1_centered": float((Sc.argmax(1) == torch.arange(N)).float().mean()),
+        "retrieval_top1_centered": float(
+            (Sc.argmax(1) == torch.arange(N, device=Sc.device)).float().mean()
+        ),
     }

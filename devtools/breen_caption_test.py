@@ -55,6 +55,10 @@ def main() -> None:
             if processor.tokenizer.pad_token_id is not None
             else processor.tokenizer.eos_token_id
         )
+    if args.repetition_penalty is not None:
+        gc.repetition_penalty = args.repetition_penalty
+    if args.no_repeat_ngram_size is not None:
+        gc.no_repeat_ngram_size = args.no_repeat_ngram_size
 
     imgs = sorted(Path(args.qual_dir).glob("*.png"))[: args.n]
     recipe = (
@@ -71,8 +75,6 @@ def main() -> None:
                 query="<image>\nDescribe this image.",
                 images=Image.open(f).convert("RGB"),
                 max_new_tokens=args.max_new,
-                repetition_penalty=args.repetition_penalty,
-                no_repeat_ngram_size=args.no_repeat_ngram_size,
             )
         except Exception as e:  # noqa: BLE001 — best-effort; note the fallback
             cap = f"<generate failed: {type(e).__name__}: {e}>"

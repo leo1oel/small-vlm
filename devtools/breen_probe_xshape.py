@@ -142,6 +142,13 @@ def main() -> None:
 
     head._align = orig_align
 
+    if len(preds) < 2:
+        raise SystemExit(
+            f"need >= 2 captured (pred, target) pairs for a cross-image probe, got "
+            f"{len(preds)}; the head._align spy captured no/too-few pairs. The "
+            f"'relational' method never calls _align so this probe does not apply to "
+            f"it; otherwise check --images-dir / VMCBench and --n-images."
+        )
     P = torch.stack(preds)  # (N, d) pooled+normalized student
     T = torch.stack(targs)  # (N, d) pooled+normalized teacher
     m = discrimination_metrics(P, T)  # Q=pred, K=target
