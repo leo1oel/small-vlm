@@ -267,6 +267,39 @@ the structured schema at compose, not at train launch). Exps 4/5/7/8 (distill)
 need the anti-collapse port (ST-2); exp 9 (query distill) ST-3; exp 10 (dropout)
 deferred — see `data/tenexp-audit/report.md`.
 
+### S1 representation-eval harness (`devtools/` probes)
+
+The S1 stage is read with two complementary signals.
+**Cross-image discrimination** (the killer test: `distill_cos` alone is a MIRAGE — a collapsed constant satisfies a per-row cosine, so what matters is whether per-image descriptors carry PER-IMAGE structure): pool each image's per-patch features into one L2-normalized descriptor and check `self_pooled >> cross_pooled`, `retrieval_top1 >> chance`, and `self_centered` staying high after removing the across-image mean (the centering clincher).
+**Caption-tracking** (grounded-vs-blind string distinctness): the campaign found these "blind" under a FROZEN LM, but these 10 arms UNFREEZE the LM at S1+S2, so distinct captions become a genuine grounding signal.
+All probes are heavy (model + CLIP load) — run on a GPU node, never the login node.
+Shared retrieval/centering/pooling lives in `devtools/breen_probe_common.py` (`discrimination_metrics`).
+
+| Probe | Script | Arms | What it reads |
+| --- | --- | --- | --- |
+| cross-image (distill) | `breen_probe_xshape.py` | **4,5,7,8,9** (distill only) | `visual_distill_head` aligned (student pred, teacher target); needs the head |
+| cross-image (distill-free) | `breen_probe_feat.py` | **1,2,3,6,10** (any native ckpt) | raw LLM hidden at image positions, split-half (even/odd patches) retrieval |
+| caption read | `breen_caption_test.py` | any | greedy caption strings + blind/distinct verdict |
+| caption multi-arm | `breen_caption_retest.py` | any | bare-`<image>` captions across several `LABEL=ckpt` at once |
+| decode-recipe sweep | `breen_caption_recipe_sweep.py` | any | which `rep_penalty`×`no_repeat_ngram` avoids the greedy token-loop |
+
+Launch each as a fresh self-contained GPU job (no held alloc needed):
+
+```bash
+# distill arms (4,5,7,8,9): cross-image discrimination on the distill head
+CKPT=/path/checkpoint-1000 PROBE=xshape LABEL=eve@1000 OUT=/path/out.json sbatch devtools/s1_eval_probe.slurm
+# non-distill arms (1,2,3,6,10): distill-free split-half on the raw LLM hidden
+CKPT=/path/checkpoint-1000 PROBE=feat  LABEL=nepa@1000 OUT=/path/out.json sbatch devtools/s1_eval_probe.slurm
+# caption grounding (any arm): PROBE=caption (single ckpt) or PROBE=recipe (decode sweep)
+CKPT=/path/checkpoint-1000 PROBE=caption sbatch devtools/s1_eval_probe.slurm
+# multi-arm caption read (any arms)
+ARMS="e1=/p/ck e2=/p/ck" PROBE=retest sbatch devtools/s1_eval_probe.slurm
+```
+
+`devtools/native_distill_probe_srun.sh` is the interactive twin for `srun`-ing `xshape`/`feat` into a live alloc you already hold (`JOBID=<squeue --me> CKPT=... PROBE=xshape bash devtools/native_distill_probe_srun.sh`); its old hard-coded dead `--jobid`/worktree path are gone (REPO is derived from the script location, JOBID is required).
+**Images:** both cross-image probes default to VMCBench-dev (`NIMG`, default 30), which must be HF-cached when offline — pre-cache once on a login node (`uv run python -c "from datasets import load_dataset; load_dataset('suyc21/VMCBench', split='dev')"`) or pass `IMAGES_DIR=.../breen-s2val-j8/qual_images` to run on local PNGs (also the way to get an identical cross-arm image set); the probe errors with this exact guidance if neither is available.
+**Query-placement (exp 9 only):** the eval reads `learnable_query_placement` from the checkpoint `config.json`, and main-trained checkpoints already serialize the correct value (`vlm()` refreshes it on both build paths — see "Self-describing config fields" below), so no fix is needed for arm-9 checkpoints trained on main; the probes still accept `QUERY_PLACEMENT=after_text` as a defensive override for a stale/external query checkpoint whose config disagrees with how it trained.
+
 ## Energon train-loader layouts (`build_energon_train_loader`)
 
 Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
