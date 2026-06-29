@@ -86,8 +86,7 @@ def _breen_config_kwargs(placement: str = "after_image") -> dict:
     kwargs = _tiny_vlm_config_kwargs()
     kwargs.update(
         learnable_query=True,
-        learnable_query_num_fine=4,
-        learnable_query_num_coarse=4,
+        learnable_query_num_query=8,
         learnable_query_placement=placement,
         query_token="<query>",
         query_token_index=-202,
@@ -227,10 +226,10 @@ def test_floating_point_ops_none_image_position_ids():
 
 
 def test_floating_point_ops_counts_breen_query_expansion():
-    """Each <query> sentinel expands into num_fine + num_coarse learnable-query
-    rows (8 here); the FLOPs estimate must reflect that, not count it as 1."""
+    """Each <query> sentinel expands into num_query learnable-query rows (8 here);
+    the FLOPs estimate must reflect that, not count it as 1."""
     model = _build_tiny_model(breen=True)
-    rows = 4 + 4  # num_fine + num_coarse
+    rows = 8  # num_query
     base = model.floating_point_ops({"input_ids": torch.tensor([[1, 2, 3, 4]])})
     with_q = model.floating_point_ops({"input_ids": torch.tensor([[1, 2, 3, -202]])})
     per_token = base // 4  # base counts 4 tokens

@@ -5,9 +5,9 @@ defaults:
 # Qwen3-1.7B backbone. Same raw-patch tokenizer as qwen3-1.7b-unified, plus the
 # three BREEN architecture pieces, shared by ALL stages (S0/S1/S2) so the
 # checkpoint chain reloads without a structural mismatch:
-#   1. learnable_query  - 64 fine + 36 coarse trainable queries (the CLIP-distill
-#                         site); the breen method aligns them to the dual-pooled
-#                         CLIP-L/14-336 grid (8x8 fine, 6x6 coarse).
+#   1. learnable_query  - 100 trainable queries (the CLIP-distill site); the breen
+#                         method (single-pool since ST-3) aligns them to ONE 10x10
+#                         adaptive pool of the CLIP-L/14-336 grid.
 #   2. visual_expert    - per-layer modality-routed visual FFN (image AND query
 #                         tokens), with the per-expert sigmoid gate.
 #   3. visual_distill   - frozen CLIP-L/14-336 teacher (training only, off the
@@ -48,8 +48,7 @@ visual_expert:
 
 learnable_query:
   enabled: true
-  num_fine: 64 # 8x8 fine avg-pool of the 24x24 CLIP grid
-  num_coarse: 36 # 6x6 coarse avg-pool
+  num_query: 100 # single-pool target rows (10x10 adaptive pool of the CLIP grid)
   placement: after_image # default (alignment stages); SFT overrides to after_text
 
 visual_distill:
@@ -57,6 +56,6 @@ visual_distill:
   method: breen
   teacher_kind: clip
   teacher_name: openai/clip-vit-large-patch14-336
-  teacher_out_size: 336 # 336 / 14 = 24x24 grid -> 64 fine + 36 coarse
+  teacher_out_size: 336 # 336 / 14 = 24x24 grid -> 10x10 adaptive pool = 100 rows
 
 name: qwen3-1.7b-unified-breen

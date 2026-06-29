@@ -1,0 +1,37 @@
+defaults:
+  - exp-encabl-native-s1
+  - _self_
+
+# 10-EXP ablation — Exp 9 (+ visual expert + visual norm + QUERY + distill CLIP), STAGE 1.
+# Base = exp-encabl-native-s1. Like Exp 5 (FFN + EVEv2 norm experts + CLIP distill)
+# EXCEPT the distill SITE is the learnable QUERY tokens, not the image patches:
+# BREEN (arXiv:2503.12446), SIMPLIFIED to single-pool (ST-3 audit §5). 64 learnable
+# queries are spliced per image, routed through the visual FFN expert, and aligned
+# to ONE adaptive avg-pool of the CLIP grid down to an 8x8 grid (no fine/coarse
+# two-pool split). Anti-collapse A (EMA per-channel target debias) is applied on the
+# query path too (captain's decision — plain cosine to a single CLIP pool can
+# re-collapse). VICReg/C and RKD/B are OFF (breen routes only the A debias). Teacher
+# = CLIP-base (fair comparison with arms 4-8; single-pool removes BREEN's old
+# CLIP-L/14-336 24x24-grid requirement, so CLIP-B/16-224's 14x14 grid works).
+# placement defaults to after_image (alignment stage); not overridden.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true
+  learnable_query:
+    enabled: true
+    num_query: 64 # single-pool target rows = 8x8 adaptive pool of the CLIP grid
+  visual_distill:
+    enabled: true
+    method: breen
+    teacher_kind: clip
+    teacher_name: openai/clip-vit-base-patch16
+    teacher_out_size: 224 # 14x14 CLIP-B/16 grid -> adaptive-pooled to 8x8 = 64 rows
+    debias_target: true # (A) EMA per-channel target debias on the query path
+    debias_momentum: 0.9
+
+trainer:
+  visual_distill_weight: 1.0
+  run_name: encabl-e9-vexpert-norm-query-distill-breen-s1

@@ -29,12 +29,14 @@ One mechanism, seven methods (config.method):
   vae        low-level control: teacher = a frozen VAE encoder's latent grid
              (pixels/texture, no semantics) instead of CLIP — isolates how much
              of the gain is semantic vs reconstructive.
-  breen      BREEN (arXiv:2503.12446): distill the LLM's hidden at the LEARNABLE
-             QUERY positions (not image patches) to a dual-granularity avg-pooled
-             CLIP grid — first num_fine query rows <-> 8x8 fine pool, last
-             num_coarse rows <-> 6x6 coarse pool. The CLIP(1024) target is
-             projected UP to LLM-hidden via a LayerNorm+Linear `norm_layer` and
-             1-cos is taken in LLM-hidden space (faithful to BREEN's geometry).
+  breen      BREEN (arXiv:2503.12446), SIMPLIFIED to single-pool (ST-3 audit §5):
+             distill the LLM's hidden at the LEARNABLE QUERY positions (not image
+             patches) to ONE adaptive avg-pool of the CLIP grid down to a
+             √num_query × √num_query grid (no fine/coarse two-pool split). The
+             CLIP target is projected UP to LLM-hidden via a LayerNorm+Linear
+             `norm_layer` and 1-cos is taken in LLM-hidden space (faithful to
+             BREEN's geometry). Anti-collapse A (EMA per-channel target debias)
+             is applied on the query path too (compute_breen) when debias_target.
 
 The teacher sees the SAME pixels as the model: we reconstruct the RGB image from
 the raw patches already in the batch (RawImageProcessor is lossless, rescale-only
@@ -242,8 +244,7 @@ class VisualDistillHead(nn.Module):
         layers: list[int],
         head_hidden: int,
         loss_type: str,
-        num_fine: int = 64,
-        num_coarse: int = 36,
+        num_query: int = 64,
         debias_target: bool = False,
         debias_momentum: float = 0.9,
         debias_std: bool = False,
@@ -266,8 +267,7 @@ class VisualDistillHead(nn.Module):
         self.layers: list[int] = layers
         self.loss_type: str = loss_type
         self.teacher_dim: int = teacher_dim
-        self.num_fine: int = num_fine
-        self.num_coarse: int = num_coarse
+        self.num_query: int = num_query
         # Anti-collapse recipe (see AGENTS.md "Anti-collapse distill port (ST-2)"); all default off.
         self.debias_target: bool = debias_target
         self.debias_momentum: float = debias_momentum
@@ -415,34 +415,41 @@ class VisualDistillHead(nn.Module):
         return loss, components
 
     def compute_breen(self, samples: list[dict[str, Any]]) -> tuple[Tensor, dict[str, Tensor]]:
-        """BREEN query distillation. Each per-image sample carries:
-            'query_hidden': (num_fine+num_coarse, llm_dim) LLM final hidden at
-                            this image's query positions, in row order.
-            'target_fine':  (num_fine, teacher_dim)  8x8 avg-pool of the CLIP grid.
-            'target_coarse':(num_coarse, teacher_dim) 6x6 avg-pool of the CLIP grid.
-        Projects the CLIP targets UP to LLM-hidden via `norm_layer`, then
-        1-cos(fine_queries, fine_target) + 1-cos(coarse_queries, coarse_target),
-        where each 1-cos is already a mean over its granularity's rows (_align).
-        Every query block contributes exactly num_fine+num_coarse rows (the caller
-        admits a block only when all nq rows are present), so the m-weighting is
-        uniform — this reduces to a PLAIN per-image mean of (fine-mean + coarse-
-        mean). The * m / n_tok form is kept only for symmetry with compute()
-        (where per-image patch counts genuinely vary); here it cancels."""
+        """BREEN query distillation, SINGLE-POOL (ST-3 audit §5). Each per-image
+        sample carries:
+            'query_hidden': (num_query, llm_dim) LLM final hidden at this image's
+                            query positions, in row order.
+            'target': (num_query, teacher_dim) a SINGLE adaptive avg-pool of the
+                      CLIP grid (√num_query × √num_query); no fine/coarse split.
+        Anti-collapse A (EMA per-channel debias) is applied to the CLIP target in
+        teacher space BEFORE the norm_layer projection when debias_target — the
+        captain's decision (without it, aligning every image's queries to a near-
+        constant CLIP pool with plain cosine can re-collapse: all queries match
+        the mean image). The debiased target is projected UP to LLM-hidden via
+        `norm_layer` and 1-cos is taken there. Every query block contributes
+        exactly num_query rows (the caller admits a block only when all nq rows
+        are present), so the m-weighting is uniform — this reduces to a PLAIN
+        per-image mean of the per-row 1-cos; the * m / n_tok form is kept only for
+        symmetry with compute() (where per-image patch counts genuinely vary)."""
         device = samples[0]["query_hidden"].device
+        # Sanitize then debias the raw CLIP targets together (the EMA mean must
+        # see the whole microbatch's images), mirroring _compute_anticollapse —
+        # nan_to_num must precede the debias EMA update (an inf target would
+        # poison the running mean).
+        targets = [
+            torch.nan_to_num(s["target"].float(), nan=0.0, posinf=0.0, neginf=0.0) for s in samples
+        ]
+        targets = self._apply_debias(targets)
         loss_sum = torch.zeros((), dtype=torch.float32, device=device)
         cos_sum = torch.zeros((), dtype=torch.float32, device=device)
         n_tok = 0
-        for s in samples:
+        for s, tgt in zip(samples, targets, strict=True):
             qh = s["query_hidden"]
-            fine_pred = qh[: self.num_fine]
-            coarse_pred = qh[self.num_fine :]
-            fine_tgt = self.norm_layer(s["target_fine"].to(qh.dtype))
-            coarse_tgt = self.norm_layer(s["target_coarse"].to(qh.dtype))
-            l_f, c_f = self._align(fine_pred, fine_tgt)
-            l_c, c_c = self._align(coarse_pred, coarse_tgt)
+            target = self.norm_layer(tgt.to(qh.dtype))
+            l_i, c_i = self._align(qh, target)
             m = qh.shape[0]
-            loss_sum = loss_sum + (l_f + l_c) * m
-            cos_sum = cos_sum + 0.5 * (c_f + c_c) * m
+            loss_sum = loss_sum + l_i * m
+            cos_sum = cos_sum + c_i * m
             n_tok += m
         loss = loss_sum / max(n_tok, 1)
         return loss, {
@@ -544,6 +551,40 @@ class VisualDistillHead(nn.Module):
             return self.proj(mixed)
         return self.proj(s["native"][self.layers[0]])  # repa / vae
 
+    def _apply_debias(self, targets: list[Tensor]) -> list[Tensor]:
+        """Anti-collapse A: subtract the EMA per-channel mean from a list of
+        teacher-space targets (each (m_i, teacher_dim)); update the running
+        estimate in training only. SHARED by the per-patch _compute_anticollapse
+        path (eve/repa/softdepth/vae) and the BREEN single-pool query path
+        (compute_breen) so both debias identically. No-op when debias_target is
+        off (returns the list unchanged). Caller must have sanitized the targets
+        (nan_to_num) first — an inf target would poison the running mean."""
+        if not self.debias_target:
+            return targets
+        allt = torch.cat(targets, dim=0)  # (N, d)
+        device = allt.device
+        if self.training:
+            bmean = allt.mean(dim=0).detach()
+            bvar = allt.var(dim=0, unbiased=False).detach()
+            # Re-init on first step OR if the running stats are non-finite
+            # (defense-in-depth against an uninitialized `to_empty` buffer that
+            # init_visual_distill_buffers somehow missed: a garbage-Inf mean
+            # would subtract to NaN and skip every microbatch forever).
+            if not bool(self.debias_inited) or not torch.isfinite(self.debias_mean).all():
+                self.debias_mean.copy_(bmean)
+                self.debias_var.copy_(bvar)
+                self.debias_inited.fill_(True)  # type: ignore[arg-type]
+            else:
+                m = self.debias_momentum
+                self.debias_mean.mul_(m).add_(bmean * (1.0 - m))
+                self.debias_var.mul_(m).add_(bvar * (1.0 - m))
+        c = self.debias_mean.to(device=device, dtype=torch.float32)
+        out = [t - c for t in targets]
+        if self.debias_std:
+            sd = (self.debias_var.to(device=device, dtype=torch.float32) + 1e-6).sqrt()
+            out = [t / sd for t in out]
+        return out
+
     def _compute_anticollapse(
         self, samples: list[dict[str, Any]]
     ) -> tuple[Tensor, dict[str, Tensor]]:
@@ -570,29 +611,9 @@ class VisualDistillHead(nn.Module):
         targets = [torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0) for t in targets]
 
         # (A) debias: subtract the EMA per-channel mean (across images x patches)
-        # from the frozen target. Update the running estimate in training only.
-        if self.debias_target:
-            allt = torch.cat(targets, dim=0)  # (N, d)
-            if self.training:
-                bmean = allt.mean(dim=0).detach()
-                bvar = allt.var(dim=0, unbiased=False).detach()
-                # Re-init on first step OR if the running stats are non-finite
-                # (defense-in-depth against an uninitialized `to_empty` buffer that
-                # init_visual_distill_buffers somehow missed: a garbage-Inf mean
-                # would subtract to NaN and skip every microbatch forever).
-                if not bool(self.debias_inited) or not torch.isfinite(self.debias_mean).all():
-                    self.debias_mean.copy_(bmean)
-                    self.debias_var.copy_(bvar)
-                    self.debias_inited.fill_(True)  # type: ignore[arg-type]
-                else:
-                    m = self.debias_momentum
-                    self.debias_mean.mul_(m).add_(bmean * (1.0 - m))
-                    self.debias_var.mul_(m).add_(bvar * (1.0 - m))
-            c = self.debias_mean.to(device=device, dtype=torch.float32)
-            targets = [t - c for t in targets]
-            if self.debias_std:
-                sd = (self.debias_var.to(device=device, dtype=torch.float32) + 1e-6).sqrt()
-                targets = [t / sd for t in targets]
+        # from the frozen target (shared with the BREEN query path via
+        # _apply_debias). Update the running estimate in training only.
+        targets = self._apply_debias(targets)
 
         # Per-patch cosine (token-weighted), the base distill.
         loss_sum = z.clone()

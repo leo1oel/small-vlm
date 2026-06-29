@@ -539,8 +539,7 @@ _EXPORT_ARMS: dict[str, dict] = {
         "query_token": "<query>",
         "query_token_index": -202,
         "query_placement": "after_image",
-        "learnable_query_num_fine": 5,
-        "learnable_query_num_coarse": 3,
+        "learnable_query_num_query": 8,
     },
 }
 

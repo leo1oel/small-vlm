@@ -1,0 +1,34 @@
+defaults:
+  - exp-encabl-native-s2
+  - _self_
+
+# 10-EXP ablation — Exp 9 (+ visual expert + visual norm + QUERY + distill CLIP), STAGE 2.
+# Base = exp-encabl-native-s2. Carries the FFN + EVEv2 norm experts + the 64
+# single-pool BREEN query tokens + CLIP query-distillation (anti-collapse A) through
+# SFT with the LM UNFROZEN. The learnable_query Parameter, the breen distill head
+# (norm_layer) and the debias EMA buffers serialize into the S1 checkpoint and
+# rebuild on the from_pretrained S2 build (trained weights/buffers loaded). The
+# query placement is re-applied from this run config on the reload path (ST-3 Part D
+# eval-config-fix), so eval self-describes correctly. Pair VLM_S1_CKPT with the
+# Exp-9 S1 checkpoint.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true
+  learnable_query:
+    enabled: true
+    num_query: 64
+  visual_distill:
+    enabled: true
+    method: breen
+    teacher_kind: clip
+    teacher_name: openai/clip-vit-base-patch16
+    teacher_out_size: 224
+    debias_target: true
+    debias_momentum: 0.9
+
+trainer:
+  visual_distill_weight: 1.0
+  run_name: encabl-e9-vexpert-norm-query-distill-breen-s2

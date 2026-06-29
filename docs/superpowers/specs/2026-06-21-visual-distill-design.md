@@ -27,15 +27,19 @@ practicality FIRST, (3) novelty is a bonus.**
 | `softdepth` | **learned softmax over a layer pool selects the depth** | MLP on mixed hidden | neg-cosine | OURS |
 | `relational` | token-token Gram matrix → CLIP Gram | none | MSE | OURS |
 | `vae` | one layer → frozen VAE latent grid | MLP | smooth-L1 | low-level control |
-| `breen` | learnable-query positions → dual-granularity avg-pooled CLIP grid (8×8 fine + 6×6 coarse) | LayerNorm+Linear (CLIP→LLM) | neg-cosine | BREEN 2503.12446 (later encoder-free port) |
+| `breen` | learnable-query positions → ONE adaptive avg-pooled CLIP grid (√num_query × √num_query; single-pool since ST-3) | LayerNorm+Linear (CLIP→LLM) | neg-cosine | BREEN 2503.12446 (later encoder-free port) |
 
 `repa`/`eve` are published baselines; `vora` is the published block-wise method
 (our scheme 3 single-layer is a simplification of it); `softdepth`/`relational`
 are the novel contributions; `vae` is the semantic-vs-reconstructive control.
-`breen` is a later port (spec 2026-06-24, see `AGENTS.md`) that distills the
-BREEN learnable queries instead of image patches — it requires
-`teacher_out_size=336` with `clip-vit-large-patch14-336` and is NOT one of the
-six baseline-mix arms in the experiment matrix below (it ships its own staged
+`breen` is a later port (spec 2026-06-24, simplified to single-pool in ST-3 —
+see `AGENTS.md`) that distills the BREEN learnable queries instead of image
+patches, aligning all `num_query` (a perfect square) rows to ONE adaptive
+avg-pool of the CLIP grid. The adaptive pool handles any teacher grid side, so
+the old `teacher_out_size=336` / `clip-vit-large-patch14-336` 24×24-grid
+requirement is GONE — CLIP-base teachers now work (arm 9 uses
+`clip-vit-base-patch16` @ 224 → 14×14 → 8×8=64). It is NOT one of the six
+baseline-mix arms in the experiment matrix below (it ships its own staged
 S0→S1→S2 `*-breen` configs).
 
 An **anti-collapse recipe** (a later ST-2 port from `fm/breen-exp`, see
@@ -48,9 +52,11 @@ visual pathway; the recipe breaks it via an EMA per-channel **target debias**
 `rkd_dist_weight`), with VICReg / SIGReg / PHI-S / MGD as default-0 extras.
 The `eve`/`repa`/`softdepth`/`vae` methods route through `_compute_anticollapse`
 only once a dial is set, so with everything default they stay byte-identical to
-the plain cosine above; `breen`/`vora` bypass it entirely.
+the plain cosine above; `vora` bypasses it entirely. `breen` also bypasses that
+dispatch, but (ST-3) applies trick A (`debias_target`) on its query path via the
+shared `_apply_debias` helper — trick B/C stay off for breen.
 The `exp-encabl-e{4,5,7,8}-*` arms (not the six baseline-mix arms below) enable
-trick A+B.
+trick A+B; `exp-encabl-e9-*` (breen query distill) enables trick A only.
 
 **Why softdepth is the headline.** VoRA hard-codes "the first N blocks ARE the
 ViT, in lockstep." Softdepth instead lets the model *self-select* which depth

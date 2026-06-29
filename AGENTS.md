@@ -58,9 +58,12 @@ default, so encoder-based and native paths are bit-identical.
 
 ### What is wired, and where
 
-- **Learnable queries** — `nn.Parameter(num_fine+num_coarse, hidden)` on the
-    ForCausalLM (`model.learnable_query.{enabled,num_fine,num_coarse,placement}`).
-    Built in `_build_learnable_query` (`models/modeling_vlm.py`); randn init
+- **Learnable queries** — `nn.Parameter(num_query, hidden)` on the
+    ForCausalLM (`model.learnable_query.{enabled,num_query,placement}`). NOTE:
+    `num_query` REPLACED the old two-pool `num_fine`/`num_coarse` pair in ST-3
+    (single-pool simplification — see "Single-pool query distill (ST-3)" below);
+    `num_query` must be a perfect square. Built in `_build_learnable_query`
+    (`models/modeling_vlm.py`); randn init
     survives `post_init` (bare Parameter is not an `nn.Module` `_init_weights`
     touches). It IS in the checkpoint state_dict (trained → serialized).
 - **Query placeholder** — `<query>` / `query_token_index=-202`
@@ -100,14 +103,16 @@ default, so encoder-based and native paths are bit-identical.
     ~6-8 for a closer-to-identity start). NOTE: `init_visual_experts_from_text` must
     exclude `expert_gate*` keys when copying the text weights into the sibling.
 - **breen distill method** (`models/visual_distill.py`, `method="breen"`) —
-    the head carries a `norm_layer = LayerNorm(1024)+Linear(1024→hidden,bias=False)`
-    that projects the **CLIP target UP to LLM-hidden** (faithful direction; cosine
-    in LLM space). `compute_breen_distill_loss` (`models/modeling_vlm.py`) gathers
-    the LLM final post-norm hidden at query positions, splits the first `num_fine`
-    / last `num_coarse` rows, and aligns them to `avg_pool2d(grid,3,3)`=8×8 and
-    `avg_pool2d(grid,4,4)`=6×6 of the CLIP grid. Requires `teacher_out_size=336`
-    with `clip-vit-large-patch14-336` (24×24 grid → 64+36); a mismatch raises.
-    Loss = `CE + visual_distill_weight*(L_fine+L_coarse)`. Runs only on the
+    SINGLE-POOL since ST-3 (was a fine/coarse two-pool; see "Single-pool query
+    distill (ST-3)" below). The head carries a `norm_layer = LayerNorm(teacher_dim)+Linear(teacher_dim→hidden,bias=False)` that projects the
+    **CLIP target UP to LLM-hidden** (faithful direction; cosine in LLM space).
+    `compute_breen_distill_loss` (`models/modeling_vlm.py`) gathers the LLM final
+    post-norm hidden at query positions and aligns ALL `num_query` rows to ONE
+    `adaptive_avg_pool2d(grid, (√num_query,√num_query))` of the CLIP grid (e.g.
+    14×14 CLIP-B/16-224 → 8×8=64). The adaptive pool handles ANY teacher grid side,
+    so the old `teacher_out_size=336 / clip-vit-large-patch14-336` 24×24 requirement
+    is GONE — CLIP-base teachers now work; only `num_query` must be a perfect square
+    (else it raises). Loss = `CE + visual_distill_weight*L_query`. Runs only on the
     chunked-CE path → **`loss_chunk_size>0` is required**.
 - **Teacher** — `teacher_out_size` is threaded through `attach_distill_teacher`
     (`vlm.py`) → `VisualDistillTeacher`. The teacher is training-only and off the
@@ -173,7 +178,8 @@ would therefore freeze the very modules S0 must train. Two coupled fixes
 ### Configs (S0 → S1 → S2 chain)
 
 Shared architecture: `config/model/qwen3-1.7b-unified-breen.yaml` (visual_distill
-breen + CLIP-L-336, visual_expert+gate, learnable_query 64/36). Stages flip only
+breen + CLIP-L-336, visual_expert+gate, `learnable_query.num_query: 100` —
+single-pool since ST-3, was the 64+36 two-pool). Stages flip only
 placement / unfreeze / LR / dataset:
 
 - `pretrain-unified-breen.yaml` — S0 frozen-LLM caption alignment, after_image,
@@ -252,16 +258,17 @@ overrides + a distinctive `trainer.run_name`) — so budgets/steps/seed/data str
 are identical and arms stay directly comparable. Toggle → flattened `VLMConfig`
 (set in `vlm.py` load_model, read by `getattr` in `modeling_vlm.py`):
 
-| Arm                                                  | `model.*` toggles                                                                                                                                                                                                                                    | flattened keys                       |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| Exp 1 `exp-encabl-e1-nepa`                           | `visual_aux.objective: nepa` (+ `trainer.visual_aux_weight: 0.5`)                                                                                                                                                                                    | `visual_aux_objective`               |
-| Exp 2 `exp-encabl-e2-vexpert`                        | `visual_expert: {enabled, ffn}`                                                                                                                                                                                                                      | `visual_expert`, `visual_expert_ffn` |
-| Exp 3 `exp-encabl-e3-vexpert-norm`                   | `visual_expert: {enabled, ffn, norm}`                                                                                                                                                                                                                | `+ visual_expert_norm`               |
-| Exp 6 `exp-encabl-e6-vexpert-norm-nepa`              | Exp 3 toggles + `visual_aux.objective: nepa` (+ weight 0.5)                                                                                                                                                                                          | union of above                       |
-| Exp 4 `exp-encabl-e4-vexpert-distill-eve`            | `visual_expert: {enabled, ffn}` + `visual_distill: {enabled, method: eve, teacher_kind: clip, teacher_name: openai/clip-vit-base-patch16, debias_target: true, debias_momentum: 0.9, rkd_dist_weight: 1.0}` (+ `trainer.visual_distill_weight: 1.0`) | `visual_distill*` + `visual_expert*` |
-| Exp 5 `exp-encabl-e5-vexpert-norm-distill-eve`       | Exp 4 + `visual_expert.norm: true`                                                                                                                                                                                                                   | `+ visual_expert_norm`               |
-| Exp 7 `exp-encabl-e7-vexpert-norm-distill-repa`      | Exp 5 but `visual_distill.method: repa`, `layers: [8]` (mid)                                                                                                                                                                                         | `visual_distill_method/layers`       |
-| Exp 8 `exp-encabl-e8-vexpert-norm-distill-softdepth` | Exp 5 but `method: softdepth`, `layers: [4,8,12,16,20,24]`                                                                                                                                                                                           | `visual_distill_method/layers`       |
+| Arm                                                    | `model.*` toggles                                                                                                                                                                                                                                                                                                                                                 | flattened keys                         |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| Exp 1 `exp-encabl-e1-nepa`                             | `visual_aux.objective: nepa` (+ `trainer.visual_aux_weight: 0.5`)                                                                                                                                                                                                                                                                                                 | `visual_aux_objective`                 |
+| Exp 2 `exp-encabl-e2-vexpert`                          | `visual_expert: {enabled, ffn}`                                                                                                                                                                                                                                                                                                                                   | `visual_expert`, `visual_expert_ffn`   |
+| Exp 3 `exp-encabl-e3-vexpert-norm`                     | `visual_expert: {enabled, ffn, norm}`                                                                                                                                                                                                                                                                                                                             | `+ visual_expert_norm`                 |
+| Exp 6 `exp-encabl-e6-vexpert-norm-nepa`                | Exp 3 toggles + `visual_aux.objective: nepa` (+ weight 0.5)                                                                                                                                                                                                                                                                                                       | union of above                         |
+| Exp 4 `exp-encabl-e4-vexpert-distill-eve`              | `visual_expert: {enabled, ffn}` + `visual_distill: {enabled, method: eve, teacher_kind: clip, teacher_name: openai/clip-vit-base-patch16, debias_target: true, debias_momentum: 0.9, rkd_dist_weight: 1.0}` (+ `trainer.visual_distill_weight: 1.0`)                                                                                                              | `visual_distill*` + `visual_expert*`   |
+| Exp 5 `exp-encabl-e5-vexpert-norm-distill-eve`         | Exp 4 + `visual_expert.norm: true`                                                                                                                                                                                                                                                                                                                                | `+ visual_expert_norm`                 |
+| Exp 7 `exp-encabl-e7-vexpert-norm-distill-repa`        | Exp 5 but `visual_distill.method: repa`, `layers: [8]` (mid)                                                                                                                                                                                                                                                                                                      | `visual_distill_method/layers`         |
+| Exp 8 `exp-encabl-e8-vexpert-norm-distill-softdepth`   | Exp 5 but `method: softdepth`, `layers: [4,8,12,16,20,24]`                                                                                                                                                                                                                                                                                                        | `visual_distill_method/layers`         |
+| Exp 9 `exp-encabl-e9-vexpert-norm-query-distill-breen` | `visual_expert: {enabled, ffn, norm}` + `learnable_query: {enabled, num_query: 64}` + `visual_distill: {enabled, method: breen, teacher_kind: clip, teacher_name: openai/clip-vit-base-patch16, teacher_out_size: 224, debias_target: true, debias_momentum: 0.9}` (+ `trainer.visual_distill_weight: 1.0`). NO `rkd_dist_weight`/B — breen routes only A debias. | `learnable_query*` + `visual_distill*` |
 
 Each arm is a `-s1`/`-s2` pair. `visual_expert.ffn` defaults True, `norm`/
 `attention` default False, `visual_aux.objective` defaults `none`, so the listed
@@ -269,7 +276,8 @@ keys are the full minimal delta. Verify any new arm with
 `uv run python -m vlm -cn <config> --cfg job` (a misspelled toggle fails against
 the structured schema at compose, not at train launch). Exps 4/5/7/8 (distill)
 add the anti-collapse port (ST-2, now landed — see below); exp 9 (query distill)
-ST-3; exp 10 (dropout) deferred — see `data/tenexp-audit/report.md`.
+landed in ST-3 (single-pool breen + debias-on-query — see "Single-pool query
+distill (ST-3)"); exp 10 (dropout) deferred — see `data/tenexp-audit/report.md`.
 
 ### Anti-collapse distill port (ST-2) — `visual_distill` trick A + B
 
@@ -294,7 +302,11 @@ clean core until a dial is set:
     distill arms keep it 0.** SIGReg/PHI-S/MGD are optional extras, also default 0.
 - The recipe routes through `_compute_anticollapse` via a dispatch at the top of
     `compute()` that fires **only** when `_anticollapse_on()` (any dial on) AND
-    `method ∈ {eve, repa, softdepth, vae}` (`breen`/`vora` bypass it).
+    `method ∈ {eve, repa, softdepth, vae}` (`breen`/`vora` bypass that dispatch).
+    NOTE (ST-3): `breen` still bypasses `_compute_anticollapse`, but the **A debias
+    is now wired into the breen query path separately** — `compute_breen` calls the
+    shared `_apply_debias` helper (extracted from `_compute_anticollapse`) on the
+    CLIP target before `norm_layer`. B/RKD and C/VICReg are NOT routed for breen.
 - **Dial recipe the distill arms use = A+B:** `debias_target: true`,
     `debias_momentum: 0.9`, `rkd_dist_weight: 1.0`, everything else default.
 
@@ -332,6 +344,43 @@ sanitize/clamp (port these NaN guards together — they are load-bearing).
     (`openai/clip-vit-base-patch16`, default `teacher_out_size: 224`) for a fair
     comparison vs the CLIP-encoder run — captain's call, NOT CLIP-L/14-336.
 
+### Single-pool query distill (ST-3) — exp 9 (`breen` simplified + debias-on-query)
+
+The captain's exp-9 = keep the learnable queries but distill-align CLIP **directly
+on the queries with NO two-pooling**. ST-3 is a *removal*, not a port, across four
+files:
+
+- **`num_query` REPLACED `num_fine`+`num_coarse`** everywhere (`LearnableQueryConfig`,
+    the flattened `learnable_query_num_query` key in `vlm.py`, `DataArguments` +
+    `effective_sample_length` bucketing, `VisualDistillHead`, `_build_learnable_query`,
+    the FLOPs splice count, `breen_smoke.py`, `qwen3-1.7b-unified-breen.yaml`). It is
+    the single query-row count; **must be a perfect square** (8×8=64 for exp 9).
+- **Single pool**: `compute_breen_distill_loss` does ONE
+    `adaptive_avg_pool2d(grid,(√nq,√nq))` (emits a single `"target"` key), and
+    `compute_breen` does ONE `_align(query_hidden, norm_layer(target))` per image
+    (was fine_pred/coarse_pred slices + two `_align`s). The old `(side//3)/(side//4)`
+    grid assertion (which forced CLIP-L/14-336's 24×24 grid) is GONE → **CLIP-base
+    teachers work** (exp 9 uses `clip-vit-base-patch16` @ 224 → 14×14 → 8×8).
+- **Debias A on the query path** (captain's call): aligning every image's queries to
+    a single near-constant CLIP pool with plain cosine can re-collapse, so
+    `compute_breen` runs the same EMA per-channel `_apply_debias` the per-patch path
+    uses (on the CLIP target, teacher space, before `norm_layer`). `debias_target: true, debias_momentum: 0.9`; B/C stay off. The `debias_mean/var/inited` buffers +
+    `init_visual_distill_buffers` reset apply unchanged (the breen head registers them
+    because `debias_target`).
+- **Eval-config-fix (Part D)**: `load_model`'s `from_pretrained` **reload** branch now
+    re-applies `learnable_query_placement` from the run config (it is non-structural —
+    does not change the query Parameter shape). Before, a reloaded query checkpoint
+    kept the stale serialized placement and `eval.py:205` (reads it straight off the
+    checkpoint config) would inject the query block at the wrong position. Only bites
+    the query arm.
+- **xshape probe covers arm 9**: `breen_probe_xshape.py` injects a `<query>` sentinel
+    (else `compute_breen_distill_loss` anchors out and `_align` is never called), and
+    **freezes the debias EMA (`head.eval()`) during capture** so the single-image probe
+    forwards don't drift the trained debias mean. The single-pool breen calls `_align`
+    once per image, so the existing spy captures it cleanly; the captured pair is in
+    LLM-hidden space (query_hidden vs projected debiased target) — `discrimination_metrics`
+    is dimension-agnostic.
+
 ### S1 representation-eval harness (`devtools/` probes)
 
 The S1 stage is read with two complementary signals.
@@ -340,13 +389,13 @@ The S1 stage is read with two complementary signals.
 All probes are heavy (model + CLIP load) — run on a GPU node, never the login node.
 Shared retrieval/centering/pooling lives in `devtools/breen_probe_common.py` (`discrimination_metrics`).
 
-| Probe                      | Script                          | Arms                                   | What it reads                                                                |
-| -------------------------- | ------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------- |
-| cross-image (distill)      | `breen_probe_xshape.py`         | **4,5,7,8** (distill `_align` methods) | `visual_distill_head` aligned (student pred, teacher target); needs the head |
-| cross-image (distill-free) | `breen_probe_feat.py`           | **1,2,3,6,10** (any native ckpt)       | raw LLM hidden at image positions, split-half (even/odd patches) retrieval   |
-| caption read               | `breen_caption_test.py`         | any                                    | greedy caption strings + blind/distinct verdict                              |
-| caption multi-arm          | `breen_caption_retest.py`       | any                                    | bare-`<image>` captions across several `LABEL=ckpt` at once                  |
-| decode-recipe sweep        | `breen_caption_recipe_sweep.py` | any                                    | which `rep_penalty`×`no_repeat_ngram` avoids the greedy token-loop           |
+| Probe                      | Script                          | Arms                                                                                                      | What it reads                                                                |
+| -------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| cross-image (distill)      | `breen_probe_xshape.py`         | **4,5,7,8** (distill `_align` methods) **+ 9** (single-pool breen; injects `<query>`, freezes debias EMA) | `visual_distill_head` aligned (student pred, teacher target); needs the head |
+| cross-image (distill-free) | `breen_probe_feat.py`           | **1,2,3,6,10** (any native ckpt)                                                                          | raw LLM hidden at image positions, split-half (even/odd patches) retrieval   |
+| caption read               | `breen_caption_test.py`         | any                                                                                                       | greedy caption strings + blind/distinct verdict                              |
+| caption multi-arm          | `breen_caption_retest.py`       | any                                                                                                       | bare-`<image>` captions across several `LABEL=ckpt` at once                  |
+| decode-recipe sweep        | `breen_caption_recipe_sweep.py` | any                                                                                                       | which `rep_penalty`×`no_repeat_ngram` avoids the greedy token-loop           |
 
 Launch each as a fresh self-contained GPU job (no held alloc needed):
 
@@ -451,7 +500,7 @@ A reload that keeps the stale checkpoint value makes inference silently disagree
 ## Misc correctness invariants
 
 - **`ignore_index` must be honored by the loss, not hard-coded.** The splice fills ignored/media labels with `self.config.ignore_index`, so BOTH loss paths (chunked CE and the HF `ForCausalLMLoss`) must drop that same value — a non-default `ignore_index` otherwise trains on padded/media positions.
-- **`floating_point_ops` sees two shapes of `image_position_ids`.** The understanding splice passes a list of `(N_i, 2)` tensors; generation batching stacks a single `(B, N, 2)` tensor — test `is not None` / non-empty, never truth-value. BREEN `<query>` sentinels each expand to `num_fine + num_coarse` rows in the count.
+- **`floating_point_ops` sees two shapes of `image_position_ids`.** The understanding splice passes a list of `(N_i, 2)` tensors; generation batching stacks a single `(B, N, 2)` tensor — test `is not None` / non-empty, never truth-value. BREEN `<query>` sentinels each expand to `num_query` rows in the count (single-pool, ST-3).
 - **Auto-resume prefers a checkpoint with optimizer state.** `save_only_model` (legacy pretrain) checkpoints carry no optimizer/scheduler state, so `_checkpoint_is_resumable` (`train.py`) treats them as non-resumable and `_resolve_auto_resume_checkpoint` falls back to the newest OLDER full checkpoint rather than silently restarting the optimizer while advancing the step counter. If no full checkpoint exists the action is backend-aware: plain DDP/single-process resumes WEIGHTS ONLY from the snapshot (optimizer/scheduler/RNG reset, loud warning) to preserve weight progress, while DeepSpeed/FSDP safe-skip auto-resume and train from the loaded base (their resume path needs a `global_step*/`/`optimizer_*/` engine-state dir the snapshot lacks and would otherwise crash with "Can't find a valid checkpoint"). Explicit `resume_from_checkpoint` still opts in.
 - **`use_start_end_tokens` unfreezes the embedding modules directly.** `group_params_by_prefix` never creates an `"embeddings"` group, so the old `grouped_params.get("embeddings", [])` was a silent no-op; the new image start/end rows must train even with a frozen LM trunk.
 - **Inference must reproduce the training media layout.** `eval.py::generate_response` mirrors the training data path: inject missing placeholders (`ensure_placeholders`), THEN `apply_image_position(..., protected_tokens=(data_args.audio_token,))`, THEN inject `<query>`. The `protected_tokens` argument is not optional when audio can co-occur with an image: `sandwich`/`random` repositioning repeats the question text, so an unprotected `<audio>` would be duplicated and desync the splice (it must stay 1:1 with audio features). All three call sites (local `dataset.py`, energon `energon_dataset.py`, inference `eval.py`) pass it. `build_prompt`'s legacy conv-template branch likewise mirrors `preprocess_multimodal`'s `n_image == 1` guard (`dataset.py`): it hoists a lone `<image>` to the front but leaves every placeholder in place for an interleaved multi-image turn (never collapse N→1 — else the splice consumes image 1 and silently drops images 2..N while the encoder still passes all N). The mmtag `<Image>…</Image>` wrap is de-nested to apply for `n_image >= 1`, matching the training side. As defense-in-depth, `generate_response` then asserts the surviving `<image>` sentinel count equals the number of images passed, raising `ValueError` rather than answering on a subset; `plain`/`qwen`/BREEN paths preserve all placeholders and never trip it.

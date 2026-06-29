@@ -324,6 +324,19 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         # to forward_generation and calls gen_t_embed(...)/gen_x_head(...) on None.
         # Mirror the visual-aux guard: fail loud at load instead of crashing.
         require_generation_modules(model, bool(model_cfg.generation.enabled))
+        # BREEN learnable-query placement (eval-config-fix, ST-3 Part D): the
+        # reload path inherits the checkpoint config's SERIALIZED placement, which
+        # can be stale — a stage-chained query checkpoint (S2 from_pretrained an S1
+        # checkpoint) keeps the base/S1 config's placement even when it trained
+        # with a different one. Inference (eval.py reads config.learnable_query_
+        # placement) would then inject the query block at the wrong position,
+        # mismatching how the run trained and corrupting the image pathway. Re-
+        # apply the run-config placement here (non-structural — it does NOT change
+        # the query Parameter shape, so overriding it on reload is safe), mirroring
+        # how vlm() refreshes it from data_args at train time. Only bites the query
+        # (BREEN) arm; no-op when learnable_query is off.
+        if bool(getattr(model.config, "learnable_query", False)):
+            model.config.learnable_query_placement = str(model_cfg.learnable_query.placement)
     else:
         if model_cfg.visual_encoder.hf_name is None:
             # Encoder-free (gemma4_unified-style raw-patch) path: no vision tower,
@@ -504,8 +517,7 @@ def load_model(model_cfg: ModelConfig, trainer_cfg: TrainerConfig):
         # pattern) so reloads rebuild it with the right shape. enabled=False ->
         # no Parameter (bit-identical baseline).
         config.learnable_query = bool(model_cfg.learnable_query.enabled)
-        config.learnable_query_num_fine = int(model_cfg.learnable_query.num_fine)
-        config.learnable_query_num_coarse = int(model_cfg.learnable_query.num_coarse)
+        config.learnable_query_num_query = int(model_cfg.learnable_query.num_query)
         config.learnable_query_placement = str(model_cfg.learnable_query.placement)
         # Per-expert sigmoid gate flag (BREEN). On the config before construction
         # so install_visual_experts builds the gate Linears (serialized).
