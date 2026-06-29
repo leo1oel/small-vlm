@@ -1329,6 +1329,13 @@ def create_dynamic_causal_vlm_class(
         keys = ["distill", "distill_cos"]
         if head.method == "softdepth":
             keys += ["distill_sel_depth", "distill_sel_max"]
+        # Mirror the EXACT weight-gated key set _compute_anticollapse emits on an
+        # image-bearing microbatch (same dispatch condition as head.compute), so an
+        # image-free anchor and an image-bearing forward produce identical keys —
+        # the trainer reduces _last_ce_components cross-rank via
+        # all_reduce(stack(sorted(comps))), which size-mismatches if ranks differ.
+        if head._anticollapse_on() and head.method in ("eve", "repa", "softdepth", "vae"):
+            keys += head.anticollapse_keys()
 
         def _anchor() -> tuple[Tensor, dict[str, Tensor]]:
             z = torch.zeros((), dtype=torch.float32, device=device)

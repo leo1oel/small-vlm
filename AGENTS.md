@@ -313,12 +313,20 @@ in-loss `isfinite` re-init guard re-warms the EMA if a non-finite mean ever slip
 through, plus eps-inside-sqrt RMSNorm in `_align`, `nan_to_num`, and Gram
 sanitize/clamp (port these NaN guards together — they are load-bearing).
 
-**Five touch-points (all four files).** ① `visual_distill.py` `_compute_anticollapse`
+**Six touch-points (all four files).** ① `visual_distill.py` `_compute_anticollapse`
 + helpers; ② `config_schema.py` 16 `VisualDistillConfig` fields; ③
 `modeling_vlm.py` `_build_visual_distill_head` reads them via `getattr` +
 `init_visual_distill_buffers`; ④ `vlm.py` fresh-build init call; ⑤ `vlm.py`
 **flattens the 16 fields onto `VLMConfig`** — miss ⑤ and the `getattr` reads
-silently default OFF (the dials no-op). Regression test:
+silently default OFF (the dials no-op); ⑥ `modeling_vlm.py` `compute_distill_loss`
+**no-image anchor** must emit the SAME weight-gated component-key set as
+`_compute_anticollapse` (single source of truth: `head.anticollapse_keys()`) — miss
+⑥ and an image-free microbatch yields fewer keys than an image-bearing one, so the
+trainer's cross-rank `all_reduce(stack(sorted(comps)))` size-mismatches and
+NCCL-hangs every multi-GPU run. The warmup counter `_ac_step` is likewise the
+trainer's `global_step` (mirrored once per optimizer step via
+`VLMTrainer._sync_distill_warmup_step`), never a per-forward count, so the ramp is
+rank-identical under gradient accumulation. Regression test:
 `tests/test_visual_distill_anticollapse.py` (gated-off == plain cosine; buffer
 trap + step-0 finite). Teacher for these arms = **CLIP-base**
 (`openai/clip-vit-base-patch16`, default `teacher_out_size: 224`) for a fair

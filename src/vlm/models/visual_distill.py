@@ -287,9 +287,12 @@ class VisualDistillHead(nn.Module):
         self.sigreg_knots: int = sigreg_knots
         self.sigreg_warmup_steps: int = sigreg_warmup_steps
         if ac_warmup_steps > 0 or sigreg_warmup_steps > 0:
-            # Optimizer-step counter for the RKD/VICReg AND SIGReg warmups
-            # (persisted so a resume keeps ramping). Registered only when some
-            # warmup is on, so non-warmup checkpoints are unchanged.
+            # Optimizer-step counter for the RKD/VICReg AND SIGReg warmups. The
+            # trainer mirrors its (rank-identical) global_step into this buffer
+            # once per optimizer.step() (VLMTrainer._sync_distill_warmup_step);
+            # _compute_anticollapse only READS it for the ramp. Persisted so a
+            # resume keeps ramping; registered only when some warmup is on, so
+            # non-warmup checkpoints are unchanged.
             self.register_buffer("_ac_step", torch.zeros((), dtype=torch.long))
         hidden = head_hidden if head_hidden > 0 else llm_dim
         if method == "breen":
@@ -488,6 +491,46 @@ class VisualDistillHead(nn.Module):
             or self.sigreg_weight > 0.0
         )
 
+    def anticollapse_keys(self) -> list[str]:
+        """The weight-gated anti-collapse component keys this head emits, beyond
+        the always-present distill/distill_cos (and softdepth sel keys). SINGLE
+        SOURCE OF TRUTH shared by _compute_anticollapse (which fills them) and the
+        no-image anchor in modeling_vlm.compute_distill_loss (which zeros them), so
+        an image-free microbatch and an image-bearing one produce identical key
+        sets — required by the trainer's cross-rank all_reduce(sorted(comps))."""
+        keys: list[str] = []
+        if self.rkd_dist_weight > 0.0:
+            keys.append("distill_rkd_d")
+        if self.rkd_angle_weight > 0.0:
+            keys.append("distill_rkd_a")
+        if self.vicreg_var_weight > 0.0:
+            keys.append("distill_vic_var")
+        if self.vicreg_cov_weight > 0.0:
+            keys.append("distill_vic_cov")
+        if self.mgd_weight > 0.0:
+            keys.append("distill_mgd")
+        if self.sigreg_weight > 0.0:
+            keys.append("distill_sigreg")
+        return keys
+
+    def _warmup_factors(self) -> tuple[float, float]:
+        """(wf, wf_sig): the linear 0->1 warmup multipliers for the RKD/VICReg and
+        SIGReg aux weights at the current optimizer step. `_ac_step` is mirrored
+        from the trainer's global_step once per optimizer.step() (READ-only here),
+        so the ramp is rank-identical and advances per OPTIMIZER step, not per
+        image-bearing microbatch forward. Both factors are 1.0 when their warmup is
+        disabled (every shipped arm: ac_warmup_steps == sigreg_warmup_steps == 0),
+        so the aux weights apply at full strength with no ramp regardless of
+        `_ac_step`."""
+        step = float(self._ac_step) if hasattr(self, "_ac_step") else 0.0
+        wf = min(1.0, step / float(self.ac_warmup_steps)) if self.ac_warmup_steps > 0 else 1.0
+        wf_sig = (
+            min(1.0, step / float(self.sigreg_warmup_steps))
+            if self.sigreg_warmup_steps > 0
+            else 1.0
+        )
+        return wf, wf_sig
+
     def _pred_for(self, s: dict[str, Any]) -> Tensor:
         """Projected-student per-patch features (m, teacher_dim) for the single-
         projector methods — same selection compute() / _softdepth use."""
@@ -555,7 +598,7 @@ class VisualDistillHead(nn.Module):
         loss_sum = z.clone()
         cos_sum = z.clone()
         n_tok = 0
-        for p, t in zip(preds, targets):
+        for p, t in zip(preds, targets, strict=True):
             li, ci = self._align(p, t)
             m = t.shape[0]
             loss_sum = loss_sum + li * m
@@ -567,20 +610,11 @@ class VisualDistillHead(nn.Module):
             "distill": cos_loss.detach(),
             "distill_cos": (cos_sum / max(n_tok, 1)).detach(),
         }
-        # Initialize the always-emitted anti-collapse keys to 0 (cross-rank key
-        # set must be step-deterministic; see compute_distill_loss `keys`).
-        if self.rkd_dist_weight > 0.0:
-            comps["distill_rkd_d"] = z.clone()
-        if self.rkd_angle_weight > 0.0:
-            comps["distill_rkd_a"] = z.clone()
-        if self.vicreg_var_weight > 0.0:
-            comps["distill_vic_var"] = z.clone()
-        if self.vicreg_cov_weight > 0.0:
-            comps["distill_vic_cov"] = z.clone()
-        if self.mgd_weight > 0.0:
-            comps["distill_mgd"] = z.clone()
-        if self.sigreg_weight > 0.0:
-            comps["distill_sigreg"] = z.clone()
+        # Initialize the weight-gated anti-collapse keys to 0 (cross-rank key set
+        # must be step-deterministic; the no-image anchor in compute_distill_loss
+        # zeros this SAME key list via anticollapse_keys()).
+        for k in self.anticollapse_keys():
+            comps[k] = z.clone()
 
         # nan_to_num insurance: any non-finite auxiliary term is zeroed (value AND
         # gradient) so one pathological batch can't poison the weights over a long
@@ -591,17 +625,9 @@ class VisualDistillHead(nn.Module):
         # Linear warmup of the aux weights (0 -> 1). The RKD/VICReg gradients are
         # ill-conditioned on the untrained connector and diverge it in a few steps;
         # ramp them in after the cosine+debias has shaped a sane connector. SIGReg
-        # gets its OWN (typically longer) ramp. One shared step counter increments
-        # once per training forward when EITHER ramp is active.
-        if (self.ac_warmup_steps > 0 or self.sigreg_warmup_steps > 0) and self.training:
-            self._ac_step += 1
-        step = float(self._ac_step) if hasattr(self, "_ac_step") else 0.0
-        wf = min(1.0, step / float(self.ac_warmup_steps)) if self.ac_warmup_steps > 0 else 1.0
-        wf_sig = (
-            min(1.0, step / float(self.sigreg_warmup_steps))
-            if self.sigreg_warmup_steps > 0
-            else 1.0
-        )
+        # gets its OWN (typically longer) ramp. Both factors track the trainer's
+        # optimizer step (see _warmup_factors / _sync_distill_warmup_step).
+        wf, wf_sig = self._warmup_factors()
 
         # (B) RKD relational over per-image POOLED features (B = #images >= 3).
         if (self.rkd_dist_weight > 0.0 or self.rkd_angle_weight > 0.0) and len(preds) >= 3:
@@ -653,7 +679,7 @@ class VisualDistillHead(nn.Module):
             mgd_dtype = self.mgd_decoder[0].weight.dtype
             mgd_sum = z.clone()
             mtok = 0
-            for p, t in zip(preds, targets):
+            for p, t in zip(preds, targets, strict=True):
                 mask = (torch.rand_like(p) < keep).to(p.dtype)  # per-patch channel mask
                 g = self.mgd_decoder((p * mask).to(mgd_dtype))
                 gl, _ = self._align(g, t)
