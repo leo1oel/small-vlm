@@ -38,6 +38,20 @@ BREEN learnable queries instead of image patches — it requires
 six baseline-mix arms in the experiment matrix below (it ships its own staged
 S0→S1→S2 `*-breen` configs).
 
+An **anti-collapse recipe** (a later ST-2 port from `fm/breen-exp`, see
+`AGENTS.md`) extends this same `VisualDistillConfig` with 16 extra dials, all
+**default OFF**.
+Plain per-patch distillation lets every image's CLIP target collapse onto a
+shared "mean-image" constant (cross-image cosine ~0.98), so the LM ignores the
+visual pathway; the recipe breaks it via an EMA per-channel **target debias**
+(trick A, `debias_target`) plus a bounded Gram **relational** term (trick B,
+`rkd_dist_weight`), with VICReg / SIGReg / PHI-S / MGD as default-0 extras.
+The `eve`/`repa`/`softdepth`/`vae` methods route through `_compute_anticollapse`
+only once a dial is set, so with everything default they stay byte-identical to
+the plain cosine above; `breen`/`vora` bypass it entirely.
+The `exp-encabl-e{4,5,7,8}-*` arms (not the six baseline-mix arms below) enable
+trick A+B.
+
 **Why softdepth is the headline.** VoRA hard-codes "the first N blocks ARE the
 ViT, in lockstep." Softdepth instead lets the model *self-select* which depth
 hosts its internal encoder via a learned softmax (`distill_sel_depth` is logged)
