@@ -496,6 +496,23 @@ Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
     silently pointing the loader at the wrong (remote) location. energon's EPath
     wants the bare absolute path, NOT a `file://` URL. Covered by
     `test_resolve_wds_path`.
+1. **Corrupt images are SKIPPED, not fatal — `encode_sample` is wrapped with
+    `@skip_corrupt_samples` (`energon_dataset.py`).** Honey-Data-1M (and likely
+    bee_stage2) carry occasional corrupt images: a truncated/broken PNG makes PIL
+    raise `SyntaxError`, which energon classes as a `SYSTEM_EXCEPTION` and
+    re-raises as `FatalSampleError` — killing the DataLoader worker → the rank →
+    torch-elastic SIGTERMs the whole job. ONE bad image at shard `00059.tar`
+    sample `0000599478` killed `encabl-native-s2` at step ~5000/11905. The wrapper
+    converts ANY per-sample encode exception into energon's `SkipSample` (log ONE
+    warning with key+shard + a running per-worker drop count, then continue), the
+    only signal energon treats as non-fatal — a configured error *handler* can't
+    rescue a `SyntaxError` because `SYSTEM_EXCEPTIONS` bypasses it. The WDS
+    encoders (`energon_wds.py`) inherit the wrapped `encode_sample` unchanged, so
+    the prepared-shard path (where the crash hit) is covered too; if you ever
+    override `encode_sample` in a subclass, re-apply `@skip_corrupt_samples`.
+    SkipSample also never trips energon's consecutive-failure tolerance, so a
+    flood of corrupt samples can't fatalize — the warning count is the only
+    visibility, so watch it. Covered by `test_energon_skip_corrupt.py`.
 
 ## Cross-modal 4D mask correctness (xmodal_mask.py / install_xmodal_masks)
 

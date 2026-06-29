@@ -40,6 +40,7 @@ Local state:
 import bisect
 import concurrent.futures
 import fcntl
+import functools
 import hashlib
 import io
 import logging
@@ -227,6 +228,7 @@ if TYPE_CHECKING:
         Cooker,
         FileStore,
         Sample,
+        SkipSample,
         TaskEncoder,
         WorkerConfig,
         basic_sample_keys,
@@ -243,6 +245,9 @@ if TYPE_CHECKING:
     from megatron.energon.savable_loader import (  # noqa: E402  # pyright: ignore[reportMissingImports]
         SavableDataLoader,
     )
+    from megatron.energon.source_info import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+        get_source_info,
+    )
 
     _streaming_import_error: ImportError | None = None
 else:
@@ -252,6 +257,7 @@ else:
             Cooker,
             FileStore,
             Sample,
+            SkipSample,
             TaskEncoder,
             WorkerConfig,
             basic_sample_keys,
@@ -262,6 +268,7 @@ else:
         from megatron.energon.epathlib import EPath  # noqa: E402
         from megatron.energon.flavors.jsonl.ijsonl import IJsonlIndexWriter  # noqa: E402
         from megatron.energon.savable_loader import SavableDataLoader  # noqa: E402
+        from megatron.energon.source_info import get_source_info  # noqa: E402
 
         _streaming_import_error = None
     except ImportError as _import_error:  # pragma: no cover - only without the extras
@@ -279,6 +286,12 @@ else:
 
         class TaskEncoder:
             pass
+
+        class SkipSample(Exception):  # mirrors energon's skip-this-sample signal
+            pass
+
+        def get_source_info(_sample):
+            return None
 
         def Cooker(*args, **kwargs):  # noqa: N802  (mirrors energon's name)
             return None
@@ -623,6 +636,64 @@ def download_jsonl(
 # 3. Sample type, cooker, task encoder
 # ---------------------------------------------------------------------------
 
+#: Per-worker running tally of samples dropped by @skip_corrupt_samples. Each
+#: DataLoader worker is its own process, so this counts that worker's drops; the
+#: count rides along in every warning so total data loss stays visible in logs.
+_skipped_samples = 0
+
+
+def _note_skipped_sample(sample: Any, exc: Exception) -> "SkipSample":
+    """Log ONE warning for a per-sample failure and return energon's SkipSample.
+
+    Honey-Data-1M (and likely bee_stage2) carry occasional corrupt images
+    (e.g. a truncated/broken PNG -> PIL ``SyntaxError``). Dropping the one bad
+    sample keeps unattended multi-day runs alive; the running per-worker count
+    in the message keeps the data loss visible rather than silent."""
+    global _skipped_samples
+    _skipped_samples += 1
+    key = getattr(sample, "__key__", "?")
+    sources = get_source_info(sample)
+    shard = ", ".join(f"{s.shard_name}[{s.index}]" for s in sources) if sources else "?"
+    log.warning(
+        "energon: skipping unencodable sample (key=%s shard=%s) — %d skipped so "
+        "far in this worker: %s: %s",
+        key,
+        shard,
+        _skipped_samples,
+        type(exc).__name__,
+        exc,
+    )
+    return SkipSample(f"skipped sample {key}: {type(exc).__name__}: {exc}")
+
+
+def skip_corrupt_samples(fn: Any) -> Any:
+    """Wrap a ``TaskEncoder.encode_sample`` so a per-sample failure (corrupt
+    image, bad json, any encode exception) is logged once and turned into
+    energon's :class:`SkipSample` — the MapDataset error handler then drops that
+    one sample and training continues, instead of energon re-raising it as a
+    ``FatalSampleError`` that kills the DataLoader worker -> the rank ->
+    torch-elastic SIGTERMs the whole (multi-day) job.
+
+    Why convert at the source and not configure an energon error *handler*: PIL
+    raises ``SyntaxError`` for a broken PNG, and ``SyntaxError`` is in energon's
+    ``SYSTEM_EXCEPTIONS``, which ``handle_errors`` *always* re-raises as
+    ``FatalSampleError`` regardless of the configured handler. Raising
+    ``SkipSample`` from inside ``encode_sample`` is the only thing energon
+    treats as non-fatal (see ``megatron.energon.errors.handle_errors``).
+
+    Apply it BELOW ``@stateless`` so ``@stateless`` marks the returned wrapper."""
+
+    @functools.wraps(fn)
+    def wrapper(self: Any, sample: Any) -> Any:
+        try:
+            return fn(self, sample)
+        except SkipSample:
+            raise  # already a deliberate skip — don't double-wrap or re-count
+        except Exception as exc:
+            raise _note_skipped_sample(sample, exc) from exc
+
+    return wrapper
+
 
 @dataclass
 class MMChatRawSample(Sample):  # pyright: ignore[reportUntypedBaseClass]
@@ -787,6 +858,7 @@ class VLMChatTaskEncoder(TaskEncoder):  # pyright: ignore[reportUntypedBaseClass
         return [process_classic_image(im, self.image_processor, aspect) for im in pil_images]
 
     @stateless  # pyright: ignore[reportUntypedFunctionDecorator]
+    @skip_corrupt_samples
     def encode_sample(self, sample: MMChatRawSample) -> dict:
         # Decode AFTER the shuffle buffer (the buffer holds compressed bytes).
         images = self._process_images(sample.image_bytes)
@@ -1075,6 +1147,7 @@ class VLMGenTaskEncoder(VLMChatTaskEncoder):  # pyright: ignore[reportUntypedBas
         return text
 
     @stateless  # pyright: ignore[reportUntypedFunctionDecorator]
+    @skip_corrupt_samples
     def encode_sample(self, sample: MMChatRawSample) -> dict:
         if not sample.image_bytes:
             raise ValueError(f"generation sample {sample.__key__} has no image")
