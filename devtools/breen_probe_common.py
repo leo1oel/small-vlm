@@ -9,10 +9,10 @@ per-patch features into a single L2-normalized descriptor and ask the same
 question via `discrimination_metrics`, differing only in WHERE the features come
 from:
 
-  * `breen_probe_xshape.py` (distill `_align` arms 4,5,7,8): the distill head's
-    aligned (student pred, teacher target) pair — needs `model.visual_distill_head`.
-    Arm-9 (breen/query-distill) is NOT covered (it aligns <query> tokens, which
-    this probe does not inject) and is deferred to ST-3.
+  * `breen_probe_xshape.py` (distill `_align` arms 4,5,7,8 AND the single-pool
+    breen query arm 9): the distill head's aligned (student pred, teacher target)
+    pair — needs `model.visual_distill_head`. For breen it injects a <query>
+    sentinel and captures the (query_hidden, projected debiased CLIP target) pair.
   * `breen_probe_feat.py` (non-distill arms 1,2,3,6,10): the RAW LLM hidden state
     at image positions, split into two interleaved patch halves — runs on ANY
     native (encoder-free) checkpoint.
@@ -93,12 +93,13 @@ def apply_query_placement_override(model: object, placement: str | None) -> None
     """Defensive eval-side override for the learnable-query placement.
 
     Main-trained checkpoints ALREADY serialize the correct value — `vlm()`
-    refreshes `learnable_query_placement` from the composed config on both the
-    fresh-build and `from_pretrained` paths (AGENTS.md "Self-describing config
-    fields must be refreshed on from_pretrained"; landed in #12). So this is a
-    no-op for any arm-9 checkpoint trained on main. Use it ONLY to evaluate a
-    stale/external query checkpoint whose `config.json` disagrees with how it
-    actually trained (the symptom the validation report flagged: a checkpoint
+    refreshes `learnable_query_placement` from the composed config at train time,
+    and (ST-3 Part D, eval-config-fix) `load_model` now ALSO re-applies it from
+    the run config on the `from_pretrained` reload path that eval uses, so eval
+    self-describes correctly even if the checkpoint config.json is stale. So this
+    is a no-op for any arm-9 checkpoint evaluated via the composed run config. Use
+    it ONLY to force a placement for a stale/external query checkpoint loaded
+    WITHOUT its run config (the symptom the validation report flagged: a checkpoint
     that trained `after_text` serializing the base's `after_image`).
     """
     if placement is not None:

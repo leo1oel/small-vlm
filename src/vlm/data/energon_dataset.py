@@ -823,10 +823,10 @@ def effective_sample_length(data_dict: dict, data_args: DataArguments) -> int:
     dummy's +1 here is irrelevant for bucketing.
 
     BREEN (#4): each "<query>" sentinel is one input_ids token that the model
-    splice expands into learnable_query_num_fine + learnable_query_num_coarse
-    rows (one block per image). Counting it as a single token would undercount
-    real GPU tokens by ~(num_fine + num_coarse - 1) per query block, so
-    token-budget microbatches overshoot the budget and land in wrong buckets.
+    splice expands into learnable_query_num_query rows (one block per image).
+    Counting it as a single token would undercount real GPU tokens by
+    ~(num_query - 1) per query block, so token-budget microbatches overshoot the
+    budget and land in wrong buckets.
     """
     input_ids = data_dict["input_ids"]
     n_sentinels = int(
@@ -850,9 +850,7 @@ def effective_sample_length(data_dict: dict, data_args: DataArguments) -> int:
     n_query = 0
     if getattr(data_args, "learnable_query_enabled", False):
         n_query = int((input_ids == data_args.query_token_index).sum())
-        per_query = int(getattr(data_args, "learnable_query_num_fine", 0)) + int(
-            getattr(data_args, "learnable_query_num_coarse", 0)
-        )
+        per_query = int(getattr(data_args, "learnable_query_num_query", 0))
         query_rows = n_query * per_query
     return int(input_ids.shape[0]) - n_sentinels - n_query + image_rows + audio_rows + query_rows
 

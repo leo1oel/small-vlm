@@ -646,8 +646,7 @@ class VLMForCausalLM({{ causal_parent_class }}):
             layers=layers,
             head_hidden=int(getattr(config, "visual_distill_head_hidden", 0) or 0),
             loss_type=loss_type,
-            num_fine=int(getattr(config, "learnable_query_num_fine", 64)),
-            num_coarse=int(getattr(config, "learnable_query_num_coarse", 36)),
+            num_query=int(getattr(config, "learnable_query_num_query", 64)),
             debias_target=bool(getattr(config, "visual_distill_debias_target", False)),
             debias_momentum=float(getattr(config, "visual_distill_debias_momentum", 0.9)),
             debias_std=bool(getattr(config, "visual_distill_debias_std", False)),
@@ -667,16 +666,14 @@ class VLMForCausalLM({{ causal_parent_class }}):
         )
 
     def _build_learnable_query(self: Any, config: Any) -> "nn.Parameter | None":
-        """Learnable query Parameter for BREEN distillation (spec 2026-06-24).
-        randn(num_fine+num_coarse, hidden); None when disabled. It is the
+        """Learnable query Parameter for BREEN distillation (spec 2026-06-24;
+        single-pool ST-3). randn(num_query, hidden); None when disabled. It is the
         distillation SITE: spliced in at "<query>" placeholders, routed to the
-        visual FFN expert, label-masked (no CE), and aligned to the dual-pooled
-        CLIP grid by the breen distill method."""
+        visual FFN expert, label-masked (no CE), and aligned to the single
+        adaptive-pooled CLIP grid by the simplified breen distill method."""
         if not bool(getattr(config, "learnable_query", False)):
             return None
-        n = int(getattr(config, "learnable_query_num_fine", 64)) + int(
-            getattr(config, "learnable_query_num_coarse", 36)
-        )
+        n = int(getattr(config, "learnable_query_num_query", 64))
         # randn at the LM's init scale, NOT unit randn. BREEN's raw
         # randn(0,1) queries have magnitude ~sqrt(hidden) (≈32 at 1024) — ~30x
         # the token-embedding scale a PRETRAINED backbone expects; fed into the
@@ -834,14 +831,16 @@ class VLMForCausalLM({{ causal_parent_class }}):
         distill_positions: list[Tensor] | None,
         image_block_ids: LongTensor | None = None,
     ) -> tuple[Tensor, dict[str, Tensor]]:
-        """BREEN query distillation (spec 2026-06-24).
+        """BREEN query distillation (spec 2026-06-24; SINGLE-POOL, ST-3 audit §5).
 
         Gather the LLM final post-norm hidden at each image's learnable-query
-        positions (in row order, tagged by query_block_ids), split into the
-        first num_fine + last num_coarse rows, and align them to the 8x8 fine
-        and 6x6 coarse avg-pools of the frozen CLIP grid (the head's norm_layer
-        projects the CLIP target up to LLM-hidden; 1-cos is taken there). Each
-        query block is paired with its image by nearest-preceding image block in
+        positions (in row order, tagged by query_block_ids), and align ALL
+        num_query rows to ONE adaptive avg-pool of the frozen CLIP grid down to a
+        √num_query × √num_query grid (no fine/coarse two-pool split; the head's
+        norm_layer projects the CLIP target up to LLM-hidden and 1-cos is taken
+        there, with anti-collapse A — EMA per-channel debias — applied to the
+        target inside compute_breen when enabled). Each query block is paired with
+        its image by nearest-preceding image block in
         the SAME row (via image_block_ids) — robust to multi-image rows where a
         query block's id need not equal the image's index into distill_images;
         a query block with no preceding image in its row is skipped. When
@@ -883,7 +882,7 @@ class VLMForCausalLM({{ causal_parent_class }}):
         src_mean = vc_get("image_mean", None)
         src_std = vc_get("image_std", None)
 
-        nq = head.num_fine + head.num_coarse
+        nq = head.num_query
         qbid = query_block_ids.to(device)
         bsz, seqlen = qbid.shape
         ibid = image_block_ids.to(device) if image_block_ids is not None else None
@@ -940,13 +939,18 @@ class VLMForCausalLM({{ causal_parent_class }}):
             ]
         ).to(mdtype)
         grids = teacher.encode(imgs01)["grid"]  # (J, side, side, C)
-        side = int(grids.shape[1])
-        if (side // 3) ** 2 != head.num_fine or (side // 4) ** 2 != head.num_coarse:
+        # SINGLE-POOL (ST-3 audit §5): one adaptive avg-pool of the CLIP grid down
+        # to a √num_query × √num_query grid = num_query target rows. num_query must
+        # be a perfect square (the queries align to a square pooled grid). Unlike
+        # the old (side//3)/(side//4) two-pool assertion, adaptive_avg_pool2d
+        # handles ANY teacher grid side (e.g. CLIP-B/16-224 -> 14x14 -> 8x8), so
+        # the arm-9 CLIP-base teacher no longer needs CLIP-L/14-336's 24x24 grid.
+        side_q = int(round(head.num_query**0.5))
+        if side_q * side_q != head.num_query:
             raise ValueError(
-                f"breen distill: CLIP grid {side}x{side} avg-pools to "
-                f"{(side // 3) ** 2} fine / {(side // 4) ** 2} coarse rows, but "
-                f"learnable_query expects {head.num_fine}/{head.num_coarse}. Use "
-                "teacher_out_size=336 with clip-vit-large-patch14-336 (24x24 -> 64/36)."
+                f"breen single-pool distill expects a perfect-square num_query, "
+                f"got learnable_query.num_query={head.num_query}; set it to k*k "
+                "(e.g. 64 = 8x8) so the queries align to a square pooled CLIP grid."
             )
 
         flat_hidden = final_hidden.reshape(-1, final_hidden.shape[-1])
@@ -954,13 +958,11 @@ class VLMForCausalLM({{ causal_parent_class }}):
         for k, flat_pos in blocks:
             g = grids[k_to_j[k]].permute(2, 0, 1).unsqueeze(0).float()  # (1, C, side, side)
             c = g.shape[1]
-            fine = nn.functional.avg_pool2d(g, kernel_size=3, stride=3)  # (1, C, 8, 8)
-            coarse = nn.functional.avg_pool2d(g, kernel_size=4, stride=4)  # (1, C, 6, 6)
+            pooled = nn.functional.adaptive_avg_pool2d(g, (side_q, side_q))  # (1, C, sq, sq)
             samples.append(
                 {
                     "query_hidden": flat_hidden[flat_pos],
-                    "target_fine": fine.reshape(c, -1).t().to(mdtype),
-                    "target_coarse": coarse.reshape(c, -1).t().to(mdtype),
+                    "target": pooled.reshape(c, -1).t().to(mdtype),  # (num_query, C)
                 }
             )
         return head.compute_breen(samples)
@@ -1876,16 +1878,14 @@ class VLMForCausalLM({{ causal_parent_class }}):
             tokens -= n_sentinels
             tokens -= max(0, len(audios) - n_sentinels)  # zero-width dummies
         # BREEN learnable queries: each "<query>" sentinel expands at splice time
-        # into num_fine + num_coarse learnable-query rows. The sentinel itself is
-        # already counted in `tokens`; add the remaining rows so total_flos
-        # reflects the real spliced length.
+        # into num_query learnable-query rows. The sentinel itself is already
+        # counted in `tokens`; add the remaining rows so total_flos reflects the
+        # real spliced length.
         if bool(getattr(self.config, "learnable_query", False)):
             query_token_index = getattr(self.config, "query_token_index", -202)
             n_q = int((input_ids == query_token_index).sum().item())
             if n_q:
-                rows = int(getattr(self.config, "learnable_query_num_fine", 64)) + int(
-                    getattr(self.config, "learnable_query_num_coarse", 36)
-                )
+                rows = int(getattr(self.config, "learnable_query_num_query", 64))
                 tokens += n_q * (rows - 1)  # sentinel itself already counted
         return 6 * tokens * self.num_parameters(exclude_embeddings=exclude_embeddings)
 

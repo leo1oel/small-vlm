@@ -1,5 +1,6 @@
-"""Cross-image discrimination probe for the DISTILL arms 4,5,7,8 of the
-10-experiment ablation; spec data/tenexp-audit/report.md §7.
+"""Cross-image discrimination probe for the DISTILL arms 4,5,7,8 AND the query
+arm 9 (BREEN single-pool) of the 10-experiment ablation; spec
+data/tenexp-audit/report.md §7.
 
 The killer test from data/distillchk-d4/report.md: distill_cos alone is a MIRAGE
 (a collapsed constant satisfies a per-row cosine). This probe loads a trained
@@ -7,9 +8,9 @@ distill-arm checkpoint, attaches the frozen CLIP teacher, runs the TRAINING-mode
 forward on ~30 diverse images, and captures the exact per-image (student
 projected pred, frozen teacher target) pairs the distill loss aligns — via a
 monkeypatch on VisualDistillHead._align (the common chokepoint for eve/repa/
-softdepth). It then asks whether the distilled features carry real PER-IMAGE
-structure or collapsed onto a shared constant (see discrimination_metrics in
-devtools/breen_probe_common.py):
+softdepth, and the single-pool breen query alignment). It then asks whether the
+distilled features carry real PER-IMAGE structure or collapsed onto a shared
+constant (see discrimination_metrics in devtools/breen_probe_common.py):
 
   self_cos (per-patch) = mean_patch cos(pred_i, target_i)         (== distill_cos)
   self_pooled          = cos(pool(pred_i), pool(target_i))
@@ -27,13 +28,16 @@ REQUIRES a checkpoint trained WITH visual_distill (reads model.visual_distill_he
 attach_distill_teacher raises otherwise). For the non-distill arms (1,2,3,6,10)
 use devtools/breen_probe_feat.py (same metric on the raw LLM hidden state).
 
-NOT covered here: arm-9 (BREEN/query-distill, head.method=='breen'). Its loss
-aligns the <query> tokens, and this probe feeds an image-only sequence with no
-<query>, so compute_breen_distill_loss returns _anchor() (modeling_vlm.py:1473)
-without ever calling head._align and the empty-stack guard below fails loud.
-Arm-9's query-aware representation eval is deferred to ST-3, which builds the
-final single-pool query distill — adding xshape arm-9 support now against the
-soon-to-be-replaced two-pool breen would be wrong.
+Arm-9 (BREEN single-pool query distill, head.method=='breen') IS covered (ST-3):
+its loss aligns the <query> tokens, so this probe injects a <query> sentinel after
+the image (else compute_breen_distill_loss returns _anchor() without calling
+head._align and the empty-stack guard fails loud), and the simplified single-pool
+breen calls head._align ONCE per image (no fine/coarse split), so the spy captures
+the (query_hidden, projected debiased CLIP target) pair cleanly. The captured pair
+is in LLM-hidden space (the queries are aligned there via norm_layer), vs teacher
+space for eve/repa/softdepth — discrimination_metrics is dimension-agnostic. The
+debias EMA is frozen during capture (head.eval()) so the single-image probe
+forwards don't drift the trained debias mean.
 
 Plus a caption eyeball (generate_response, plain template) on 3 qual images:
 does the caption actually describe THAT image?
@@ -110,14 +114,16 @@ def main() -> None:
 
     head = model.visual_distill_head
     method = head.method
+    is_breen = method == "breen"
     img_tok = int(model.config.image_token_index)
+    q_tok = int(getattr(model.config, "query_token_index", -202))
     ign = int(model.config.ignore_index)
     mdtype = next(model.parameters()).dtype
 
     # Capture the (pred, target) pair the loss aligns. Keeps only the LAST
     # _align pair per image — complete for the single-_align methods in scope
-    # (eve/repa/softdepth/vae); vora (multi-layer) and breen (fine+coarse) call
-    # _align more than once per image and are out of this probe's scope.
+    # (eve/repa/softdepth/vae AND single-pool breen, which calls _align once per
+    # image); vora (multi-layer) calls _align more than once and is out of scope.
     cap: dict[str, torch.Tensor] = {}
     orig_align = head._align
 
@@ -128,14 +134,31 @@ def main() -> None:
 
     head._align = spy
     model.train()  # distill_on requires self.training (no_grad still runs distill)
+    if is_breen:
+        # Freeze the anti-collapse debias EMA: the probe runs one image per
+        # forward, and compute_breen updates the EMA per microbatch in train mode
+        # (head.training) — single-image stats would drift the loaded (trained)
+        # debias mean and make the captured target order-dependent. head.eval()
+        # disables only the EMA update (the head has no other train/eval state);
+        # distill_on still fires (it reads the top-level model.training, left True).
+        head.eval()
+
+    # The single-pool breen loss aligns the <query> rows, so inject a <query>
+    # sentinel after the image (placement is irrelevant for a single image+query
+    # row — they pair by nearest-preceding image). Without it,
+    # compute_breen_distill_loss anchors out and head._align is never called.
+    if is_breen:
+        seq = torch.tensor([[img_tok, q_tok, 13]], device=device)  # <image> <query> + dummy
+        lab = torch.tensor([[ign, ign, 13]], device=device)  # supervise the dummy so CE runs
+    else:
+        seq = torch.tensor([[img_tok, 13]], device=device)  # <image> + 1 dummy caption tok
+        lab = torch.tensor([[ign, 13]], device=device)  # supervise the dummy so CE runs
 
     preds, targs, self_cos_pp = [], [], []
     for im in imgs:
         feat = processor.image_processor.preprocess([im])
         px = feat["pixel_values"][0].to(device=device, dtype=mdtype)
         pos = feat["image_position_ids"][0].to(device)
-        seq = torch.tensor([[img_tok, 13]], device=device)  # <image> + 1 dummy caption tok
-        lab = torch.tensor([[ign, 13]], device=device)  # supervise the dummy so CE runs
         cap.clear()
         with torch.no_grad():
             model(
@@ -147,7 +170,8 @@ def main() -> None:
             )
         if "pred" not in cap:  # degenerate image (<2-cell grid) -> distill anchored, skip
             continue
-        p, t = cap["pred"], cap["target"]  # (m, d_teacher)
+        p, t = cap["pred"], cap["target"]  # (m, d) — teacher space (eve/repa/...)
+        # or LLM-hidden space (breen: query_hidden vs projected debiased target)
         preds.append(_pool(p))
         targs.append(_pool(t))
         self_cos_pp.append(float(F.cosine_similarity(p, t, dim=-1).mean()))
@@ -158,11 +182,10 @@ def main() -> None:
         raise SystemExit(
             f"need >= 2 captured (pred, target) pairs for a cross-image probe, got "
             f"{len(preds)}; the head._align spy captured no/too-few pairs. This probe "
-            f"covers the distill _align methods (arms 4,5,7,8) only: the 'relational' "
-            f"method never calls _align, and arm-9 'breen' aligns <query> tokens this "
-            f"probe does not inject (compute_breen_distill_loss anchors out) — arm-9's "
-            f"representation eval is deferred to ST-3, and the non-distill arms "
-            f"(1,2,3,6,10) use breen_probe_feat.py. Otherwise check --images-dir / "
+            f"covers the distill _align methods (arms 4,5,7,8) and the single-pool "
+            f"breen query arm (9): the 'relational' method never calls _align, and "
+            f"'vora' calls it multiple times per image (out of scope); the non-distill "
+            f"arms (1,2,3,6,10) use breen_probe_feat.py. Otherwise check --images-dir / "
             f"VMCBench and --n-images."
         )
     P = torch.stack(preds)  # (N, d) pooled+normalized student

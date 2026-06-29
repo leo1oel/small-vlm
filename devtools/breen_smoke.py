@@ -69,7 +69,7 @@ def build(device, base_lm, enabled=True, gate=True, from_pretrained=None, weight
                 enabled=enabled, layers=None, init_from_text=True, gate=gate
             ),
             learnable_query=LearnableQueryConfig(
-                enabled=enabled, num_fine=64, num_coarse=36, placement="after_image"
+                enabled=enabled, num_query=100, placement="after_image"
             ),
             visual_distill=VisualDistillConfig(
                 enabled=enabled,
@@ -132,7 +132,7 @@ def main():
     print("\n========== BREEN port smoke ==========", flush=True)
 
     model, processor = build(device, args.base_lm)
-    nq = model.config.learnable_query_num_fine + model.config.learnable_query_num_coarse
+    nq = model.config.learnable_query_num_query
     check(
         "build: learnable_query Parameter present",
         getattr(model, "learnable_query", None) is not None

@@ -297,19 +297,22 @@ class VisualDistillConfig:
 @dataclass
 class LearnableQueryConfig:
     """Learnable CLIP-distillation queries (BREEN arXiv:2503.12446 port, spec
-    2026-06-24). A trainable nn.Parameter(num_fine+num_coarse, hidden) on the
-    ForCausalLM, spliced in at each "<query>" placeholder (one block per image),
-    routed to the visual FFN expert, and label-masked (excluded from CE). The
-    breen distill method aligns the first num_fine query rows to the 8x8 fine
-    avg-pool of the CLIP grid and the last num_coarse rows to the 6x6 coarse
-    pool. Structural — it sizes the Parameter, so it lives on the model config
-    and serializes into checkpoint config.json (visual_aux pattern).
+    2026-06-24; SIMPLIFIED to single-pool in ST-3, audit §5). A trainable
+    nn.Parameter(num_query, hidden) on the ForCausalLM, spliced in at each
+    "<query>" placeholder (one block per image), routed to the visual FFN expert,
+    and label-masked (excluded from CE). The simplified breen distill method
+    aligns ALL num_query query rows to ONE adaptive avg-pool of the CLIP grid to
+    a √num_query × √num_query grid (no fine/coarse two-pool split). Structural —
+    it sizes the Parameter, so it lives on the model config and serializes into
+    checkpoint config.json (visual_aux pattern).
     enabled=False = no Parameter built, bit-identical baseline."""
 
     enabled: bool = False
-    # 8x8 fine pool of a 24x24 CLIP-L/14-336 grid = 64; 6x6 coarse pool = 36.
-    num_fine: int = 64
-    num_coarse: int = 36
+    # Number of learnable query rows = the breen single-pool target row count.
+    # Must be a perfect square (the CLIP grid is adaptive-pooled to a
+    # √num_query × √num_query grid): 64 = 8×8 (default, arm 9). The pre-ST-3
+    # two-pool BREEN split this into num_fine(64, 8×8) + num_coarse(36, 6×6) = 100.
+    num_query: int = 64
     # Where the data path emits the "<query>" placeholder relative to the image
     # and the user text: "after_image" (BREEN pretrain: image then queries) |
     # "after_text" (BREEN SFT: queries attend the question, placed after it).

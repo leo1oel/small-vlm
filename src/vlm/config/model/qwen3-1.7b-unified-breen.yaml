@@ -48,8 +48,7 @@ visual_expert:
 
 learnable_query:
   enabled: true
-  num_fine: 64 # 8x8 fine avg-pool of the 24x24 CLIP grid
-  num_coarse: 36 # 6x6 coarse avg-pool
+  num_query: 100 # single-pool target rows (10x10 adaptive pool of the CLIP grid)
   placement: after_image # default (alignment stages); SFT overrides to after_text
 
 visual_distill:

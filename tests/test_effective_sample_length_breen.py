@@ -1,10 +1,10 @@
 """#4 — token-budget bucketing must count BREEN learnable-query expansion.
 
 Each "<query>" sentinel is ONE input_ids token but the model splice expands it
-into (learnable_query_num_fine + learnable_query_num_coarse) rows (one block per
-image). effective_sample_length must subtract the 1-token sentinel and add the
-expanded rows, else token-budget microbatches overshoot and land in the wrong
-bucket (~19-31% over budget on the live BREEN path).
+into learnable_query_num_query rows (one block per image; single-pool ST-3).
+effective_sample_length must subtract the 1-token sentinel and add the expanded
+rows, else token-budget microbatches overshoot and land in the wrong bucket
+(~19-31% over budget on the live BREEN path).
 """
 
 import pytest
@@ -43,9 +43,7 @@ def _args(**kw):
 def test_query_expansion_counted_when_enabled():
     # ids: 3 text + 1 image sentinel + 1 query sentinel = 5 tokens
     dd = _data_dict([1, 2, IMG, QRY, 3], images=[_img_entry(10)])
-    da = _args(
-        learnable_query_enabled=True, learnable_query_num_fine=64, learnable_query_num_coarse=36
-    )
+    da = _args(learnable_query_enabled=True, learnable_query_num_query=100)
     # 5 - 1(img sentinel) - 1(query sentinel) + 10(img rows) + 100(query rows) = 113
     assert effective_sample_length(dd, da) == 113
 
@@ -56,25 +54,22 @@ def test_undercount_without_the_fix_is_avoided():
     dd = _data_dict([1, 2, IMG, QRY, 3], images=[_img_entry(10)])
     da = _args(learnable_query_enabled=True)
     assert effective_sample_length(dd, da) != 14
-    assert effective_sample_length(dd, da) == 113  # 64+36 default rows
+    # 5 - 1 - 1 + 10 + 64(num_query default) = 77
+    assert effective_sample_length(dd, da) == 77
 
 
 def test_multi_image_multi_query():
     # 2 images + 2 query blocks
     dd = _data_dict([1, IMG, QRY, 2, IMG, QRY], images=[_img_entry(8), _img_entry(12)])
-    da = _args(
-        learnable_query_enabled=True, learnable_query_num_fine=64, learnable_query_num_coarse=36
-    )
+    da = _args(learnable_query_enabled=True, learnable_query_num_query=100)
     # 6 - 2(img) - 2(query) + (8+12) + 2*100 = 6 - 4 + 20 + 200 = 222
     assert effective_sample_length(dd, da) == 222
 
 
 def test_custom_query_row_counts():
     dd = _data_dict([1, IMG, QRY], images=[_img_entry(5)])
-    da = _args(
-        learnable_query_enabled=True, learnable_query_num_fine=8, learnable_query_num_coarse=4
-    )
-    # 3 - 1 - 1 + 5 + (8+4) = 18
+    da = _args(learnable_query_enabled=True, learnable_query_num_query=12)
+    # 3 - 1 - 1 + 5 + 12 = 18
     assert effective_sample_length(dd, da) == 18
 
 
