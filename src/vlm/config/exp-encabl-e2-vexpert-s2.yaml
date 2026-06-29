@@ -1,0 +1,17 @@
+defaults:
+  - exp-encabl-native-s2
+  - _self_
+
+# 10-EXP ablation — Exp 2 (+ visual expert), STAGE 2.
+# Base = exp-encabl-native-s2. Carries the FFN visual expert through SFT (delta
+# vs base = visual_expert.ffn). The expert modules serialize into the checkpoint
+# config.json, so a from_pretrained S2 build rebuilds the same experts
+# (train/infer parity). Pair VLM_S1_CKPT with the Exp-2 Stage-1 checkpoint.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true # norm/attention stay at their dataclass defaults (false)
+
+trainer:
+  run_name: encabl-e2-vexpert-s2

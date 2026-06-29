@@ -1,0 +1,20 @@
+defaults:
+  - exp-encabl-native-s1
+  - _self_
+
+# 10-EXP ablation — Exp 3 (+ visual expert + visual norm), STAGE 1.
+# Base = exp-encabl-native-s1. Delta vs base = the FFN visual expert PLUS the
+# EVEv2 modality-norm expert: each decoder layer additionally gets sibling
+# RMSNorms `input_layernorm.norm_visual` / `post_attention_layernorm.norm_visual`
+# (image tokens normalized by the visual norms, text by the shared ones). The
+# norm expert is the #20 addition that lives only on origin/main (FFN-only on the
+# pre-#20 encabl-final branch). Identical budget / steps / seed / data as base.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true # attention stays at its dataclass default (false)
+
+trainer:
+  run_name: encabl-e3-vexpert-norm-s1

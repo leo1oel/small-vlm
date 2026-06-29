@@ -1,0 +1,20 @@
+defaults:
+  - exp-encabl-native-s2
+  - _self_
+
+# 10-EXP ablation — Exp 6 (+ visual expert + visual norm + NePA), STAGE 2.
+# Base = exp-encabl-native-s2. Carries the FFN expert + EVEv2 modality norm + the
+# NePA auxiliary loss through SFT (delta vs base = visual_expert.{ffn,norm} +
+# visual_aux). Pair VLM_S1_CKPT with the Exp-6 Stage-1 checkpoint.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true
+  visual_aux:
+    objective: nepa
+
+trainer:
+  visual_aux_weight: 0.5
+  run_name: encabl-e6-vexpert-norm-nepa-s2

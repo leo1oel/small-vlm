@@ -1,0 +1,22 @@
+defaults:
+  - exp-encabl-native-s1
+  - _self_
+
+# 10-EXP ablation — Exp 1 (+ NePA), STAGE 1.
+# Base = exp-encabl-native-s1 (native encoder-free, qwen3-1.7b-unified, caption
+# pretrain on energon-bee-stage2-wds, connector-only unfreeze, 5e9 effective
+# tokens @ budget 24000 -> max_steps 34722, lr 8e-4). The ONLY delta vs base is
+# the next-patch EMBEDDING prediction auxiliary loss (NePA, arXiv:2512.16922;
+# stop-grad connector-output target, L2-norm negative-cosine). Identical token
+# budget / steps / seed / data stream as the base -> directly comparable.
+#
+# wandb collapse alarms: visual_aux_cos / visual_aux_tgt_std (sustained cos -> 1
+# with tgt_std -> 0 is the collapse signature; stop-grad should prevent it).
+
+model:
+  visual_aux:
+    objective: nepa
+
+trainer:
+  visual_aux_weight: 0.5
+  run_name: encabl-e1-nepa-s1

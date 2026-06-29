@@ -1,0 +1,74 @@
+defaults:
+  - cfg
+  - model: qwen3-1.7b-unified
+  - trainer: pretrain # version=plain + unfreeze=connector-only (caption pretrain)
+  - inference: default
+  - dataset: energon-bee-stage2-wds
+  - override hydra/job_logging: rich
+  - _self_
+
+# ENCODER ABLATION — Group G2 (native encoder-free raw patches), STAGE 1.
+# Caption pretrain on bee_stage2 (~12M; we run ~7.5M). Freeze the Qwen3-1.7B
+# backbone, train only the raw-patch connector on "<image> -> caption" (plain
+# template supervises the whole caption). Identical to G1 (qwen3-1.7b-clip)
+# except the visual pathway. Visual experts OFF, BREEN OFF (both default off).
+#
+# Stage 2 resumes from this run's checkpoint via exp-encabl-native-s2
+# (VLM_S1_CKPT=<this run's checkpoint dir>).
+#
+# Launch (6xA100 DDP, no DeepSpeed): see report.md launch section.
+
+model:
+  audio:
+    enabled: false # vision-only ablation: no audio connector / dummy-audio churn
+
+trainer:
+  # --- max-speed (0.6B on A100; bottleneck is Azure data, not GPU) ---
+  deepspeed: null # plain DDP; a 0.6B model needs no ZeRO sharding
+  bf16: true
+  tf32: true
+  gradient_checkpointing: false # 0.6B fits easily -> recompute is pure overhead
+  attn_implementation: flash_attention_2 # default causal mask -> FA2
+  optim: adamw_torch_fused
+  loss_chunk_size: 1024 # chunked fp32 CE; never materialize full-vocab logits
+  # torch.compile VERIFIED to graph-break at the raw-patch connector
+  # (modeling_vlm.py:1596) and recompile on every bucket shape -> tflops_per_gpu
+  # collapsed ~40 -> ~2 (≈20x SLOWER) in the real-trainer smoke. Keep OFF.
+  torch_compile: false
+  ddp_timeout: 7200 # Azure cold shuffle-buffer fill (~120s) + fat-tail stragglers
+  include_num_input_tokens_seen: non_padding # wandb logs total tokens seen
+
+  # --- batch shape (token-budget bucketing owns per-micro batch size) ---
+  per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
+  gradient_accumulation_steps: 1
+
+  # --- schedule: 5e9 EFFECTIVE tokens (budget × steps × world_size).
+  # max_steps = 5e9 / (24000 × 6) = 34722 @ budget 24000 -> ~7.4M samples
+  # ≈ 0.59 epochs of bee (12.60M). On 6xA100, Qwen3-1.7B connector-only
+  # (~130 samples/s, ~1.60 s/step) ≈ 15.4 h. budget=24000 (was 32000; 1.7B
+  # OOMs there). EQUAL-TOKEN fairness: CLIP-G1 uses the IDENTICAL budget+steps. ---
+  max_steps: 34722
+  save_steps: 2500 # ~14 checkpoints; frequent enough for safe preemption-resume
+  save_total_limit: null
+  save_only_model: false # resume needs optimizer + energon stream state
+  warmup_steps: 347 # ~1% of max_steps
+
+  learning_rate:
+    language_model_learning_rate: 8e-4 # no-op: backbone frozen in pretrain
+    connector_learning_rate: 8e-4
+    visual_encoder_learning_rate: 8e-4 # no-op for encoder-free
+    default_lr: 8e-4
+
+  run_name: encabl-native-s1
+
+hydra:
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: INFO
+  run:
+    dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

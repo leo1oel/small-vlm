@@ -1,0 +1,21 @@
+defaults:
+  - exp-encabl-native-s1
+  - _self_
+
+# 10-EXP ablation — Exp 6 (+ visual expert + visual norm + NePA), STAGE 1.
+# Base = exp-encabl-native-s1. Delta vs base = Exp 3 (FFN expert + EVEv2 modality
+# norm) PLUS the NePA next-patch-embedding auxiliary loss (Exp 1). Tests whether
+# dedicated visual capacity (expert + norm) and the self-supervised visual aux
+# objective compose. Identical budget / steps / seed / data stream as base.
+
+model:
+  visual_expert:
+    enabled: true
+    ffn: true
+    norm: true
+  visual_aux:
+    objective: nepa
+
+trainer:
+  visual_aux_weight: 0.5
+  run_name: encabl-e6-vexpert-norm-nepa-s1

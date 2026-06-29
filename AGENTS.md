@@ -223,6 +223,50 @@ stay frozen.
     copying the text weights into the sibling (the gateless sibling has no such
     keys → load_state_dict raises on unexpected keys).
 
+## Encoder-ablation 2-stage native recipe + 10-experiment ablation arms
+
+The shared base for the native (encoder-free, raw-patch) ablation family is a
+2-stage chain on `model/qwen3-1.7b-unified` — **not** the BREEN model above:
+
+- **S1 `exp-encabl-native-s1.yaml`** — caption pretrain on
+    `dataset/energon-bee-stage2-wds`, `trainer: pretrain` (connector-only
+    unfreeze), `batch_token_budget: 24000`, `max_steps: 34722`, LR 8e-4. Experts
+    / aux / distill all OFF → this IS the no-method control.
+- **S2 `exp-encabl-native-s2.yaml`** — instruction SFT on
+    `dataset/energon-honey-sft-wds` (new WDS twin of bee-stage2; `wds_path`,
+    `conversation_kind: instruct`, `strip_empty_think`), `trainer: finetune`
+    (LM+connector unfreeze), `version: qwen_2_5` ChatML, `batch_token_budget: 14000`, `max_steps: 11905`, LR 6e-5, `from_pretrained: ${oc.env:VLM_S1_CKPT}`.
+
+**Effective-token budget convention (hold this constant across every arm):**
+`max_steps = effective_tokens / (batch_token_budget × world_size)`, world_size=6.
+S1 targets **5e9** effective tokens → 5e9/(24000·6) = 34722. S2 targets **1e9** →
+1e9/(14000·6) = 11905. Budgets (24000 S1 / 14000 S2) are OOM-verified on A100-80GB
+(32000/20000 OOM); a 48G launch re-verifies per-config (smaller budget +
+grad-accum to preserve effective tokens). `energon-bee-stage2-wds.yaml`'s
+`batch_token_budget` is the S1 24000 default (no run config but this recipe uses
+it; it was 32000 pre-recipe).
+
+**Arm configs inherit the base via Hydra `defaults` + add only toggle keys**
+(`defaults: [exp-encabl-native-s{1,2}, _self_]`, then `model:`/`trainer:`
+overrides + a distinctive `trainer.run_name`) — so budgets/steps/seed/data stream
+are identical and arms stay directly comparable. Toggle → flattened `VLMConfig`
+(set in `vlm.py` load_model, read by `getattr` in `modeling_vlm.py`):
+
+| Arm                                     | `model.*` toggles                                                 | flattened keys                       |
+| --------------------------------------- | ----------------------------------------------------------------- | ------------------------------------ |
+| Exp 1 `exp-encabl-e1-nepa`              | `visual_aux.objective: nepa` (+ `trainer.visual_aux_weight: 0.5`) | `visual_aux_objective`               |
+| Exp 2 `exp-encabl-e2-vexpert`           | `visual_expert: {enabled, ffn}`                                   | `visual_expert`, `visual_expert_ffn` |
+| Exp 3 `exp-encabl-e3-vexpert-norm`      | `visual_expert: {enabled, ffn, norm}`                             | `+ visual_expert_norm`               |
+| Exp 6 `exp-encabl-e6-vexpert-norm-nepa` | Exp 3 toggles + `visual_aux.objective: nepa` (+ weight 0.5)       | union of above                       |
+
+Each arm is a `-s1`/`-s2` pair. `visual_expert.ffn` defaults True, `norm`/
+`attention` default False, `visual_aux.objective` defaults `none`, so the listed
+keys are the full minimal delta. Verify any new arm with
+`uv run python -m vlm -cn <config> --cfg job` (a misspelled toggle fails against
+the structured schema at compose, not at train launch). Exps 4/5/7/8 (distill)
+need the anti-collapse port (ST-2); exp 9 (query distill) ST-3; exp 10 (dropout)
+deferred — see `data/tenexp-audit/report.md`.
+
 ## Energon train-loader layouts (`build_energon_train_loader`)
 
 Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
