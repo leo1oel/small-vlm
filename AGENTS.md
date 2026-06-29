@@ -275,13 +275,13 @@ The S1 stage is read with two complementary signals.
 All probes are heavy (model + CLIP load) — run on a GPU node, never the login node.
 Shared retrieval/centering/pooling lives in `devtools/breen_probe_common.py` (`discrimination_metrics`).
 
-| Probe | Script | Arms | What it reads |
-| --- | --- | --- | --- |
-| cross-image (distill) | `breen_probe_xshape.py` | **4,5,7,8** (distill `_align` methods) | `visual_distill_head` aligned (student pred, teacher target); needs the head |
-| cross-image (distill-free) | `breen_probe_feat.py` | **1,2,3,6,10** (any native ckpt) | raw LLM hidden at image positions, split-half (even/odd patches) retrieval |
-| caption read | `breen_caption_test.py` | any | greedy caption strings + blind/distinct verdict |
-| caption multi-arm | `breen_caption_retest.py` | any | bare-`<image>` captions across several `LABEL=ckpt` at once |
-| decode-recipe sweep | `breen_caption_recipe_sweep.py` | any | which `rep_penalty`×`no_repeat_ngram` avoids the greedy token-loop |
+| Probe                      | Script                          | Arms                                   | What it reads                                                                |
+| -------------------------- | ------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------- |
+| cross-image (distill)      | `breen_probe_xshape.py`         | **4,5,7,8** (distill `_align` methods) | `visual_distill_head` aligned (student pred, teacher target); needs the head |
+| cross-image (distill-free) | `breen_probe_feat.py`           | **1,2,3,6,10** (any native ckpt)       | raw LLM hidden at image positions, split-half (even/odd patches) retrieval   |
+| caption read               | `breen_caption_test.py`         | any                                    | greedy caption strings + blind/distinct verdict                              |
+| caption multi-arm          | `breen_caption_retest.py`       | any                                    | bare-`<image>` captions across several `LABEL=ckpt` at once                  |
+| decode-recipe sweep        | `breen_caption_recipe_sweep.py` | any                                    | which `rep_penalty`×`no_repeat_ngram` avoids the greedy token-loop           |
 
 Launch each as a fresh self-contained GPU job (no held alloc needed):
 
