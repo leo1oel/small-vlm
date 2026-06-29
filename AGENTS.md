@@ -237,6 +237,16 @@ The shared base for the native (encoder-free, raw-patch) ablation family is a
     `conversation_kind: instruct`, `strip_empty_think`), `trainer: finetune`
     (LM+connector unfreeze), `version: qwen_2_5` ChatML, `batch_token_budget: 14000`, `max_steps: 11905`, LR 6e-5, `from_pretrained: ${oc.env:VLM_S1_CKPT}`.
 
+The **G1 encoder twin** is `exp-encabl-clip-s{1,2}.yaml` on `model/qwen3-1.7b-clip`
+(frozen CLIP-ViT-B/16 tower, 196 img tokens) — the canonical-encoder comparison
+arm for the encoder-free native (G2) family above. It is byte-for-byte symmetric
+with native-s1/s2 (SAME dataset stream, `batch_token_budget`, `max_steps`, LR,
+template) for **equal-token fairness**; the ONLY intended difference is the visual
+pathway (CLIP tower vs raw-patch connector), which is exactly the variable under
+test. CLIP stays frozen throughout BOTH stages (pretrain = connector-only;
+finetune = LM+connector, tower still frozen). The captain chose the 1.7B backbone,
+so the `qwen3-0.6b-clip` model config is dead — do not use it.
+
 **Effective-token budget convention (hold this constant across every arm):**
 `max_steps = effective_tokens / (batch_token_budget × world_size)`, world_size=6.
 S1 targets **5e9** effective tokens → 5e9/(24000·6) = 34722. S2 targets **1e9** →
@@ -416,6 +426,27 @@ Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
     unconditionally `from deepspeed import DeepSpeedEngine`, whose op-builder
     probes `nvcc` at import → `FileNotFoundError: .../bin/nvcc` at trainer
     construction without it.
+1. **The MSC cold-cache lock lands at a root path → PermissionError on the
+    FIRST read of a cold `wds_path` stream (`_patch_msc_cold_lock_path`).**
+    `multistorageclient` (≤0.49.0) `CacheManager.acquire_lock` builds the download
+    lock as `os.path.dirname(os.path.join(cache_dir, key))`, but `key` is the
+    ABSOLUTE remote object path (e.g. `/data/yiming/.../.nv-meta/.info.json`) and
+    `os.path.join` DROPS the `cache_dir` prefix when its second arg is absolute —
+    so the lock lands at `/<container>/...` (a root-owned mount) and a COLD
+    cache-miss download dies with `PermissionError`. Cache HITS use a
+    slash-stripped key, so only the cold path breaks — it bites every FRESH run
+    that streams a prepared CrudeWebdataset (`.nv-meta` read in text mode by
+    energon's `get_dataset_info`). `_bootstrap_env` monkeypatches `acquire_lock`
+    to `key.lstrip("/")` so the lock sits under the cache dir (it no-ops if the
+    streaming extras aren't installed). Do NOT remove this patch until the upstream
+    fix ships — without it cold Azure streaming never starts.
+1. **`resolve_wds_path` passes through an ABSOLUTE local path verbatim, not just a
+    `://` URL.** A pre-staged shard dir like `/gscratch/scrubbed/leoym/encabl-data`
+    must be used as-is (`p.startswith("/")`); without that clause it falls through
+    to `remote_url(p)` and is mis-resolved into a container-relative `msc://` URL,
+    silently pointing the loader at the wrong (remote) location. energon's EPath
+    wants the bare absolute path, NOT a `file://` URL. Covered by
+    `test_resolve_wds_path`.
 
 ## Cross-modal 4D mask correctness (xmodal_mask.py / install_xmodal_masks)
 
