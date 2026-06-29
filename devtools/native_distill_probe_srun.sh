@@ -7,7 +7,7 @@
 #   JOBID=123456 CKPT=/path/checkpoint-1000 LABEL=eve@1000 OUT=/path/out.json \
 #     PROBE=xshape GPU=0 bash devtools/native_distill_probe_srun.sh
 #
-#   PROBE=xshape -> breen_probe_xshape.py  (DISTILL arms 4,5,7,8,9)
+#   PROBE=xshape -> breen_probe_xshape.py  (DISTILL arms 4,5,7,8)
 #   PROBE=feat   -> breen_probe_feat.py    (NON-distill arms 1,2,3,6,10)
 #   IMAGES_DIR=.../qual_images runs offline on local PNGs instead of VMCBench.
 set -uo pipefail

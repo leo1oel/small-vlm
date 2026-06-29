@@ -1,5 +1,5 @@
-"""Cross-image discrimination probe for the DISTILL arms (exps 4,5,7,8,9 of the
-10-experiment ablation; spec data/tenexp-audit/report.md §7).
+"""Cross-image discrimination probe for the DISTILL arms 4,5,7,8 of the
+10-experiment ablation; spec data/tenexp-audit/report.md §7.
 
 The killer test from data/distillchk-d4/report.md: distill_cos alone is a MIRAGE
 (a collapsed constant satisfies a per-row cosine). This probe loads a trained
@@ -26,6 +26,14 @@ devtools/breen_probe_common.py):
 REQUIRES a checkpoint trained WITH visual_distill (reads model.visual_distill_head;
 attach_distill_teacher raises otherwise). For the non-distill arms (1,2,3,6,10)
 use devtools/breen_probe_feat.py (same metric on the raw LLM hidden state).
+
+NOT covered here: arm-9 (BREEN/query-distill, head.method=='breen'). Its loss
+aligns the <query> tokens, and this probe feeds an image-only sequence with no
+<query>, so compute_breen_distill_loss returns _anchor() (modeling_vlm.py:1473)
+without ever calling head._align and the empty-stack guard below fails loud.
+Arm-9's query-aware representation eval is deferred to ST-3, which builds the
+final single-pool query distill — adding xshape arm-9 support now against the
+soon-to-be-replaced two-pool breen would be wrong.
 
 Plus a caption eyeball (generate_response, plain template) on 3 qual images:
 does the caption actually describe THAT image?
@@ -105,7 +113,10 @@ def main() -> None:
     ign = int(model.config.ignore_index)
     mdtype = next(model.parameters()).dtype
 
-    # Capture the (pred, target) pair the loss aligns, for every method.
+    # Capture the (pred, target) pair the loss aligns. Keeps only the LAST
+    # _align pair per image — complete for the single-_align methods in scope
+    # (eve/repa/softdepth/vae); vora (multi-layer) and breen (fine+coarse) call
+    # _align more than once per image and are out of this probe's scope.
     cap: dict[str, torch.Tensor] = {}
     orig_align = head._align
 
@@ -145,9 +156,13 @@ def main() -> None:
     if len(preds) < 2:
         raise SystemExit(
             f"need >= 2 captured (pred, target) pairs for a cross-image probe, got "
-            f"{len(preds)}; the head._align spy captured no/too-few pairs. The "
-            f"'relational' method never calls _align so this probe does not apply to "
-            f"it; otherwise check --images-dir / VMCBench and --n-images."
+            f"{len(preds)}; the head._align spy captured no/too-few pairs. This probe "
+            f"covers the distill _align methods (arms 4,5,7,8) only: the 'relational' "
+            f"method never calls _align, and arm-9 'breen' aligns <query> tokens this "
+            f"probe does not inject (compute_breen_distill_loss anchors out) — arm-9's "
+            f"representation eval is deferred to ST-3, and the non-distill arms "
+            f"(1,2,3,6,10) use breen_probe_feat.py. Otherwise check --images-dir / "
+            f"VMCBench and --n-images."
         )
     P = torch.stack(preds)  # (N, d) pooled+normalized student
     T = torch.stack(targs)  # (N, d) pooled+normalized teacher

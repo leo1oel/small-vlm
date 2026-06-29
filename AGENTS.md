@@ -277,7 +277,7 @@ Shared retrieval/centering/pooling lives in `devtools/breen_probe_common.py` (`d
 
 | Probe | Script | Arms | What it reads |
 | --- | --- | --- | --- |
-| cross-image (distill) | `breen_probe_xshape.py` | **4,5,7,8,9** (distill only) | `visual_distill_head` aligned (student pred, teacher target); needs the head |
+| cross-image (distill) | `breen_probe_xshape.py` | **4,5,7,8** (distill `_align` methods) | `visual_distill_head` aligned (student pred, teacher target); needs the head |
 | cross-image (distill-free) | `breen_probe_feat.py` | **1,2,3,6,10** (any native ckpt) | raw LLM hidden at image positions, split-half (even/odd patches) retrieval |
 | caption read | `breen_caption_test.py` | any | greedy caption strings + blind/distinct verdict |
 | caption multi-arm | `breen_caption_retest.py` | any | bare-`<image>` captions across several `LABEL=ckpt` at once |
@@ -286,7 +286,7 @@ Shared retrieval/centering/pooling lives in `devtools/breen_probe_common.py` (`d
 Launch each as a fresh self-contained GPU job (no held alloc needed):
 
 ```bash
-# distill arms (4,5,7,8,9): cross-image discrimination on the distill head
+# distill arms (4,5,7,8): cross-image discrimination on the distill head
 CKPT=/path/checkpoint-1000 PROBE=xshape LABEL=eve@1000 OUT=/path/out.json sbatch devtools/s1_eval_probe.slurm
 # non-distill arms (1,2,3,6,10): distill-free split-half on the raw LLM hidden
 CKPT=/path/checkpoint-1000 PROBE=feat  LABEL=nepa@1000 OUT=/path/out.json sbatch devtools/s1_eval_probe.slurm
@@ -298,7 +298,7 @@ ARMS="e1=/p/ck e2=/p/ck" PROBE=retest sbatch devtools/s1_eval_probe.slurm
 
 `devtools/native_distill_probe_srun.sh` is the interactive twin for `srun`-ing `xshape`/`feat` into a live alloc you already hold (`JOBID=<squeue --me> CKPT=... PROBE=xshape bash devtools/native_distill_probe_srun.sh`); its old hard-coded dead `--jobid`/worktree path are gone (REPO is derived from the script location, JOBID is required).
 **Images:** both cross-image probes default to VMCBench-dev (`NIMG`, default 30), which must be HF-cached when offline — pre-cache once on a login node (`uv run python -c "from datasets import load_dataset; load_dataset('suyc21/VMCBench', split='dev')"`) or pass `IMAGES_DIR=.../breen-s2val-j8/qual_images` to run on local PNGs (also the way to get an identical cross-arm image set); the probe errors with this exact guidance if neither is available.
-**Query-placement (exp 9 only):** the eval reads `learnable_query_placement` from the checkpoint `config.json`, and main-trained checkpoints already serialize the correct value (`vlm()` refreshes it on both build paths — see "Self-describing config fields" below), so no fix is needed for arm-9 checkpoints trained on main; the probes still accept `QUERY_PLACEMENT=after_text` as a defensive override for a stale/external query checkpoint whose config disagrees with how it trained.
+**Query-placement (exp 9 only):** arm-9's representation eval is itself deferred to ST-3 — `breen_probe_xshape.py` does NOT cover it (its image-only sequence carries no `<query>`, so `compute_breen_distill_loss` anchors out without aligning anything). The `QUERY_PLACEMENT=after_text` override below is retained as a forward-looking defensive hook for when ST-3's query-aware probe lands. Context: the eval reads `learnable_query_placement` from the checkpoint `config.json`, and main-trained checkpoints already serialize the correct value (`vlm()` refreshes it on both build paths — see "Self-describing config fields" below), so no load-path fix is needed for arm-9 checkpoints trained on main; the override exists only for a stale/external query checkpoint whose config disagrees with how it trained.
 
 ## Energon train-loader layouts (`build_energon_train_loader`)
 

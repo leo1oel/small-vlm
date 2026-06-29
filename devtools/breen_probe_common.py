@@ -9,8 +9,10 @@ per-patch features into a single L2-normalized descriptor and ask the same
 question via `discrimination_metrics`, differing only in WHERE the features come
 from:
 
-  * `breen_probe_xshape.py` (distill arms 4,5,7,8,9): the distill head's aligned
-    (student pred, teacher target) pair — needs `model.visual_distill_head`.
+  * `breen_probe_xshape.py` (distill `_align` arms 4,5,7,8): the distill head's
+    aligned (student pred, teacher target) pair — needs `model.visual_distill_head`.
+    Arm-9 (breen/query-distill) is NOT covered (it aligns <query> tokens, which
+    this probe does not inject) and is deferred to ST-3.
   * `breen_probe_feat.py` (non-distill arms 1,2,3,6,10): the RAW LLM hidden state
     at image positions, split into two interleaved patch halves — runs on ANY
     native (encoder-free) checkpoint.

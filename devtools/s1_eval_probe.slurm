@@ -9,7 +9,7 @@
 #
 # PROBE values and which ablation arms they apply to:
 #   xshape  -> breen_probe_xshape.py   cross-image discrimination on the distill
-#              head (pred vs teacher). DISTILL arms only: 4,5,7,8,9.
+#              head (pred vs teacher). DISTILL arms only: 4,5,7,8.
 #   feat    -> breen_probe_feat.py     distill-free split-half discrimination on
 #              the raw LLM hidden. NON-distill arms: 1,2,3,6,10 (runs on any arm).
 #   caption -> breen_caption_test.py   grounded-vs-blind caption strings. ANY arm.
