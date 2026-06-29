@@ -65,7 +65,7 @@ needs_tokenizer = pytest.mark.skipif(_TOKENIZER is None, reason="Qwen3 tokenizer
 
 
 @pytest.fixture(autouse=True)
-def _reset_consecutive_skips():
+def _reset_consecutive_skips():  # pyright: ignore[reportUnusedFunction]  # pytest invokes autouse fixtures by discovery, not by name
     # The per-worker consecutive-skip counter is module-global; reset it around
     # every test so the fatal threshold can't be tripped by accumulation across
     # unrelated tests (and so a small monkeypatched threshold starts clean).
