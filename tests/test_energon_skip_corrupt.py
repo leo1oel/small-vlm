@@ -73,6 +73,7 @@ def _reset_consecutive_skips():
     yield
     ed._consecutive_skipped = 0  # pyright: ignore[reportPrivateUsage]
 
+
 # PIL's exact broken-PNG message from the reported crash; SyntaxError is in
 # energon's SYSTEM_EXCEPTIONS, so a mere error *handler* can't rescue it — only
 # converting to SkipSample at the source can.
