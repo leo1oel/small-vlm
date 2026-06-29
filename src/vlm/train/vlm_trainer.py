@@ -120,9 +120,13 @@ class VLMTrainer(Trainer):
         gradient-accumulation-invariant — instead of once per image-bearing
         microbatch forward (which advances at ``grad_accum`` x the intended rate
         and diverges across ranks). Idempotent within a step: every micro-batch
-        writes the same ``global_step``. No-op unless caption-token dropout is
-        enabled — the ``_caption_dropout_step`` buffer is registered only then
-        (so shipped arms with the dropout off stay bit-identical)."""
+        writes the same ``global_step``. Runs for EVERY arm, not just enabled
+        ones — the ``_caption_dropout_step`` buffer is registered
+        unconditionally in ``VLMForCausalLM.__init__``, so this always finds it
+        and fills it. Disabled arms stay bit-identical anyway: the buffer is
+        non-persistent (never in the state_dict) and the forward gates on
+        ``caption_token_dropout_prob()``, which returns 0.0 when disabled, so
+        writing an otherwise-unread scalar has no numerical effect."""
         step_buf = getattr(self.accelerator.unwrap_model(model), "_caption_dropout_step", None)
         if step_buf is not None:
             step_buf.fill_(int(self.state.global_step))
