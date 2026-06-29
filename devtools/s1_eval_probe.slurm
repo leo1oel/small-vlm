@@ -33,7 +33,8 @@
 #SBATCH --error=/mmfs1/gscratch/krishna/leoym/small-vlm/logs/s1_eval_probe_%j.err
 
 set -uo pipefail
-REPO="${REPO:-/mmfs1/gscratch/krishna/leoym/small-vlm}"
+# Derive the repo from this submitted script so worktree launches test that tree.
+REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 VENV_PY="$REPO/.venv/bin/python"
 cd "$REPO"
 mkdir -p logs

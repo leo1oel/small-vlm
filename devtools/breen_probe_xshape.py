@@ -53,6 +53,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from breen_probe_common import (  # noqa: E402
     _pool,
