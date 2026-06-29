@@ -279,7 +279,7 @@ are identical and arms stay directly comparable. Toggle → flattened `VLMConfig
 | Exp 7 `exp-encabl-e7-vexpert-norm-distill-repa`        | Exp 5 but `visual_distill.method: repa`, `layers: [8]` (mid)                                                                                                                                                                                                                                                                                                      | `visual_distill_method/layers`         |
 | Exp 8 `exp-encabl-e8-vexpert-norm-distill-softdepth`   | Exp 5 but `method: softdepth`, `layers: [4,8,12,16,20,24]`                                                                                                                                                                                                                                                                                                        | `visual_distill_method/layers`         |
 | Exp 9 `exp-encabl-e9-vexpert-norm-query-distill-breen` | `visual_expert: {enabled, ffn, norm}` + `learnable_query: {enabled, num_query: 64}` + `visual_distill: {enabled, method: breen, teacher_kind: clip, teacher_name: openai/clip-vit-base-patch16, teacher_out_size: 224, debias_target: true, debias_momentum: 0.9}` (+ `trainer.visual_distill_weight: 1.0`). NO `rkd_dist_weight`/B — breen routes only A debias. | `learnable_query*` + `visual_distill*` |
-| Exp 10 `exp-encabl-e10-captiondrop`                  | `caption_token_dropout: {enabled, p_start: 0.10, p_end: 0.30}` (**S1 only**; the `-s2` pair inherits native-s2 unchanged — dropout default OFF)                                                                                                       | `caption_token_dropout_*`            |
+| Exp 10 `exp-encabl-e10-captiondrop`                    | `caption_token_dropout: {enabled, p_start: 0.10, p_end: 0.30}` (**S1 only**; the `-s2` pair inherits native-s2 unchanged — dropout default OFF)                                                                                                                                                                                                                   | `caption_token_dropout_*`              |
 
 Each arm is a `-s1`/`-s2` pair. `visual_expert.ffn` defaults True, `norm`/
 `attention` default False, `visual_aux.objective` defaults `none`, so the listed
@@ -431,8 +431,9 @@ bit-identical baseline** (the forward never touches `inputs_embeds`). Mechanics:
     **NOT a per-microbatch counter** (that advances at grad_accum× the rate and
     diverges across DDP ranks; this is the exact bug class that bit ST-2's warmup).
 - **Touch-points:** ① `config_schema.py` `CaptionTokenDropoutConfig` on
-    `ModelConfig`; ② `vlm.py` **flattens** `caption_token_dropout_{enabled,p_start,
-    p_end}` + `caption_token_dropout_max_steps` (= `trainer.max_steps`) onto
+    `ModelConfig`; ② `vlm.py` **flattens**
+    `caption_token_dropout_{enabled,p_start, p_end}` +
+    `caption_token_dropout_max_steps` (= `trainer.max_steps`) onto
     `VLMConfig` (grounding/cross_modal pattern; miss this and `getattr` defaults
     OFF); ③ `modeling_vlm.py` module-level `caption_token_dropout_rate` /
     `caption_token_dropout_prob` / `apply_caption_token_dropout` helpers + the
