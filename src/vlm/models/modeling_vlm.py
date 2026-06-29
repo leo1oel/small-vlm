@@ -804,8 +804,12 @@ def create_dynamic_causal_vlm_class(
         embeddings (labels != ignore_index) at the rate ramped from the
         rank-identical mirrored optimizer step; labels are untouched. Disabled /
         non-training / p<=0 -> returns ``inputs_embeds`` unchanged (bit-identical
-        baseline)."""
+        baseline). The enabled gate is checked BEFORE reading the step buffer so
+        disabled arms short-circuit on a cheap CPU config read and never incur the
+        ``int(self._caption_dropout_step)`` GPU->CPU device sync."""
         if not (self.training and inputs_embeds is not None and labels is not None):
+            return inputs_embeds
+        if not bool(getattr(self.config, "caption_token_dropout_enabled", False)):
             return inputs_embeds
         step = int(self._caption_dropout_step) if hasattr(self, "_caption_dropout_step") else 0
         p = caption_token_dropout_prob(self.config, step)
