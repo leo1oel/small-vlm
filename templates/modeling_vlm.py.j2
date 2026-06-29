@@ -945,12 +945,24 @@ class VLMForCausalLM({{ causal_parent_class }}):
         # the old (side//3)/(side//4) two-pool assertion, adaptive_avg_pool2d
         # handles ANY teacher grid side (e.g. CLIP-B/16-224 -> 14x14 -> 8x8), so
         # the arm-9 CLIP-base teacher no longer needs CLIP-L/14-336's 24x24 grid.
+        side = int(grids.shape[1])
         side_q = int(round(head.num_query**0.5))
         if side_q * side_q != head.num_query:
             raise ValueError(
                 f"breen single-pool distill expects a perfect-square num_query, "
                 f"got learnable_query.num_query={head.num_query}; set it to k*k "
                 "(e.g. 64 = 8x8) so the queries align to a square pooled CLIP grid."
+            )
+        if side_q > side:
+            # Guard against UPSAMPLING: adaptive_avg_pool2d to a grid LARGER than the
+            # teacher's silently replicates cells, so distinct query rows would get
+            # identical (degenerate) targets. Single-pool only ever DOWN-pools (8x8
+            # from 14x14, 10x10 from 24x24); a larger num_query is a misconfig.
+            raise ValueError(
+                f"breen single-pool distill would UPSAMPLE: num_query={head.num_query} "
+                f"-> {side_q}x{side_q} target grid exceeds the {side}x{side} teacher "
+                f"grid ({side * side} cells). Lower num_query to <= {side * side} (a "
+                "perfect square) or use a higher-resolution teacher_out_size."
             )
 
         flat_hidden = final_hidden.reshape(-1, final_hidden.shape[-1])
