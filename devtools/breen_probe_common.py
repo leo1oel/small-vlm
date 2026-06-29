@@ -57,6 +57,9 @@ def load_probe_images(
         paths = sorted(Path(images_dir).glob("*.png"))
         if not paths:
             raise FileNotFoundError(f"--images-dir {images_dir} contains no *.png files")
+        if len(paths) > n_images:
+            idx = np.linspace(0, len(paths) - 1, n_images).round().astype(int).tolist()
+            paths = [paths[int(i)] for i in idx]
         return [Image.open(p).convert("RGB") for p in paths]
     try:
         from datasets import load_dataset
