@@ -12,8 +12,10 @@ turning any per-sample failure into energon's ``SkipSample`` (log once + count +
 drop the one sample + keep training). These tests pin:
   - the crux: a ``SyntaxError`` is fatal WITHOUT the wrapper but skipped WITH it,
     driven through energon's REAL ``handle_errors`` (not a mock);
-  - that skips never trip the consecutive-failure tolerance (no flood can ever
-    fatalize), are logged once with key/shard/exception, and bump the counter;
+  - that an isolated skip is logged once with key/shard/exception and bumps the
+    drop counter, while a SYSTEMATIC failure (>= ``VLM_MAX_CONSECUTIVE_SKIPS``
+    consecutive skips with no success in between) escalates to a fatal
+    ``FatalSampleError``, and a single successful encode resets that counter;
   - the real chat/caption + generation task encoders over a good image (happy
     path unchanged) and an undecodable image (skipped).
 """
@@ -60,6 +62,16 @@ def _load_tokenizer():
 _TOKENIZER = _load_tokenizer()
 
 needs_tokenizer = pytest.mark.skipif(_TOKENIZER is None, reason="Qwen3 tokenizer unavailable")
+
+
+@pytest.fixture(autouse=True)
+def _reset_consecutive_skips():
+    # The per-worker consecutive-skip counter is module-global; reset it around
+    # every test so the fatal threshold can't be tripped by accumulation across
+    # unrelated tests (and so a small monkeypatched threshold starts clean).
+    ed._consecutive_skipped = 0  # pyright: ignore[reportPrivateUsage]
+    yield
+    ed._consecutive_skipped = 0  # pyright: ignore[reportPrivateUsage]
 
 # PIL's exact broken-PNG message from the reported crash; SyntaxError is in
 # energon's SYSTEM_EXCEPTIONS, so a mere error *handler* can't rescue it — only
@@ -155,22 +167,95 @@ def test_wrapper_makes_syntaxerror_nonfatal():
     assert ctx._consecutive_failures == 0  # pyright: ignore[reportPrivateUsage]
 
 
-def test_many_consecutive_skips_never_trip_tolerance():
+def test_isolated_skips_below_threshold_never_fatalize(monkeypatch):
+    """Below the consecutive-skip threshold, every per-sample failure is an
+    ordinary SkipSample, never a fatal error (energon's own tolerance, which
+    SkipSample bypasses entirely, is covered by the crux test above)."""
+    monkeypatch.setattr(ed, "_MAX_CONSECUTIVE_SKIPS", 5)
+
     @skip_corrupt_samples
     def encode(_self, _sample):
         raise ValueError("bad json")
 
-    ctx = ErrorContext("MapDataset.wrapped", lambda *_a: None, tolerance=5)
-    for _ in range(20):  # far beyond the tolerance
+    for _ in range(4):  # 1..4 consecutive — below the threshold of 5
+        with pytest.raises(SkipSample):
+            encode(None, _bare_sample())
+    assert ed._consecutive_skipped == 4  # pyright: ignore[reportPrivateUsage]
+
+
+def test_consecutive_skips_reaching_threshold_fatalize(monkeypatch):
+    """A SYSTEMATIC failure (every sample fails) escalates to FatalSampleError
+    once the consecutive-skip counter reaches VLM_MAX_CONSECUTIVE_SKIPS, so the
+    run dies loud+fast instead of silently dropping every sample forever."""
+    monkeypatch.setattr(ed, "_MAX_CONSECUTIVE_SKIPS", 5)
+
+    @skip_corrupt_samples
+    def encode(_self, _sample):
+        raise ValueError("bad json")
+
+    for _ in range(4):  # the first four are skipped
+        with pytest.raises(SkipSample):
+            encode(None, _bare_sample())
+    # the 5th consecutive failure trips the threshold and fatalizes
+    with pytest.raises(FatalSampleError):
+        encode(None, _bare_sample())
+    # FatalSampleError is a SYSTEM_EXCEPTION, so energon's handle_errors re-raises
+    # it rather than swallowing it (unlike SkipSample) — the run actually dies.
+    ctx = ErrorContext("MapDataset.wrapped", lambda *_a: None, tolerance=100)
+    with pytest.raises(FatalSampleError):
         with ctx.handle_errors(_bare_sample()):
             encode(None, _bare_sample())
-    assert ctx._consecutive_failures == 0  # pyright: ignore[reportPrivateUsage]
+
+
+def test_successful_encode_resets_consecutive_skip_counter(monkeypatch):
+    """A single successful encode between failures resets the consecutive
+    counter, so interspersed/isolated corruption can never reach the threshold."""
+    monkeypatch.setattr(ed, "_MAX_CONSECUTIVE_SKIPS", 3)
+    state = {"fail": True}
+
+    @skip_corrupt_samples
+    def encode(_self, _sample):
+        if state["fail"]:
+            raise ValueError("bad json")
+        return {"ok": True}
+
+    for _ in range(2):  # two consecutive failures (below 3)
+        with pytest.raises(SkipSample):
+            encode(None, _bare_sample())
+    assert ed._consecutive_skipped == 2  # pyright: ignore[reportPrivateUsage]
+
+    state["fail"] = False  # one success resets the counter
+    assert encode(None, _bare_sample()) == {"ok": True}
+    assert ed._consecutive_skipped == 0  # pyright: ignore[reportPrivateUsage]
+
+    state["fail"] = True  # two more failures — still below the threshold
+    for _ in range(2):
+        with pytest.raises(SkipSample):
+            encode(None, _bare_sample())
+    assert ed._consecutive_skipped == 2  # pyright: ignore[reportPrivateUsage]
+
+
+def test_threshold_zero_disables_fatalize(monkeypatch):
+    """The energon convention: a threshold of 0 means 'tolerate forever' — even a
+    long systematic run of failures only ever produces SkipSample, never fatal."""
+    monkeypatch.setattr(ed, "_MAX_CONSECUTIVE_SKIPS", 0)
+
+    @skip_corrupt_samples
+    def encode(_self, _sample):
+        raise ValueError("bad json")
+
+    for _ in range(50):
+        with pytest.raises(SkipSample):
+            encode(None, _bare_sample())
+    assert ed._consecutive_skipped == 50  # pyright: ignore[reportPrivateUsage]
 
 
 def test_deliberate_skipsample_passes_through_uncounted():
     """A SkipSample raised inside encode_sample is a deliberate skip — it must
-    pass through unchanged and not be re-wrapped or counted as a corrupt drop."""
+    pass through unchanged and touch neither the drop counter nor the
+    consecutive-skip counter (no double-wrap, no re-count, no reset)."""
     before = ed._skipped_samples  # pyright: ignore[reportPrivateUsage]
+    ed._consecutive_skipped = 7  # pyright: ignore[reportPrivateUsage]
 
     @skip_corrupt_samples
     def encode(_self, _sample):
@@ -179,6 +264,7 @@ def test_deliberate_skipsample_passes_through_uncounted():
     with pytest.raises(SkipSample):
         encode(None, _bare_sample())
     assert ed._skipped_samples == before  # pyright: ignore[reportPrivateUsage]
+    assert ed._consecutive_skipped == 7  # pyright: ignore[reportPrivateUsage]
 
 
 def test_skip_logs_once_with_key_and_counts(caplog):

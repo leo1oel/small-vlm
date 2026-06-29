@@ -239,6 +239,9 @@ if TYPE_CHECKING:
     from megatron.energon.epathlib import (  # noqa: E402  # pyright: ignore[reportMissingImports]
         EPath,
     )
+    from megatron.energon.errors import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+        FatalSampleError,
+    )
     from megatron.energon.flavors.jsonl.ijsonl import (  # noqa: E402  # pyright: ignore[reportMissingImports]
         IJsonlIndexWriter,
     )
@@ -266,6 +269,7 @@ else:
             stateless,
         )
         from megatron.energon.epathlib import EPath  # noqa: E402
+        from megatron.energon.errors import FatalSampleError  # noqa: E402
         from megatron.energon.flavors.jsonl.ijsonl import IJsonlIndexWriter  # noqa: E402
         from megatron.energon.savable_loader import SavableDataLoader  # noqa: E402
         from megatron.energon.source_info import get_source_info  # noqa: E402
@@ -288,6 +292,9 @@ else:
             pass
 
         class SkipSample(Exception):  # mirrors energon's skip-this-sample signal
+            pass
+
+        class FatalSampleError(Exception):  # mirrors energon's fatal-sample signal
             pass
 
         def get_source_info(_sample):
@@ -641,6 +648,19 @@ def download_jsonl(
 #: count rides along in every warning so total data loss stays visible in logs.
 _skipped_samples = 0
 
+#: Per-worker count of CONSECUTIVE skips with no successful encode in between.
+#: Resets to 0 on every successful encode; once it reaches _MAX_CONSECUTIVE_SKIPS
+#: the wrapper fatalizes instead of skipping, so a systematic failure (code bug,
+#: fully-corrupt shard, misconfig) still fails fast instead of silently dropping
+#: every sample and hanging at zero throughput.
+_consecutive_skipped = 0
+
+#: Consecutive-skip tolerance before @skip_corrupt_samples escalates to a fatal
+#: error. Default 100 mirrors energon's ErrorContext default tolerance; 0 means
+#: disabled (skip forever, matching energon's tolerance==0 convention). Read at
+#: call time so tests can monkeypatch the module global.
+_MAX_CONSECUTIVE_SKIPS = int(os.environ.get("VLM_MAX_CONSECUTIVE_SKIPS", "100"))
+
 
 def _note_skipped_sample(sample: Any, exc: Exception) -> "SkipSample":
     """Log ONE warning for a per-sample failure and return energon's SkipSample.
@@ -681,16 +701,51 @@ def skip_corrupt_samples(fn: Any) -> Any:
     ``SkipSample`` from inside ``encode_sample`` is the only thing energon
     treats as non-fatal (see ``megatron.energon.errors.handle_errors``).
 
+    Backstop for SYSTEMATIC failures: because ``SkipSample`` bypasses energon's
+    consecutive-failure tolerance entirely, an unconditional skip would mask a
+    real code bug (``NameError``/``ImportError``/typo), a fully-corrupt shard, or
+    a misconfig (e.g. the audio-off ``ValueError``) that fails 100% of samples —
+    the loader would consume-and-skip forever and silently hang at zero
+    throughput, burning multi-day GPU time. So the wrapper tracks a per-worker
+    CONSECUTIVE-skip counter that resets on every successful encode; once it
+    reaches ``_MAX_CONSECUTIVE_SKIPS`` (env ``VLM_MAX_CONSECUTIVE_SKIPS``,
+    default 100, 0 = disabled) it raises ``FatalSampleError`` — itself a
+    ``SYSTEM_EXCEPTION`` energon always re-fatalizes — so genuine breakage dies
+    loud and fast while isolated corrupt samples are still skipped.
+
     Apply it BELOW ``@stateless`` so ``@stateless`` marks the returned wrapper."""
 
     @functools.wraps(fn)
     def wrapper(self: Any, sample: Any) -> Any:
+        global _consecutive_skipped
         try:
-            return fn(self, sample)
+            result = fn(self, sample)
         except SkipSample:
-            raise  # already a deliberate skip — don't double-wrap or re-count
+            raise  # already a deliberate skip — don't double-wrap, re-count, or reset
         except Exception as exc:
+            _consecutive_skipped += 1
+            if 0 < _MAX_CONSECUTIVE_SKIPS <= _consecutive_skipped:
+                key = getattr(sample, "__key__", "?")
+                log.error(
+                    "energon: %d consecutive samples failed to encode "
+                    "(>= VLM_MAX_CONSECUTIVE_SKIPS=%d) — treating as a systematic "
+                    "failure (code bug, fully-corrupt shard, or misconfig) and "
+                    "fatalizing on key=%s: %s: %s",
+                    _consecutive_skipped,
+                    _MAX_CONSECUTIVE_SKIPS,
+                    key,
+                    type(exc).__name__,
+                    exc,
+                )
+                raise FatalSampleError(
+                    f"{_consecutive_skipped} consecutive samples failed to encode "
+                    f"(>= VLM_MAX_CONSECUTIVE_SKIPS={_MAX_CONSECUTIVE_SKIPS}); likely a "
+                    f"code bug or fully-corrupt shard rather than isolated bad data"
+                ) from exc
             raise _note_skipped_sample(sample, exc) from exc
+        else:
+            _consecutive_skipped = 0
+            return result
 
     return wrapper
 

@@ -510,9 +510,15 @@ Two mutually-exclusive layouts, selected by `DatasetConfig` (set exactly one of
     encoders (`energon_wds.py`) inherit the wrapped `encode_sample` unchanged, so
     the prepared-shard path (where the crash hit) is covered too; if you ever
     override `encode_sample` in a subclass, re-apply `@skip_corrupt_samples`.
-    SkipSample also never trips energon's consecutive-failure tolerance, so a
-    flood of corrupt samples can't fatalize — the warning count is the only
-    visibility, so watch it. Covered by `test_energon_skip_corrupt.py`.
+    Because `SkipSample` bypasses energon's consecutive-failure tolerance, the
+    wrapper keeps its OWN per-worker CONSECUTIVE-skip counter (resets on any
+    successful encode): once it hits `VLM_MAX_CONSECUTIVE_SKIPS` (default 100,
+    `0` = disabled) it raises `FatalSampleError` instead of skipping, so a
+    SYSTEMATIC failure (a code bug like `NameError`/`ImportError`, a fully-corrupt
+    shard, or a misconfig such as the audio-off `ValueError`) that fails 100% of
+    samples dies loud+fast instead of silently dropping every sample and hanging
+    at zero throughput. Isolated/interspersed corruption never trips it. Covered
+    by `test_energon_skip_corrupt.py`.
 
 ## Cross-modal 4D mask correctness (xmodal_mask.py / install_xmodal_masks)
 
