@@ -152,7 +152,10 @@ def test_resolve_wds_path():
     # an ABSOLUTE local path (a pre-staged copy on /gscratch or /scr) is verbatim
     # -- energon's EPath wants a bare path, not a file:// URL, and it must NOT be
     # mis-resolved through MSC into a container-relative msc:// URL.
-    assert resolve_wds_path("/gscratch/scrubbed/leoym/encabl-data") == "/gscratch/scrubbed/leoym/encabl-data"
+    assert (
+        resolve_wds_path("/gscratch/scrubbed/leoym/encabl-data")
+        == "/gscratch/scrubbed/leoym/encabl-data"
+    )
     # container-relative -> resolved through the MSC default profile/container
     assert resolve_wds_path("yiming/bee_stage2/train-wds").startswith("msc://")
     assert resolve_wds_path("yiming/bee_stage2/train-wds").endswith("yiming/bee_stage2/train-wds")
