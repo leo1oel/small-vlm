@@ -1,0 +1,61 @@
+defaults:
+  - cfg
+  - model: qwen3-1.7b-clip
+  - trainer: finetune # unfreeze=LM+connector (CLIP tower stays frozen)
+  - inference: default
+  - dataset: energon-honey-sft-wds
+  - override hydra/job_logging: rich
+  - _self_
+
+# ENCODER ABLATION — Group G1 (CLIP-ViT-B/16), STAGE 2.
+# Instruction SFT on Honey-Data-1M (~1M, multi-turn). Resumes from the G1 S1
+# caption checkpoint (VLM_S1_CKPT). Trains LM + connector; CLIP tower stays
+# frozen (finetune unfreeze default). Qwen3 ChatML template (qwen_2_5).
+# Visual experts OFF, BREEN OFF.
+
+trainer:
+  version: qwen_2_5
+  from_pretrained: ${oc.env:VLM_S1_CKPT} # G1 Stage-1 checkpoint dir (REQUIRED)
+
+  deepspeed: null
+  bf16: true
+  tf32: true
+  gradient_checkpointing: false
+  attn_implementation: flash_attention_2
+  optim: adamw_torch_fused
+  loss_chunk_size: 1024
+  torch_compile: false # graph-breaks + recompiles -> ~20x slower (report.md)
+  ddp_timeout: 7200
+  include_num_input_tokens_seen: non_padding # wandb logs total tokens seen
+  group_by_modality_length: false
+
+  per_device_train_batch_size: 256 # nominal only under dataset.batch_token_budget
+  gradient_accumulation_steps: 1
+
+  # EQUAL-TOKEN fairness: SAME budget (14000) + SAME max_steps as native-G2.
+  # 1e9 EFFECTIVE tokens = 1e9 / (14000 × 6) = 11905 (~0.38 epochs of Honey --
+  # under 1 epoch, accepted). budget=14000 (1.7B full-param fits ~65GB @14000).
+  max_steps: 11905
+  save_steps: 2500
+  save_total_limit: null
+  save_only_model: false
+
+  learning_rate:
+    language_model_learning_rate: 6e-5
+    connector_learning_rate: 6e-5
+    visual_encoder_learning_rate: 6e-5 # no-op: CLIP frozen
+    default_lr: 6e-5
+
+  run_name: encabl-clip-s2
+
+hydra:
+  job:
+    chdir: true
+  job_logging:
+    root:
+      level: INFO
+  run:
+    dir: outputs/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${model.name}/${trainer.name}/${dataset.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}
