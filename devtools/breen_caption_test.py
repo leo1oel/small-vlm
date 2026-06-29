@@ -3,7 +3,7 @@ of diverse images. Reports the ACTUAL strings + whether they are grounded
 (different, describing each image) or blind (byte-identical / image-independent).
 No distill teacher needed — pure generation path.
 
-  CKPT=.../checkpoint-1000 GPU=3 bash devtools/native_distill_probe_srun.sh  # (adapt)
+  CKPT=.../checkpoint-1000 PROBE=caption sbatch devtools/s1_eval_probe.slurm
 or directly:
   python devtools/breen_caption_test.py --ckpt .../checkpoint-1000
 """
