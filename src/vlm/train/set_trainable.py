@@ -61,10 +61,12 @@ def group_params_by_prefix(model: Any):
         # Own groups so a frozen-LLM S0 trains them instead of freezing them
         # (without this they fall through to "language_model" — the silent
         # no-op the build-item-8 fix exists to prevent). Always trained when
-        # present (see set_trainable_params). The per-layer visual FFN expert
-        # (mlp_visual) and its sigmoid gates are substring-named inside the
-        # decoder layers, so they can't be prefix-grouped — they are force-
-        # enabled directly in set_trainable_params instead.
+        # present (see set_trainable_params). The per-layer visual experts (FFN
+        # mlp_visual / norm norm_visual / attention proj_visual + their sigmoid
+        # gates) are substring-named inside the decoder layers, so they can't be
+        # prefix-grouped — the is_visual_expert_param special-case in the loop
+        # below assigns them to their own "visual_expert" group; they too are
+        # force-enabled in set_trainable_params.
         "learnable_query": ["learnable_query"],
         "visual_distill_head": ["visual_distill_head"],
     }
@@ -74,6 +76,22 @@ def group_params_by_prefix(model: Any):
     grouped_params = defaultdict(list)
 
     for name, param in all_params:
+        # The per-layer visual experts (FFN mlp_visual / norm norm_visual /
+        # attention proj_visual + their sigmoid gates) are substring-named INSIDE
+        # the decoder layers (e.g. model.layers.7.mlp.mlp_visual.gate_proj.weight),
+        # so they cannot be prefix-matched by the table above and would otherwise
+        # fall through to "language_model" (the unassigned-prefix default below).
+        # That made a frozen-LM S1 (train_language_model=false) log
+        # "language_model: 1.1B trainable" when the text trunk is in fact frozen
+        # and that 1.1B is the force-trained visual capacity. Count them under
+        # their own truthful "visual_expert" group instead. Checked FIRST so it
+        # wins over any prefix match. (They are force-enabled in
+        # set_trainable_params regardless of train_language_model — this only
+        # relabels the count, it does not change trainability.)
+        if is_visual_expert_param(name):
+            grouped_params["visual_expert"].append((name, param))
+            continue
+
         assigned = False
         for component, prefixes in component_prefixes.items():
             if any(name.startswith(prefix) for prefix in prefixes):
