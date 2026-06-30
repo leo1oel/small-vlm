@@ -346,6 +346,54 @@ def test_multi_image_splice_consumes_every_feature(tiny_model: Any):
     assert int((tags == 1).sum()) == 5
 
 
+def test_single_token_image_prefill_splices_then_decode_short_circuits(tiny_model: Any):
+    """#infer-audit Bug 1: prepare_inputs_labels_for_multimodal must SPLICE the
+    image on a 1-token bare-<image> PREFILL ([[-200]], past_key_values None).
+
+    The early-return guard `input_ids.shape[1] == 1` was meant only for the
+    cached single-token DECODE step (1 new token, image already in the KV cache);
+    firing it on a 1-token prefill skipped the connector, so the image never
+    entered and generate() ran blind from the LM prior (the "<image>" caption
+    probe collapsed to an image-invariant string). The guard is now gated on
+    `past_key_values is not None`: a prefill (cache None) splices; a genuine
+    decode step (cache present) still short-circuits unchanged."""
+    hidden = tiny_model.config.hidden_size
+    feats = [torch.zeros(7, hidden)]  # connector output for one image: 7 patch rows
+
+    # --- 1-token PREFILL: bare <image> = [[-200]], no cache -> splice runs ---
+    prefill_ids = torch.tensor([[tiny_model.config.image_token_index]])
+    assert prefill_ids.shape == (1, 1)
+    with torch.inference_mode():
+        out = tiny_model.prepare_inputs_labels_for_multimodal(
+            input_ids=prefill_ids,
+            image_features=feats,
+            past_key_values=None,
+            with_image_block_ids=True,
+        )
+    new_input_embeds = out[4]
+    image_block_ids = out[6]
+    # the connector ran: the lone sentinel expanded to a pure-image embedding (the
+    # 7 patch rows, no surrounding text), so the image actually enters generation.
+    assert new_input_embeds is not None, "1-token prefill dropped the image (guard fired)"
+    assert new_input_embeds.shape[1] == 7
+    assert int((image_block_ids >= 0).sum()) == 7  # every row tagged to image 0
+
+    # --- 1-token DECODE step: one new token + cache present -> short-circuit ---
+    decode_ids = torch.tensor([[123]])
+    assert decode_ids.shape == (1, 1)
+    fake_cache = [(torch.zeros(1), torch.zeros(1))]  # truthy, non-None KV cache
+    with torch.inference_mode():
+        out_d = tiny_model.prepare_inputs_labels_for_multimodal(
+            input_ids=decode_ids,
+            image_features=feats,
+            past_key_values=fake_cache,
+            with_image_block_ids=True,
+        )
+    # unchanged early-return: no re-splice (inputs_embeds None), ids passed through.
+    assert out_d[4] is None, "decode step must still short-circuit (no double-splice)"
+    assert torch.equal(out_d[0], decode_ids)
+
+
 def test_generate_response_sentinel_image_count_mismatch_raises(
     tiny_model: Any, tiny_processor: Any, monkeypatch: pytest.MonkeyPatch
 ):
@@ -406,6 +454,51 @@ def test_eval_model_save_load_roundtrip(
         device="cpu",
     )
     assert isinstance(out, str)
+
+
+def test_load_model_pins_bos_for_none_bos_qwen3(tiny_processor: Any, tmp_path: Path) -> None:
+    """#infer-audit Bug 2: Qwen3-backbone native checkpoints serialize
+    bos_token_id=None (the base Qwen3 LM carries 151643, but the trained VLM
+    config drops it). HF generate() needs a bos to seed its output-id bookkeeping
+    whenever it falls back from inputs_embeds, and raises "bos_token_id has to be
+    defined" when it is None. load_model must pin a valid bos (pad, else eos) so a
+    None-bos checkpoint can always generate_response.
+
+    NOTE: like test_eval_model_save_load_roundtrip, this must run before the
+    exported_pkg fixture is first used — that fixture registers model_type "vlm"
+    with AutoConfig process-wide, which would change get_dynamic_vlm's resolution.
+    """
+    import json
+
+    from vlm.inference.eval import load_model
+
+    VLMForCausalLM, VLMConfig = get_dynamic_vlm(BASE_LM)
+    kwargs = _tiny_vlm_config_kwargs()
+    kwargs["bos_token_id"] = None  # mirror the trained native checkpoint
+    config = VLMConfig(**kwargs)
+    torch.manual_seed(0)
+    model = VLMForCausalLM(config)
+    model.generation_config.bos_token_id = None  # the checkpoint serializes None
+    model.eval()
+
+    ckpt = tmp_path / "nobos_ckpt"
+    model.save_pretrained(ckpt)
+    tiny_processor.save_pretrained(ckpt)
+    # sanity: the persisted generation_config really has no bos, so the assertion
+    # below pins the load_model fix rather than a pre-existing default.
+    gen_cfg_path = ckpt / "generation_config.json"
+    if gen_cfg_path.exists():
+        assert json.loads(gen_cfg_path.read_text()).get("bos_token_id") is None
+
+    loaded, processor, _ = load_model(str(ckpt), bf16=False, device="cpu")
+    # the fix: a valid bos is now defined where the checkpoint left it None.
+    assert loaded.generation_config.bos_token_id is not None
+
+    # and a bare-<image> generate (1-token prefill, the sharp case) runs without
+    # raising the bos ValueError.
+    image = PIL_Image.new("RGB", (20, 10), (0, 255, 0))
+    text = generate_response(loaded, processor, images=image, conv_mode="plain", max_new_tokens=3)
+    assert isinstance(text, str)
 
 
 # ---------------------------------------------------------------------------
