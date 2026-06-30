@@ -262,6 +262,28 @@ def load_model(
     model.to(device)
     model.eval()
 
+    # Qwen3-backbone native checkpoints serialize bos_token_id=None (the base
+    # Qwen3 LM carries 151643, but the trained VLM config drops it). The
+    # encoder-free generate() hands HF inputs_embeds with no input_ids; HF still
+    # needs a bos to seed its output-id bookkeeping whenever it cannot start the
+    # sequence from inputs_embeds, and raises "bos_token_id has to be defined"
+    # when it is None. On the current splice path inputs_embeds is always real so
+    # the splice fix (single-token prefill no longer dropped) keeps this latent,
+    # but the seed is one HF-version/code change away from firing. Pin a valid id
+    # (pad, else eos) so a None-bos checkpoint can always generate_response. This
+    # is bookkeeping only — the id is never prepended on the inputs_embeds path
+    # and is stripped on decode (skip_special_tokens) — and defined-bos backbones
+    # (e.g. Llama) are left untouched by the `is None` guard.
+    gen_cfg = model.generation_config
+    if gen_cfg.bos_token_id is None:
+        seed_bos = gen_cfg.pad_token_id
+        if seed_bos is None:
+            seed_bos = gen_cfg.eos_token_id
+        if isinstance(seed_bos, list | tuple):
+            seed_bos = seed_bos[0] if seed_bos else None
+        if seed_bos is not None:
+            gen_cfg.bos_token_id = int(seed_bos)
+
     config_dict = {
         "image_token_index": getattr(model.config, "image_token_index", -200),
         "image_start_token": getattr(model.config, "image_start_token", "<im_start>"),
