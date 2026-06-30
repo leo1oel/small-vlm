@@ -1,3 +1,17 @@
+# S2 (SFT / finetune) unfreeze. These three flags govern ONLY the base
+# transformer TRUNK:
+#   train_vision_model    -> the vision tower / encoder (n/a for encoder-free)
+#   train_language_model  -> the TEXT trunk: attention, text FFN, token
+#                            embeddings, lm_head
+#   train_connector       -> the vision->LLM connector / embedder
+#
+# They do NOT govern the per-layer VISUAL EXPERTS (FFN mlp_visual / norm
+# norm_visual / attention proj_visual + their gates), the learnable QUERIES, or
+# the visual DISTILL head. Those are ALWAYS trained when present -- force-enabled
+# in train/set_trainable.py:set_trainable_params independent of these flags. In
+# the trainable-params log they are counted under their own `visual_expert`
+# group, NOT under `language_model`. (Here train_language_model=true, so the
+# text trunk trains too; the visual experts train either way.)
 train_vision_model: false
 train_language_model: true
 train_connector: true

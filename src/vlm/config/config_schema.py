@@ -546,6 +546,25 @@ class DatasetConfig:
 
 @dataclass
 class UnfreezeConfig:
+    """Which parts of the base transformer TRUNK to unfreeze.
+
+    These three flags govern ONLY the base trunk, NOT the visual capacity:
+      * train_vision_model   -- the vision tower / encoder (n/a for encoder-free)
+      * train_language_model -- the TEXT trunk: attention, text FFN, token
+                                embeddings, lm_head
+      * train_connector      -- the vision->LLM connector / embedder
+
+    The per-layer visual experts (FFN ``mlp_visual`` / norm ``norm_visual`` /
+    attention ``proj_visual`` + their sigmoid gates), the learnable queries, and
+    the visual distill head are NOT controlled here: they are always trained when
+    present, force-enabled in ``train/set_trainable.py:set_trainable_params``
+    independent of these flags. So a frozen-LM stage (train_language_model=False)
+    still trains its visual capacity -- deliberate, to avoid the silent-no-op
+    trap where a frozen-LM arm would otherwise never train its visual experts.
+    In the trainable-params log those params are counted under their own
+    ``visual_expert`` group, not under ``language_model``.
+    """
+
     train_vision_model: bool = True
     train_language_model: bool = True
     train_connector: bool = True

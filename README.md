@@ -78,7 +78,7 @@ You can customize various aspects of the model and training process through Hydr
     - `model.language_model.hf_name`: Hugging Face name of the language model.
     - `model.connector.name` and `model.connector.type`: Define the type and specifics of the connector module.
 - **Training Parameters per Component**:
-    - `trainer.unfreeze`: Booleans `train_vision_model`, `train_language_model`, `train_connector` to control which parts are trainable.
+    - `trainer.unfreeze`: Booleans `train_vision_model`, `train_language_model`, `train_connector` controlling which parts of the base transformer trunk are trainable; the per-layer visual experts, learnable queries, and visual distill head (encoder-free unified models) are always trained when present, regardless of these flags — see `src/vlm/config/trainer/unfreeze/*.yaml`.
     - `trainer.learning_rate`: Specific learning rates like `visual_encoder_learning_rate`, `language_model_learning_rate`, `connector_learning_rate`.
     - `trainer.weight_decay`: Specific weight decays like `visual_encoder_weight_decay`, `language_model_weight_decay`, `connector_weight_decay`.
 

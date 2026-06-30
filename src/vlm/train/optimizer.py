@@ -40,10 +40,17 @@ def configure_optimizers(model: PreTrainedModel | nn.Module, trainer_config: Tra
         # S0; identical to the LM lr in the single-LR SFT configs, so no
         # regression for the existing eve/repa distill arms). MUST be mapped here
         # or configure_optimizers silently drops them (trainable but never
-        # stepped). The per-layer visual FFN expert (mlp_visual) + gates stay in
-        # the "language_model"->"model" bucket (in-stack capacity at the LM lr).
+        # stepped).
         "learnable_query": "connector",
         "visual_distill_head": "connector",
+        # The per-layer visual experts (mlp_visual / norm_visual / proj_visual +
+        # gates) are in-stack capacity trained at the LM lr/wd ("model" config).
+        # They used to fall through into the "language_model" group (which also
+        # maps to "model"); set_trainable.group_params_by_prefix now gives them
+        # their own truthful "visual_expert" group, so map it to the SAME "model"
+        # config to keep the optimizer byte-identical. MUST be mapped here or
+        # configure_optimizers silently drops them (trainable but never stepped).
+        "visual_expert": "model",
     }
 
     for component, params_list in grouped_params.items():

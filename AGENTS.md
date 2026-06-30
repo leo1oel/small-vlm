@@ -155,10 +155,15 @@ shared by `set_trainable.py` + `grad_probe.py`. Smoke config:
 
 ### Param-grouping trap (the most likely silent failure — DO NOT regress)
 
-The queries, `visual_distill_head` (incl. `norm_layer`), the visual experts
-(`mlp_visual`/`norm_visual`/`proj_visual`) and their gates default into the
-**`language_model`** optimizer group. A frozen-LLM S0 (`train_language_model:false`)
-would therefore freeze the very modules S0 must train. Two coupled fixes
+**The unfreeze flags govern ONLY the base trunk.** `trainer/unfreeze/*.yaml`'s
+`train_vision_model` / `train_language_model` / `train_connector` toggle the
+vision tower / the TEXT trunk (attention, text FFN, token embeddings, lm_head) /
+the connector — and NOTHING else. The queries, `visual_distill_head` (incl.
+`norm_layer`), the per-layer visual experts (`mlp_visual`/`norm_visual`/
+`proj_visual`) and their gates are NOT governed by these flags: they are
+**force-trained whenever present**, even under a frozen-LLM S0
+(`train_language_model:false`) — otherwise S0 would freeze the very modules it
+exists to train (the build-item-8 silent-no-op trap). Three coupled facts
 (`train/set_trainable.py` + `train/optimizer.py`):
 
 1. `set_trainable_params` force-enables `learnable_query` / `visual_distill_head`
@@ -167,13 +172,24 @@ would therefore freeze the very modules S0 must train. Two coupled fixes
     the LM freeze flag (the visual-aux/generation pattern). `apply_delta_tuning`'s
     keep-list includes them too (the visual attention expert `proj_visual` stays
     trainable even under `DELTA_TUNING=2`, which freezes the SHARED attention).
+1. **The trainable-params log gives the visual experts their OWN
+    `visual_expert` group.** They are substring-named INSIDE the decoder layers
+    (`model.layers.N.mlp.mlp_visual.*`), so they can't be prefix-grouped — the
+    `is_visual_expert_param` special-case at the top of
+    `group_params_by_prefix` assigns them to `visual_expert` BEFORE the prefix
+    table / the `language_model` fall-through. Without it they hid inside
+    `language_model`, so a frozen-LM S1 logged `language_model: 1.1B trainable`
+    when the text trunk was frozen and that 1.1B was the force-trained experts
+    (the captain hit exactly this). `learnable_query` / `visual_distill_head`
+    already have their own prefix groups.
 1. **`configure_optimizers` SILENTLY DROPS any param group not in its
     `component_to_config` map** — so `learnable_query` and `visual_distill_head`
-    are mapped there (→ `connector` lr/wd: BREEN's higher "proj" LR in S0;
-    identical to the LM lr in the single-LR SFT configs, so no eve/repa
-    regression). The visual experts (`mlp_visual`/`norm_visual`/`proj_visual`)
-    and gates stay in the `language_model→model` bucket (LM lr). Forgetting either
-    fix = the module is trainable but never stepped.
+    map there (→ `connector` lr/wd: BREEN's higher "proj" LR in S0; identical to
+    the LM lr in the single-LR SFT configs, so no eve/repa regression), and the
+    `visual_expert` group maps to `model` (the **same LM lr/wd** the experts got
+    when they lived in `language_model` — the logging split is byte-identical for
+    the optimizer). Forgetting any of these = the module is trainable but never
+    stepped. (Behavior-identical guard: `tests/test_set_trainable_unfreeze.py`.)
 
 ### Configs (S0 → S1 → S2 chain)
 
